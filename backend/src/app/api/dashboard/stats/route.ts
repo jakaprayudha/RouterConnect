@@ -1,0 +1,564 @@
+﻿import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/server/db/client";
+import { requirePermission } from "@/server/middleware/api-auth";
+import { getRecentActivities } from "@/server/services/activity-log.service";
+import { nowWIB, startOfDayWIBtoUTC, WIB_TIMEZONE } from "@/lib/timezone";
+import { formatInTimeZone } from 'date-fns-tz';
+import { batchFetchMikrotikActiveSessions } from "@/server/services/mikrotik/active-sessions.service";
+import { exec } from "child_process";
+import { promisify } from "util";
+
+const execAsync = promisify(exec);
+
+// Disable caching for this route - always fetch fresh data
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
+
+
+export async function GET(request: NextRequest) {
+  try {
+    // Check authentication
+    const authCheck = await requirePermission('dashboard.view');
+    if (!authCheck.authorized) return authCheck.response;
+
+    // Parse optional ?month=YYYY-MM param (defaults to current WIB month)
+    const { searchParams } = new URL(request.url);
+    const monthParam = searchParams.get('month'); // e.g. "2026-02"
+    const nowLocal = nowWIB();
+    const wibMonthStr = formatInTimeZone(nowLocal, WIB_TIMEZONE, 'yyyy-MM');
+    let selectedYear: number;
+    let selectedMonth: number; // 0-indexed
+    if (monthParam && /^\d{4}-\d{2}$/.test(monthParam)) {
+      [selectedYear, selectedMonth] = monthParam.split('-').map(Number);
+      selectedMonth -= 1; // convert 1-indexed to 0-indexed
+    } else {
+      selectedYear = parseInt(wibMonthStr.substring(0, 4));
+      selectedMonth = parseInt(wibMonthStr.substring(5, 7)) - 1;
+    }
+    const monthKey = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}`;
+
+    const result = await (async () => {
+    const now = nowWIB();
+    const startOfMonth = new Date(Date.UTC(selectedYear, selectedMonth, 1));
+    const startOfNextMonth = new Date(Date.UTC(selectedYear, selectedMonth + 1, 1));
+    // last day of selected month (handles 28/29/30/31 days correctly)
+    const _endOfMonth = new Date(Date.UTC(selectedYear, selectedMonth + 1, 0, 23, 59, 59, 999));
+    const MONTH_NAMES_ID = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'];
+    const periodLabel = `${MONTH_NAMES_ID[selectedMonth]} ${selectedYear}`;
+    const isCurrentMonth = (monthKey === wibMonthStr);
+
+    // ==================== 1. Total PPPoE Users ====================
+    let totalPppoeUsers = 0;
+    try {
+      totalPppoeUsers = await prisma.pppoeUser.count();
+    } catch (e) {
+      console.error('[Dashboard] Error counting pppoeUser:', e);
+    }
+
+    // ==================== 2 & 3. Active Sessions (PPPoE & Hotspot separate) ====================
+    let activeSessionsPPPoE = 0;
+    let activeSessionsHotspot = 0;
+
+    try {
+      // ── Sumber kebenaran: radacct ──
+      // Sama dengan halaman Sesi: if username ada di pppoeUser → PPPoE, else → Hotspot.
+      const normalizeUsername = (u: string) => u.includes('@') ? u.split('@')[0] : u;
+
+      const activeRadacctSessions = await prisma.radacct.findMany({
+        where: { acctstoptime: null },
+        select: { username: true },
+      });
+
+      const onlineUsernames = new Set<string>(
+        activeRadacctSessions.map(s => s.username).filter(Boolean) as string[]
+      );
+
+      const allUsernames = [...onlineUsernames];
+      let pppoeUsernameSet = new Set<string>();
+
+      if (allUsernames.length > 0) {
+        const normalizedUsernames = [...new Set(allUsernames.map(normalizeUsername))];
+        const [pppoeUsers, hotspotVouchers] = await Promise.all([
+          prisma.pppoeUser.findMany({
+            where: {
+              OR: [
+                { username: { in: allUsernames } },
+                { username: { in: normalizedUsernames } },
+              ],
+            },
+            select: { username: true },
+          }),
+          prisma.hotspotVoucher.findMany({
+            where: { code: { in: allUsernames } },
+            select: { code: true },
+          }),
+        ]);
+
+        pppoeUsernameSet = new Set(pppoeUsers.map(u => u.username.toLowerCase()));
+        const hotspotVoucherSet = new Set(hotspotVouchers.map(v => v.code));
+
+        for (const username of allUsernames) {
+          const raw = username.toLowerCase();
+          const normalized = normalizeUsername(username).toLowerCase();
+          if (pppoeUsernameSet.has(raw) || pppoeUsernameSet.has(normalized)) {
+            activeSessionsPPPoE++;
+          } else if (hotspotVoucherSet.has(username)) {
+            // Only count as hotspot if username is a registered voucher code
+            activeSessionsHotspot++;
+          }
+          // else: unregistered user — skip entirely (ghost session)
+        }
+      }
+
+      // ── Supplement: MikroTik active sessions (ALL routers) ──
+      // Fetch from ALL active routers, not just local-auth ones.
+      // For RADIUS-mode routers, radacct is the primary source but accounting
+      // may not be working (e.g. MikroTik not configured, or just migrated).
+      // MikroTik API serves as a fallback/supplement to show actual online users.
+      // For local-auth routers, MikroTik API is the only source (no radacct).
+      // Matches /api/sessions logic which fetches from all routers.
+      const allRouters = await prisma.router.findMany({
+        where: { isActive: true },
+        select: { id: true, authMode: true },
+      });
+      const localRouters = allRouters.filter(r => r.authMode !== 'radius');
+      // Fetch MikroTik sessions first — needed to verify synthetic vouchers
+      // are actually connected before counting them.
+      let mtSessions: any[] = [];
+      if (allRouters.length > 0) {
+        mtSessions = await batchFetchMikrotikActiveSessions(allRouters, null);
+      }
+      const mtActiveUsernames = new Set(mtSessions.map((s: any) => s.username));
+
+      // Supplement: count synthetic ACTIVE hotspot vouchers.
+      // Only count vouchers that are ALSO active on MikroTik right now.
+      // Vouchers not connected to MikroTik are hidden (device disconnected).
+      // Track synthetic codes so MikroTik counting doesn't double-count them.
+      const syntheticCodes = new Set<string>();
+      const nowTs = new Date();
+      const activeCandidates = await prisma.hotspotVoucher.findMany({
+        where: {
+          status: 'ACTIVE',
+          firstLoginAt: { not: null },
+          // Exclude vouchers already counted via active radacct
+          code: { notIn: [...onlineUsernames] },
+          // Exclude already-expired vouchers whose status hasn't been updated yet
+          OR: [
+            { expiresAt: null },
+            { expiresAt: { gt: nowTs } },
+          ],
+        },
+        select: { code: true, firstLoginAt: true },
+      });
+      if (activeCandidates.length > 0) {
+        const candidateCodes = activeCandidates.map(v => v.code);
+        // Find the latest stopped session per voucher code
+        const stoppedRows = await prisma.radacct.findMany({
+          where: {
+            username: { in: candidateCodes },
+            acctstoptime: { not: null },
+          },
+          select: { username: true, acctstoptime: true },
+          orderBy: { acctstoptime: 'desc' },
+        });
+        const latestStopMap = new Map<string, Date>();
+        for (const r of stoppedRows) {
+          if (r.acctstoptime && !latestStopMap.has(r.username)) {
+            latestStopMap.set(r.username, new Date(r.acctstoptime));
+          }
+        }
+        // Count vouchers where session is still "active" (not properly stopped after last login)
+        // AND the device is currently connected to MikroTik
+        const syntheticActive = activeCandidates.filter(v => {
+          const latestStop = latestStopMap.get(v.code);
+          if (!latestStop || !v.firstLoginAt) return true; // No prior stop → potentially active
+          // Count if latest stop is BEFORE firstLoginAt (new login has no Accounting-Start yet)
+          return latestStop.getTime() < new Date(v.firstLoginAt).getTime();
+        }).filter(v => {
+          // Only count if device is actually connected to MikroTik right now
+          return mtActiveUsernames.has(v.code);
+        });
+        for (const v of syntheticActive) syntheticCodes.add(v.code);
+        activeSessionsHotspot += syntheticActive.length;
+      }
+
+      if (mtSessions.length > 0) {
+        // Get all registered usernames to classify sessions
+        const mtUsernames = [...new Set(mtSessions.map((s: any) => s.username))];
+        if (mtUsernames.length > 0) {
+          const [mtPppoeUsers, mtVouchers] = await Promise.all([
+            prisma.pppoeUser.findMany({
+              where: { username: { in: mtUsernames } },
+              select: { username: true },
+            }),
+            prisma.hotspotVoucher.findMany({
+              where: { code: { in: mtUsernames } },
+              select: { code: true },
+            }),
+          ]);
+          const mtPppoeSet = new Set(mtPppoeUsers.map(u => u.username));
+          const mtVoucherSet = new Set(mtVouchers.map(v => v.code));
+          const localRouterIds = new Set(localRouters.map(r => r.id));
+          const radiusRouterIds = new Set(allRouters.filter(r => r.authMode === 'radius').map(r => r.id));
+          // Count ALL raw MikroTik sessions (including duplicates by username)
+          // to match the sessions page which shows every active device.
+          for (const s of mtSessions) {
+            // Skip if already counted via radacct
+            if (onlineUsernames.has(s.username)) continue;
+            // Skip if already counted as synthetic voucher (avoid double-count)
+            if (syntheticCodes.has(s.username)) continue;
+            if (mtPppoeSet.has(s.username)) {
+              activeSessionsPPPoE++;
+            } else if (mtVoucherSet.has(s.username)) {
+              activeSessionsHotspot++;
+            } else if (localRouterIds.has(s.routerId)) {
+              // Unregistered local-auth session — count to match the
+              // sessions page which shows ALL local-auth clients (hotspot & PPPoE)
+              if (s.type === 'hotspot') {
+                activeSessionsHotspot++;
+              } else if (s.type === 'pppoe') {
+                activeSessionsPPPoE++;
+              }
+            } else if (radiusRouterIds.has(s.routerId)) {
+              // RADIUS-mode router: only count registered users (pppoe/voucher)
+              // Unregistered users on RADIUS routers are NOT counted (matches sessions page)
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[Dashboard] Error counting active sessions:', e);
+    }
+
+    // ==================== 4. Unused Hotspot Vouchers ====================
+    let unusedVouchers = 0;
+    try {
+      unusedVouchers = await prisma.hotspotVoucher.count({
+        where: {
+          status: 'WAITING',
+          firstLoginAt: null,
+        },
+      });
+    } catch (e) {
+      console.error('[Dashboard] Error counting unused vouchers:', e);
+    }
+
+    // ==================== 5. Isolated / Blocked Customers ====================
+    let isolatedCount = 0;
+    try {
+      isolatedCount = await prisma.pppoeUser.count({
+        where: { status: { in: ['isolated', 'ISOLATED', 'blocked', 'BLOCKED'] } },
+      });
+    } catch (e) {
+      console.error('[Dashboard] Error counting isolated users:', e);
+    }
+
+    // ==================== 6. Suspended Customers (Stop Langganan) ====================
+    let suspendedCount = 0;
+    try {
+      suspendedCount = await prisma.pppoeUser.count({
+        where: { status: { in: ['suspended', 'SUSPENDED'] } },
+      });
+    } catch (e) {
+      console.error('[Dashboard] Error counting suspended users:', e);
+    }
+
+    // ==================== 6b. Active PPPoE Customers ====================
+    let activePppoeUsers = 0;
+    try {
+      activePppoeUsers = await prisma.pppoeUser.count({
+        where: { status: { in: ['active', 'ACTIVE'] } },
+      });
+    } catch (e) {
+      console.error('[Dashboard] Error counting active users:', e);
+    }
+
+    // ==================== 6c. New Online Registrations (pending review) ====================
+    let newRegistrations = 0;
+    try {
+      newRegistrations = await prisma.registrationRequest.count({
+        where: { status: { in: ['PENDING', 'REVIEWING'] } },
+      });
+    } catch (e) {
+      console.error('[Dashboard] Error counting new registrations:', e);
+    }
+
+    // ==================== 6d. Upcoming / Overdue Invoices (H-7 window) ====================
+    type UpcomingInvoice = {
+      invoiceNumber: string;
+      customerName: string;
+      customerUsername: string;
+      amount: number;
+      dueDate: string;
+      status: string;
+      daysUntilDue: number;
+    };
+    let upcomingInvoices: UpcomingInvoice[] = [];
+    try {
+      const sevenDaysFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+      const raw = await prisma.invoice.findMany({
+        where: {
+          status: { in: ['PENDING', 'OVERDUE'] },
+          dueDate: { lte: sevenDaysFromNow },
+        },
+        orderBy: { dueDate: 'asc' },
+        take: 20,
+        select: {
+          invoiceNumber: true,
+          customerName: true,
+          customerUsername: true,
+          amount: true,
+          dueDate: true,
+          status: true,
+        },
+      });
+      upcomingInvoices = raw.map(inv => ({
+        invoiceNumber: inv.invoiceNumber,
+        customerName: inv.customerName || '-',
+        customerUsername: inv.customerUsername || '-',
+        amount: inv.amount,
+        dueDate: inv.dueDate.toISOString(),
+        status: inv.status,
+        daysUntilDue: Math.ceil(
+          (new Date(inv.dueDate).getTime() - now.getTime()) / (1000 * 60 * 60 * 24)
+        ),
+      }));
+    } catch (e) {
+      console.error('[Dashboard] Error loading upcoming invoices:', e);
+    }
+
+    // ==================== 7. Voucher Revenue (today + this month) ====================
+    let voucherRevenue = 0;
+    let voucherRevenueToday = 0;
+    try {
+      const startOfToday = startOfDayWIBtoUTC(now);
+
+      // Estimate from sold vouchers — today
+      const soldToday = await prisma.hotspotVoucher.findMany({
+        where: {
+          status: { in: ['ACTIVE', 'EXPIRED'] },
+          firstLoginAt: { gte: startOfToday },
+        },
+        include: { profile: { select: { sellingPrice: true } } },
+      });
+      voucherRevenueToday = soldToday.reduce((sum, v) => sum + (v.profile?.sellingPrice || 0), 0);
+
+      // Calculate voucher revenue for this month from actual sold vouchers (firstLoginAt)
+      // This is the authoritative source — Keuangan transactions may not be fully synced
+      const soldVouchers = await prisma.hotspotVoucher.findMany({
+        where: {
+          status: { in: ['ACTIVE', 'EXPIRED'] },
+          firstLoginAt: { gte: startOfMonth, lt: startOfNextMonth },
+        },
+        include: { profile: { select: { sellingPrice: true } } },
+      });
+      voucherRevenue = soldVouchers.reduce((sum, v) => sum + (v.profile?.sellingPrice || 0), 0);
+    } catch (e) {
+      console.error('[Dashboard] Error calculating voucher revenue:', e);
+    }
+
+    // ==================== 8. Invoice Revenue — today, this month, unpaid, all-time ====================
+    let invoiceRevenue = 0;
+    let invoiceRevenueToday = 0;
+    let invoiceCountToday = 0;
+    let invoiceCountMonth = 0;
+    let unpaidInvoicesCount = 0;
+    let totalAllTimeRevenue = 0;
+    try {
+      // Start of today in company timezone, converted to true UTC for Prisma query
+      const startOfToday = startOfDayWIBtoUTC(now);
+
+      const [todayAgg, monthAgg, monthCount, unpaidCount, allTimeAgg] = await Promise.all([
+        prisma.invoice.aggregate({
+          where: { status: 'PAID', paidAt: { gte: startOfToday } },
+          _sum: { amount: true },
+          _count: { id: true },
+        }),
+        prisma.invoice.aggregate({
+          where: { status: 'PAID', paidAt: { gte: startOfMonth, lt: startOfNextMonth } },
+          _sum: { amount: true },
+        }),
+        prisma.invoice.count({
+          where: { status: 'PAID', paidAt: { gte: startOfMonth, lt: startOfNextMonth } },
+        }),
+        prisma.invoice.count({
+          where: { status: { in: ['PENDING', 'OVERDUE'] } },
+        }),
+        prisma.invoice.aggregate({
+          where: { status: 'PAID' },
+          _sum: { amount: true },
+        }),
+      ]);
+
+      invoiceRevenueToday = Number(todayAgg._sum.amount) || 0;
+      invoiceCountToday = todayAgg._count.id || 0;
+      invoiceRevenue = Number(monthAgg._sum.amount) || 0;
+      invoiceCountMonth = monthCount;
+      unpaidInvoicesCount = unpaidCount;
+      totalAllTimeRevenue = Number(allTimeAgg._sum.amount) || 0;
+    } catch (e) {
+      console.error('[Dashboard] Error calculating invoice revenue:', e);
+    }
+
+    // ==================== 9. Agent Voucher Sales (this month) ====================
+    const agentSalesData: { agentId: string; agentName: string; sold: number; revenue: number }[] = [];
+    let agentSalesTotal = { count: 0, revenue: 0 };
+    try {
+      const soldVouchersByAgent = await prisma.hotspotVoucher.findMany({
+        where: {
+          agentId: { not: null },
+          firstLoginAt: { gte: startOfMonth, lt: startOfNextMonth },
+        },
+        select: {
+          agentId: true,
+          agent: { select: { name: true } },
+          profile: { select: { sellingPrice: true } },
+        },
+      });
+
+      const agentMap = new Map<string, { name: string; sold: number; revenue: number }>();
+      for (const v of soldVouchersByAgent) {
+        if (!v.agentId) continue;
+        const entry = agentMap.get(v.agentId) ?? { name: v.agent?.name ?? v.agentId, sold: 0, revenue: 0 };
+        entry.sold += 1;
+        entry.revenue += v.profile?.sellingPrice ?? 0;
+        agentMap.set(v.agentId, entry);
+      }
+
+      for (const [agentId, data] of agentMap.entries()) {
+        agentSalesData.push({ agentId, agentName: data.name, sold: data.sold, revenue: data.revenue });
+        agentSalesTotal.count += data.sold;
+        agentSalesTotal.revenue += data.revenue;
+      }
+      agentSalesData.sort((a, b) => b.sold - a.sold);
+      agentSalesData.splice(5); // top 5 only
+    } catch (e) {
+      console.error('[Dashboard] Error loading agent sales:', e);
+    }
+
+    // ==================== 10. RADIUS Auth Log ====================
+    let radiusAuthLog: { username: string; reply: string; authdate: Date | string }[] = [];
+    let radiusAuthStats = { acceptToday: 0, rejectToday: 0 };
+    try {
+      const startOfToday = startOfDayWIBtoUTC(now);
+
+      [radiusAuthLog, radiusAuthStats.acceptToday, radiusAuthStats.rejectToday] = await Promise.all([
+        prisma.radpostauth.findMany({
+          orderBy: { authdate: 'desc' },
+          take: 15,
+          select: { username: true, reply: true, authdate: true },
+        }),
+        prisma.radpostauth.count({
+          where: { reply: 'Access-Accept', authdate: { gte: startOfToday } },
+        }),
+        prisma.radpostauth.count({
+          where: { reply: 'Access-Reject', authdate: { gte: startOfToday } },
+        }),
+      ]);
+    } catch (e) {
+      console.error('[Dashboard] Error loading RADIUS auth log:', e);
+    }
+
+    // ==================== Recent Activities ====================
+    const activities = await getRecentActivities(10);
+
+    // ==================== System Status ====================
+    const databaseStatus = true;
+    const apiStatus = true;
+
+    // RADIUS status used to be "did any session START in the last hour",
+    // which is not a health check: PPPoE sessions stay up for days, so on a
+    // stable network nobody reconnects within an hour and RADIUS read
+    // offline while running fine. Ask the service manager instead (same
+    // check the FreeRADIUS status page uses — the app and FreeRADIUS share
+    // this host); only if systemctl can't answer, fall back to "accounting
+    // is alive": an open session or any accounting write in the last hour.
+    let radiusStatus = false;
+    try {
+      const { stdout } = await execAsync('systemctl is-active freeradius', { timeout: 3000 });
+      radiusStatus = stdout.trim() === 'active';
+    } catch (err: any) {
+      const out = String(err?.stdout || '').trim();
+      if (out && out !== 'unknown') {
+        // systemctl answered (inactive / failed / activating) — trust it.
+        radiusStatus = false;
+      } else {
+        try {
+          const since = new Date(now.getTime() - 3600000);
+          const alive = await prisma.radacct.findFirst({
+            where: {
+              OR: [
+                { acctstoptime: null },
+                { acctupdatetime: { gte: since } },
+                { acctstarttime: { gte: since } },
+              ],
+            },
+            select: { radacctid: true },
+          });
+          radiusStatus = !!alive;
+        } catch {
+          radiusStatus = false;
+        }
+      }
+    }
+
+    // ==================== Format currency ====================
+    const formatCurrency = (amount: number) =>
+      new Intl.NumberFormat("id-ID", {
+        style: "currency",
+        currency: "IDR",
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0,
+      }).format(amount);
+
+    return {
+      stats: {
+        totalPppoeUsers,
+        activePppoeUsers,
+        activeSessionsPPPoE,
+        activeSessionsHotspot,
+        unusedVouchers,
+        isolatedCount,
+        suspendedCount,
+        newRegistrations,
+        upcomingInvoices,
+        voucherRevenue,
+        voucherRevenueFormatted: formatCurrency(voucherRevenue),
+        voucherRevenueToday,
+        voucherRevenueTodayFormatted: formatCurrency(voucherRevenueToday),
+        invoiceRevenue,
+        invoiceRevenueFormatted: formatCurrency(invoiceRevenue),
+        invoiceRevenueToday,
+        invoiceRevenueTodayFormatted: formatCurrency(invoiceRevenueToday),
+        invoiceCountToday,
+        invoiceCountMonth,
+        unpaidInvoicesCount,
+        totalAllTimeRevenue,
+        totalAllTimeRevenueFormatted: formatCurrency(totalAllTimeRevenue),
+      },
+      activities,
+      systemStatus: {
+        radius: radiusStatus,
+        database: databaseStatus,
+        api: apiStatus,
+      },
+      agentSales: agentSalesData,
+      agentSalesTotal,
+      radiusAuthLog,
+      radiusAuthStats,
+      periodLabel,
+      monthKey,
+      isCurrentMonth,
+    };
+    })(); // end async IIFE
+
+    return NextResponse.json({ success: true, ...result });
+  } catch (error: any) {
+    console.error("Dashboard stats error:", error);
+    return NextResponse.json(
+      { success: false, error: error.message },
+      { status: 500 },
+    );
+  }
+}

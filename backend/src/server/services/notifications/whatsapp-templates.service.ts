@@ -1,0 +1,566 @@
+import 'server-only'
+import { WhatsAppService } from '@/server/services/notifications/whatsapp.service';
+import { prisma } from '@/server/db/client';
+import { getCurrentTimezone } from '@/lib/timezone';
+
+/**
+ * Render template with variables
+ * Replace {{variable}} with actual values
+ */
+function renderTemplate(template: string, variables: Record<string, any>): string {
+  let rendered = template;
+
+  for (const [key, value] of Object.entries(variables)) {
+    const regex = new RegExp(`{{${key}}}`, 'g');
+    rendered = rendered.replace(regex, String(value ?? ''));
+  }
+
+  return rendered;
+}
+
+/**
+ * Format bank accounts (from company.bankAccounts JSON) as WhatsApp text
+ */
+function formatBankAccountsForWA(bankAccounts: any): string {
+  if (!bankAccounts) return '';
+  let accounts: Array<{ bankName?: string; bank?: string; accountNumber?: string; accountName?: string }> = [];
+  try {
+    accounts = Array.isArray(bankAccounts) ? bankAccounts : JSON.parse(String(bankAccounts));
+  } catch {
+    return '';
+  }
+  if (!accounts.length) return '';
+  const lines = accounts.map(a =>
+    `🏦 ${a.bankName || a.bank || '-'}\n   📋 No. Rek: ${a.accountNumber || '-'}\n   👤 A/N: ${a.accountName || '-'}`
+  );
+  return `━━━━━━━━━━━━━━━━━━━━━━\n🏦 *Transfer Manual ke Rekening:*\n${lines.join('\n\n')}`;
+}
+
+/**
+ * Collect and deduplicate all admin phone numbers from:
+ * 1. companies.adminPhone (primary)
+ * 2. admin_users with role SUPER_ADMIN + active + phone set
+ */
+export async function getAdminPhones(): Promise<string[]> {
+  const phones = new Set<string>();
+
+  try {
+    const company = await prisma.company.findFirst({ select: { adminPhone: true } });
+    if (company?.adminPhone) phones.add(company.adminPhone.trim());
+  } catch (_) {}
+
+  try {
+    const superAdmins = await prisma.adminUser.findMany({
+      where: { role: 'SUPER_ADMIN', isActive: true, phone: { not: null } },
+      select: { phone: true },
+    });
+    for (const a of superAdmins) {
+      const p = a.phone?.trim();
+      if (p && p.replace(/\D/g, '').length >= 10) phones.add(p);
+    }
+  } catch (_) {}
+
+  return Array.from(phones);
+}
+
+/**
+ * Send a WhatsApp message to all admin numbers (fire-and-forget).
+ * Sending is done in parallel; errors are silently swallowed.
+ */
+export async function notifyAdminsViaWhatsApp(message: string): Promise<void> {
+  const phones = await getAdminPhones();
+  await Promise.allSettled(
+    phones.map(phone => WhatsAppService.sendMessage({ phone, message }))
+  );
+}
+
+/**
+ * Get template from database by type
+ */
+async function getTemplate(type: string): Promise<string | null> {
+  try {
+    const template = await prisma.whatsapp_templates.findFirst({
+      where: {
+        type,
+        isActive: true,
+      },
+    });
+
+    return template?.message || null;
+  } catch (error) {
+    console.error(`[Template] Failed to fetch template ${type}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Send registration confirmation to customer upon form submission
+ * Notifies the customer that their registration is received and pending review
+ */
+export async function sendRegistrationConfirmation(data: {
+  customerName: string;
+  customerPhone: string;
+  profileName: string;
+  address: string;
+}) {
+  try {
+    const company = await prisma.company.findFirst();
+    const companyName = company?.name || '';
+    const companyPhone = company?.phone || '';
+
+    const templateContent = await getTemplate('registration-confirmation');
+
+    if (!templateContent) {
+      console.warn('[WA] No template found for registration-confirmation');
+      return;
+    }
+
+    const variables = {
+      customerName: data.customerName,
+      phone: data.customerPhone,
+      profileName: data.profileName,
+      address: data.address,
+      companyName,
+      companyPhone,
+    };
+
+    const message = renderTemplate(templateContent, variables);
+
+    await WhatsAppService.sendMessage({
+      phone: data.customerPhone,
+      message,
+    });
+
+    console.log(`[WA] ✅ Registration confirmation sent to ${data.customerPhone}`);
+  } catch (error) {
+    console.error(`[WA] ❌ Failed to send registration confirmation:`, error);
+  }
+}
+
+/**
+ * Send registration approval notification
+ * Includes username, password, and installation info
+ */
+export async function sendRegistrationApproval(data: {
+  customerName: string;
+  customerPhone: string;
+  customerId?: string;
+  username: string;
+  password: string;
+  profileName: string;
+  installationFee: number;
+  invoiceNumber?: string;
+  subscriptionType?: string;
+  dueDate?: Date;
+  paymentLink?: string;
+  totalAmount?: number;
+  address?: string;
+}) {
+  try {
+    const company = await prisma.company.findFirst();
+    const companyName = company?.name || 'SALFANET RADIUS';
+    const companyPhone = company?.phone || '';
+    const bankAccountsText = formatBankAccountsForWA(company?.bankAccounts);
+
+    // Get template from database
+    const templateContent = await getTemplate('registration-approval');
+
+    if (!templateContent) {
+      console.warn('[WA] No template found for registration-approval');
+      return;
+    }
+
+    const dueDateStr = data.dueDate
+      ? data.dueDate.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', timeZone: getCurrentTimezone() })
+      : '-';
+
+    // Prepare variables
+    const variables = {
+      customerName: data.customerName,
+      customerId: data.customerId || '-',
+      username: data.username,
+      password: data.password,
+      profileName: data.profileName,
+      address: data.address || '-',
+      installationFee: `Rp ${data.installationFee.toLocaleString('id-ID')}`,
+      invoiceNumber: data.invoiceNumber || '-',
+      subscriptionType: data.subscriptionType || 'POSTPAID',
+      dueDate: dueDateStr,
+      paymentLink: data.paymentLink || '',
+      amount: data.totalAmount ? `Rp ${data.totalAmount.toLocaleString('id-ID')}` : `Rp ${data.installationFee.toLocaleString('id-ID')}`,
+      bankAccounts: bankAccountsText,
+      companyName,
+      companyPhone,
+    };
+
+    // Render template
+    const message = renderTemplate(templateContent, variables);
+
+    await WhatsAppService.sendMessage({
+      phone: data.customerPhone,
+      message,
+    });
+
+    console.log(`[WA] ✅ Approval notification sent to ${data.customerPhone}`);
+  } catch (error) {
+    console.error(`[WA] ❌ Failed to send approval notification:`, error);
+    // Don't throw - notification failure shouldn't break the flow
+  }
+}
+
+/**
+ * Send installation invoice notification
+ * Includes payment link
+ */
+export async function sendInstallationInvoice(data: {
+  customerName: string;
+  customerPhone: string;
+  invoiceNumber: string;
+  amount: number;
+  paymentLink: string;
+  dueDate: Date;
+  profileName?: string;
+  address?: string;
+}) {
+  try {
+    const company = await prisma.company.findFirst();
+    const companyName = company?.name || 'SALFANET RADIUS';
+    const companyPhone = company?.phone || '';
+    const bankAccountsText = formatBankAccountsForWA(company?.bankAccounts);
+
+    const dueDateStr = data.dueDate.toLocaleDateString('id-ID', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+      timeZone: getCurrentTimezone(),
+    });
+
+    // Get template from database
+    const templateContent = await getTemplate('installation-invoice');
+
+    if (!templateContent) {
+      console.warn('[WA] No template found for installation-invoice');
+      return;
+    }
+
+    // Prepare variables
+    const variables = {
+      customerName: data.customerName,
+      invoiceNumber: data.invoiceNumber,
+      amount: `Rp ${data.amount.toLocaleString('id-ID')}`,
+      dueDate: dueDateStr,
+      paymentLink: data.paymentLink,
+      profileName: data.profileName || '-',
+      address: data.address || '-',
+      bankAccounts: bankAccountsText,
+      companyName,
+      companyPhone,
+    };
+
+    // Render template
+    const message = renderTemplate(templateContent, variables);
+
+    await WhatsAppService.sendMessage({
+      phone: data.customerPhone,
+      message,
+    });
+
+    console.log(`[WA] ✅ Invoice notification sent to ${data.customerPhone}`);
+  } catch (error) {
+    console.error(`[WA] ❌ Failed to send invoice notification:`, error);
+  }
+}
+
+/**
+ * Send admin create user notification
+ * For manually created users by admin
+ */
+export async function sendAdminCreateUser(data: {
+  customerName: string;
+  customerPhone: string;
+  customerId?: string;
+  username: string;
+  password: string;
+  profileName: string;
+  area?: string;
+  address?: string;
+  expiredAt?: Date;
+}) {
+  try {
+    const company = await prisma.company.findFirst();
+    const companyName = company?.name || 'SALFANET RADIUS';
+    const companyPhone = company?.phone || '';
+
+    // Get template from database
+    const templateContent = await getTemplate('admin-create-user');
+
+    if (!templateContent) {
+      console.warn('[WA] No template found for admin-create-user');
+      return;
+    }
+
+    const expiredDateStr = data.expiredAt
+      ? data.expiredAt.toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', timeZone: getCurrentTimezone() })
+      : '-';
+
+    // Prepare variables
+    const variables = {
+      customerName: data.customerName,
+      customerId: data.customerId || '-',
+      username: data.username,
+      password: data.password,
+      profileName: data.profileName,
+      area: data.area || '-',
+      address: data.address || '-',
+      expiredDate: expiredDateStr,
+      companyName,
+      companyPhone,
+    };
+
+    // Render template
+    const message = renderTemplate(templateContent, variables);
+
+    await WhatsAppService.sendMessage({
+      phone: data.customerPhone,
+      message,
+    });
+
+    console.log(`[WA] ✅ Admin create user notification sent to ${data.customerPhone}`);
+  } catch (error) {
+    console.error(`[WA] ❌ Failed to send admin create user notification:`, error);
+    // Don't throw - notification failure shouldn't break the flow
+  }
+}
+
+/**
+ * Send invoice reminder notification
+ * For monthly recurring invoices - supports both pending (upcoming) and overdue invoices
+ */
+export async function sendInvoiceReminder(data: {
+  phone: string;
+  customerName: string;
+  customerId?: string;
+  customerUsername?: string;
+  profileName?: string;
+  area?: string;
+  address?: string;
+  invoiceNumber: string;
+  amount: number;
+  dueDate: Date | string; // Accept both Date and string
+  paymentLink: string;
+  companyName: string;
+  companyPhone: string;
+  isOverdue?: boolean; // Optional flag to use overdue template
+  daysOverdue?: number; // Optional override for days overdue
+}) {
+  try {
+    // Ensure dueDate is a Date object
+    const dueDateObj = data.dueDate instanceof Date ? data.dueDate : new Date(data.dueDate);
+
+    const dueDateStr = dueDateObj.toLocaleDateString('id-ID', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+      timeZone: getCurrentTimezone(),
+    });
+
+    // Calculate days remaining or overdue
+    const now = new Date();
+    const diffTime = dueDateObj.getTime() - now.getTime();
+    const daysDiff = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    // Determine if overdue (either by flag or by calculation)
+    const isOverdue = data.isOverdue !== undefined ? data.isOverdue : daysDiff < 0;
+    // Use provided daysOverdue or calculate from date difference
+    const daysOverdue = data.daysOverdue !== undefined ? data.daysOverdue : Math.abs(daysDiff);
+    const daysRemaining = daysDiff > 0 ? daysDiff : 0;
+
+    // Get appropriate template from database
+    const templateType = isOverdue ? 'invoice-overdue' : 'invoice-reminder';
+    let templateContent = await getTemplate(templateType);
+
+    // Fallback to invoice-reminder if overdue template not found
+    if (!templateContent && isOverdue) {
+      console.warn('[WA] No template found for invoice-overdue, using invoice-reminder');
+      templateContent = await getTemplate('invoice-reminder');
+    }
+
+    if (!templateContent) {
+      console.warn(`[WA] No template found for ${templateType}`);
+      return false;
+    }
+
+    // Fetch bank accounts for payment templates
+    const company = await prisma.company.findFirst({ select: { bankAccounts: true } });
+    const bankAccountsText = formatBankAccountsForWA(company?.bankAccounts);
+
+    // Prepare variables (supports both templates)
+    const variables = {
+      customerName: data.customerName,
+      customerId: data.customerId || '-',
+      username: data.customerUsername || '-',
+      profileName: data.profileName || '-',
+      area: data.area || '-',
+      address: data.address || '-',
+      invoiceNumber: data.invoiceNumber,
+      amount: `Rp ${data.amount.toLocaleString('id-ID')}`,
+      dueDate: dueDateStr,
+      daysRemaining: daysRemaining.toString(),
+      daysOverdue: daysOverdue.toString(),
+      paymentLink: data.paymentLink,
+      bankAccounts: bankAccountsText,
+      companyName: data.companyName,
+      companyPhone: data.companyPhone,
+    };
+
+    // Render template
+    const message = renderTemplate(templateContent, variables);
+
+    await WhatsAppService.sendMessage({
+      phone: data.phone,
+      message,
+    });
+
+    const status = isOverdue ? 'overdue' : 'reminder';
+    console.log(`[WA] ✅ Invoice ${status} sent to ${data.phone}`);
+    return true;
+  } catch (error) {
+    console.error(`[WA] ❌ Failed to send invoice reminder:`, error);
+    throw error; // Re-throw to let cron handle it
+  }
+}
+
+/**
+ * Send payment success notification
+ * Account activated
+ */
+export async function sendPaymentSuccess(data: {
+  customerName: string;
+  customerPhone: string;
+  customerId?: string;
+  username: string;
+  password: string;
+  profileName: string;
+  area?: string;
+  address?: string;
+  invoiceNumber: string;
+  amount: number;
+  newExpiredAt?: Date | string | null;
+}) {
+  try {
+    const company = await prisma.company.findFirst();
+    const companyName = company?.name || 'SALFANET RADIUS';
+    const companyPhone = company?.phone || '';
+
+    // Get template from database
+    const templateContent = await getTemplate('payment-success');
+
+    if (!templateContent) {
+      console.warn('[WA] No template found for payment-success');
+      return;
+    }
+
+    // Format expired date for ID locale
+    const expiredDate = data.newExpiredAt
+      ? new Date(data.newExpiredAt).toLocaleDateString('id-ID', {
+          day: '2-digit',
+          month: 'long',
+          year: 'numeric',
+          timeZone: getCurrentTimezone(),
+        })
+      : '-';
+
+    // Prepare variables
+    const variables = {
+      customerName: data.customerName,
+      customerId: data.customerId || '-',
+      username: data.username,
+      password: data.password,
+      profileName: data.profileName,
+      area: data.area || '-',
+      address: data.address || '-',
+      invoiceNumber: data.invoiceNumber,
+      amount: `Rp ${data.amount.toLocaleString('id-ID')}`,
+      expiredDate,
+      companyName,
+      companyPhone,
+    };
+
+    // Render template
+    const message = renderTemplate(templateContent, variables);
+
+    await WhatsAppService.sendMessage({
+      phone: data.customerPhone,
+      message,
+    });
+
+    console.log(`[WA] ✅ Payment success notification sent to ${data.customerPhone}`);
+  } catch (error) {
+    console.error(`[WA] ❌ Failed to send payment success notification:`, error);
+  }
+}
+
+/**
+ * Send auto-renewal success notification
+ * Sent when prepaid user is auto-renewed from balance
+ */
+export async function sendAutoRenewalSuccess(data: {
+  customerName: string;
+  customerPhone: string;
+  customerId?: string;
+  username: string;
+  profileName: string;
+  area?: string;
+  address?: string;
+  amount: number;
+  newBalance: number;
+  expiredDate: Date;
+}) {
+  try {
+    const company = await prisma.company.findFirst();
+    const companyName = company?.name || 'SALFANET RADIUS';
+    const companyPhone = company?.phone || '';
+
+    const expiredDateStr = data.expiredDate.toLocaleDateString('id-ID', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+      timeZone: getCurrentTimezone(),
+    });
+
+    // Get template from database
+    const templateContent = await getTemplate('auto-renewal-success');
+
+    if (!templateContent) {
+      console.warn('[WA] No template found for auto-renewal-success');
+      return;
+    }
+
+    // Prepare variables
+    const variables = {
+      customerName: data.customerName,
+      customerId: data.customerId || '-',
+      username: data.username,
+      profileName: data.profileName,
+      area: data.area || '-',
+      address: data.address || '-',
+      amount: `Rp ${data.amount.toLocaleString('id-ID')}`,
+      newBalance: `Rp ${data.newBalance.toLocaleString('id-ID')}`,
+      expiredDate: expiredDateStr,
+      companyName,
+      companyPhone,
+    };
+
+    // Render template
+    const message = renderTemplate(templateContent, variables);
+
+    await WhatsAppService.sendMessage({
+      phone: data.customerPhone,
+      message,
+    });
+
+    console.log(`[WA] ✅ Auto-renewal notification sent to ${data.customerPhone}`);
+  } catch (error) {
+    console.error(`[WA] ❌ Failed to send auto-renewal notification:`, error);
+  }
+}

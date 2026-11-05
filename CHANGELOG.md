@@ -1,0 +1,3940 @@
+# Changelog
+
+All notable changes to Salfanet RADIUS are documented in this file.  
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).  
+Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [5.22.0] - 2026-10-15 - QRIS Mandiri untuk Semua Transaksi + Aplikasi Admin & Pelanggan Native + Biaya Operasional
+
+### Summary
+Rilis besar setelah 5.21.0 (130 commit). QRIS Mandiri kini dipakai untuk semua jenis pembayaran dengan satu jalur pelunasan yang sama seperti payment gateway, QRIS Listener jauh lebih andal dan mengumumkan pembayaran dengan suara, aplikasi Android native untuk admin dan pelanggan (Flutter) dengan push FCM, halaman Biaya Operasional, perbaikan besar OLT ZTE dan GenieACS, serta sejumlah perbaikan keamanan.
+
+### Pembayaran & QRIS Mandiri
+- **[FEATURE]** QRIS Mandiri tersedia untuk tagihan, top-up saldo, pembelian voucher online, upgrade paket, dan deposit agen: QR dinamis dengan kode unik, berlaku 15 menit, halaman bayar `/pay/qris/{orderId}`
+- **[FIX]** Pembayaran QRIS dilunasi lewat jalur yang sama dengan payment gateway (invoice, top-up, voucher, deposit agen), termasuk notifikasi dan pencatatan keuangan
+- **[FIX]** Top-up pelanggan benar-benar menambah saldo
+- **[SECURITY]** Notifikasi QRIS wajib bertanda tangan HMAC (Device Secret), dengan proteksi replay (nonce + jendela waktu 5 menit) dan perbandingan constant-time
+- **[FIX]** Satu jalur pelunasan deposit agen; webhook deposit agen memakai handler webhook utama
+- **[FIX]** Nomor pesanan voucher aman dari tabrakan (retry otomatis)
+- **[FIX]** Midtrans yang mengarahkan browser ke URL webhook tidak lagi menghasilkan 405
+- **[FIX]** Redirect pembayaran memakai domain publik, bukan origin proxy internal
+- **[UI]** Device Key dan Device Secret QRIS terlihat di halaman Payment Gateway (salin, tampilkan/sembunyikan, buat secret baru)
+- **[FEATURE]** Endpoint `qris-notify` menjawab GET dengan pesan status dan punya mode tes koneksi
+
+### QRIS Listener (APK Android)
+- **[FIX]** Notifikasi DANA ("Pembayaran Masuk", "Rp... diterima DANA Bisnis") tertangkap; judul notifikasi bergaya kini terbaca
+- **[FIX]** Service tetap hidup: heartbeat tiap 5 menit, watchdog memaksa Android mengikat ulang listener yang dimatikan sistem, antrean kirim ulang saat server tidak terjangkau
+- **[FIX]** Status "Aktif" dihitung dari heartbeat, bukan flag lama yang tetap "Terhubung" setelah service mati
+- **[FEATURE]** Tombol Tes Koneksi Server untuk memeriksa Device Key dan Device Secret
+- **[FEATURE]** Tombol Izinkan Autostart untuk Xiaomi, Oppo, Vivo, Realme, Huawei
+- **[FEATURE]** Pembayaran diumumkan dengan suara Bahasa Indonesia ("Pembayaran DANA diterima, tiga ribu delapan puluh enam rupiah") lewat volume media, menggantikan nada alarm; bisa dimatikan dan dites
+- **[FIX]** Build APK dari web: waktu build sesuai jam server, listener berhasil dikompilasi, pesan gagal lebih jelas
+
+### Aplikasi Admin Android (Flutter, baru)
+- **[FEATURE]** Aplikasi admin native di `mobile/admin_app` dengan tambah, ubah, hapus untuk semua modul admin web
+- **[FEATURE]** Laporan, pelanggan terisolir, fiber trace, Biaya Operasional
+- **[FEATURE]** Push notifikasi FCM untuk admin
+- **[FIX]** Semua data termuat (paginasi penuh), bukan hanya halaman pertama
+- **[UI]** Garis dan border lebih jelas, dashboard lebih lengkap, ikon aplikasi dari logo perusahaan
+- **[UI]** Program referral bernama "Ajak Teman"
+- **[FIX]** Layar yang tidak bisa di-scroll sampai bawah
+
+### Aplikasi Pelanggan Android (Flutter, baru)
+- **[FEATURE]** Aplikasi pelanggan native: tagihan, PDF invoice, tiket dengan GPS, branding operator dinamis, alamat server bisa diatur
+- **[FEATURE]** Push notifikasi FCM yang bisa diketuk; broadcast admin dan statistik dashboard memakai FCM
+- **[FEATURE]** Link unduh aplikasi Android di halaman login dan sidebar portal pelanggan
+
+### Keuangan & Billing
+- **[FEATURE]** Halaman Biaya Operasional (alat, bandwidth, gaji, dan lainnya) di web dan aplikasi admin
+- **[FEATURE]** Laporan pendapatan per paket
+- **[FIX]** Pelanggan prabayar tidak ditagih sebelum bulan expired-nya
+- **[FEATURE]** Cron membatalkan otomatis tagihan basi untuk pelanggan yang sudah diperpanjang
+- **[FIX]** Format nomor invoice seragam di seluruh sistem
+- **[FEATURE]** Lokasi GPS dicatat pada janji bayar
+
+### OLT & GenieACS
+- **[FIX]** ZTE C320 V2.1: discovery SNMP per port, rumus RX power, status (termasuk Dying Gasp/LOS) dan jarak lewat Telnet
+- **[FEATURE]** ZTE C320 V2.2: kesehatan chassis, TX power dan jarak ONU
+- **[FIX]** Penomoran port PON, port uplink SMXA, slot uplink standby
+- **[FIX]** OLT baru tidak lagi tertahan "Offline"; tes koneksi SNMP berfungsi; poller Telnet 3,1x lebih cepat
+- **[FIX]** Jumlah ONU tidak lagi dobel karena baris unregistered lama; staf bisa menghapus baris basi
+- **[UI]** Detail ONU didesain ulang berdasarkan kondisi ONU
+- **[FIX]** GenieACS: band 2.4GHz ONT WiFi 6 tidak lagi hilang, field detail perangkat lintas vendor terisi, mode PON, RX power dan voltase di daftar
+- **[SECURITY]** Peringatan NBI GenieACS tanpa autentikasi, dan port 7557 di-firewall otomatis oleh installer
+
+### RADIUS & MikroTik
+- **[FIX]** Status online, kesehatan RADIUS, IP/MAC sesi, dan error 500 pada detail
+- **[FIX]** Sinkronisasi NAS-client FreeRADIUS tidak lagi terlewat, dengan fallback live ke MikroTik
+- **[FIX]** Error socket RouterOS API tidak lagi menghentikan proses
+- **[FIX]** Uptime dari router lebih dipercaya daripada radacct yang tidak lengkap
+
+### Hotspot
+- **[FEATURE]** Template voucher bawaan termasuk 50 dan 60 per A4, Kartu Standar 50 per A4, ganti warna satu klik
+
+### Notifikasi
+- **[FIX]** Notifikasi admin dan pelanggan terkirim di setiap jalur pelunasan pembayaran
+- **[FIX]** Template pengingat, isolir, dan pembayaran berisi data pelanggan lengkap (paket, area, ID pelanggan)
+- **[FIX]** Bel notifikasi teknisi dan kolektor tidak crash saat polling
+- **[FEATURE]** Bot Telegram dua arah untuk teknisi (cek redaman, cek pelanggan)
+- **[FEATURE]** Banner promo slideshow di dashboard pelanggan
+
+### Keamanan
+- **[SECURITY]** Patch dua celah RCE Next.js tanpa autentikasi; kerentanan dependensi 27 menjadi 0
+- **[SECURITY]** Autentikasi wajib pada mutasi admin yang belum terlindungi, tiket, dan pesan tiket; hook RADIUS hanya dari localhost
+
+### Web UI
+- **[UI]** Latar logo login seragam di semua portal (tile putih solid di kedua tema, fallback ukuran sama)
+- **[UI]** Komponen toggle seragam; perbaikan audit UI frontend
+- **[FIX]** Padding bawah halaman admin dan kolektor
+
+### Sistem
+- **[FIX]** Versi aplikasi di web tidak lagi tertahan: file `VERSION` lama dari instalasi ZIP tidak menimpa versi yang lebih baru, folder aplikasi dicari dari lokasi server yang berjalan, dan endpoint health melaporkan versi yang sama
+- **[CHORE]** Bump versi root, frontend, dan backend ke 5.22.0
+- **[FIX]** Semua error typecheck backend dan frontend diselesaikan; lint backend berfungsi kembali
+
+---
+
+## [5.21.0] — 2026-09-15 — Hotspot Session Sync Fixes + Dashboard Log Centralization + Invoice/PWA Fixes
+
+### Summary
+Perbaikan besar pada sinkronisasi sesi hotspot voucher dengan RADIUS (ghost session, timeleft, expired voucher), sentralisasi log aktivitas/RADIUS/system status ke halaman terpisah, fix generate tagihan PREPAID per bulan, dan PWA icon otomatis dari company logo.
+
+### Hotspot Voucher Session Sync
+- **[CRITICAL]** Voucher EXPIRED masih terbaca online di monitoring — synthetic radacct tidak pernah ditutup
+- **[FIX]** Cron menutup radacct voucher EXPIRED — voucher kadaluarsa hilang dari active session dan ditolak RADIUS
+- **[FIX]** `pppoe_session_sync` salah menutup radacct voucher hotspot sebagai "stale"
+- **[FIX]** Synthetic radacct hanya dibuat untuk voucher yang benar-benar terhubung di MikroTik active list
+- **[FIX]** `timeleft` voucher dipertahankan saat migrasi RADIUS dan re-authentication — tidak reset ke validity penuh
+- **[FIX]** Waiting voucher mendapat full profile validity sebagai `Session-Timeout`; active voucher memakai sisa waktu dari DB
+
+### RADIUS & Session Monitoring
+- **[FIX]** Bulk migrate/sync RADIUS sekarang benar-benar disable PPP secrets + sync profile attributes (radreply)
+- **[FIX]** PPPoE active sessions tidak tampil di dashboard untuk router mode RADIUS
+- **[FIX]** Uptime & start time FreeRADIUS salah parsing timezone WIB
+- **[FIX]** Audit API role agent/technician/customer setelah migrasi RADIUS
+- **[FEATURE]** RADIUS server memilih IP private/local VPS, bukan IP publik — NAS MikroTik dikenali FreeRADIUS
+
+### Dashboard & Navigasi
+- **[FEATURE]** Activity Log, RADIUS Auth Log, dan System Status dipindah dari dashboard ke halaman terpusat
+- **[FEATURE]** Halaman baru `/admin/freeradius/auth-log` — log autentikasi RADIUS dari tabel `radpostauth` (stats accept/reject, filter, search, pagination)
+- **[UI]** Kategori menu sidebar default expanded
+- **[UI]** Menu Laporan dipindah ke kategori Keuangan, label diubah jadi "Export Data"
+- **[CHORE]** Halaman analitik laporan dihapus — tidak relevan untuk perusahaan kecil
+
+### Billing
+- **[CRITICAL]** Generate tagihan PREPAID mengabaikan bulan target — `dueDate = user.expiredAt` mentah, sehingga generate Oktober membuat invoice due November dan generate November di-skip sebagai duplikat
+- **[FIX]** PREPAID `dueDate` = tanggal expired di bulan target (manual generate + cron `invoice_generate`)
+- **[FIX]** Filter bulan list invoice untuk tagihan belum bayar memakai `dueDate` (periode tagihan), bukan `createdAt`
+- **[UI]** Setelah generate sukses, filter bulan otomatis pindah ke bulan target
+
+### PWA
+- **[FEATURE]** Icon PWA otomatis dari company logo — endpoint `/api/pwa/icon` resize logo via `sharp`
+- **[FIX]** Logo tersimpan sebagai `/api/uploads/...` tidak dikenali resolver — selalu jatuh ke icon statis
+- **[FEATURE]** Icon maskable (padding zona aman + background opak) dan apple-touch-icon 180px dinamis
+- **[CHORE]** Bump service worker cache ke v30
+
+### UI & Laporan
+- **[UI]** Redesign modal Detail/Edit Pelanggan — seksi berkelompok (Akun & Koneksi, Data Pelanggan, Langganan & Tagihan, Dokumen, Pendaftaran), pill status, tab underline, footer sticky; hapus 60 override warna hardcoded yang rusak di dark mode
+- **[FIX]** Background logo login semua role + sidebar jadi `bg-white/90` — logo gelap terlihat di kedua tema
+- **[FIX]** Data laporan/export diterjemahkan ke Bahasa Indonesia (status invoice/pelanggan, tipe langganan, metode pembayaran)
+
+### Cleanup
+- **[CHORE]** Hapus konfigurasi AI agent, script debug, dan file non-production dari repo
+- **[CHORE]** Bump root & frontend package.json version ke 5.21.0
+
+---
+
+## [5.20.0] — 2026-09-07 — Bulk Edit PPPoE + Migrasi Local→RADIUS + UI Icon Audit
+
+### Summary
+Tiga fitur besar: (1) Bulk edit pelanggan PPPoE untuk Router/Hari Tagihan/Auto Isolasi, (2) Migrasi satu-klik dari auth mode LOCAL ke RADIUS dengan sync otomatis semua data pelanggan, dan (3) Audit UI menambahkan ikon Lucide ke empty states, page headers, status badges, dan modal sections di semua role.
+
+### Bulk Edit Pelanggan PPPoE
+- **[FEATURE]** Tombol "Edit" di bulk action bar pada halaman Data Pelanggan — ubah Router, Hari Tagihan (1-28), dan Auto Isolasi untuk multiple pelanggan sekaligus
+- **[FEATURE]** Endpoint `PUT /api/pppoe/users/bulk-update` — update massal `routerId`, `billingDay`, `autoIsolationEnabled`
+- **[FEATURE]** Saat router berubah, backend otomatis: hapus RADIUS entries di NAS lama, buat di NAS baru, manage MikroTik PPP secret (disable di router lama, enable di router baru), CoA disconnect semua sesi aktif
+- **[UI]** Modal bulk edit dengan opsi "— Tidak berubah —" per field, konfirmasi sebelum apply, summary hasil
+
+### Migrasi Local → RADIUS Auth
+- **[FEATURE]** Tombol "Migrate to RADIUS" di halaman Router (hanya muncul saat `authMode = local`) — migrasi satu-klik
+- **[FEATURE]** Endpoint `POST /api/pppoe/users/bulk-migrate-radius` — migrasi router dari local ke RADIUS:
+  - Ubah `router.authMode` dari `local` → `radius`
+  - Re-sync SEMUA pelanggan ke RADIUS tables (`radcheck`, `radusergroup`, `radreply`)
+  - Disable PPP secrets di MikroTik (sebagai backup, RADIUS jadi primary)
+  - Reload FreeRADIUS
+  - CoA disconnect semua sesi aktif untuk re-auth via RADIUS
+- **[FEATURE]** Tombol "Re-sync RADIUS" di halaman Router — perbaiki data RADIUS yang tidak sinkron tanpa ubah authMode
+- **[FEATURE]** Endpoint `POST /api/pppoe/users/bulk-sync-radius` — re-sync semua user ke RADIUS tables untuk router tertentu atau semua router
+- **[DOCS]** Penjelasan arsitektur auth mode (local vs RADIUS) di README
+
+### UI Icon Audit (Lucide)
+- **[UI]** Tambah ikon Lucide ke 12 empty states yang sebelumnya text-only (radcheck, manual-payments, keuangan, stopped PPPoE, balance, bank-accounts, hotspot templates/profiles/vouchers/evouchers/agents, pay-manual)
+- **[UI]** Tambah ikon ke page headers admin (invoices, pppoe users, tickets, whatsapp send/providers/notifications, settings/security)
+- **[UI]** Tambah ikon ke customer invoice status badges (Lunas/Jatuh Tempo/Menunggu/Ditolak/Belum Bayar)
+- **[UI]** Tambah ikon ke UserDetailModal section headers (KTP, Foto Instalasi, Layanan Tambahan, Janji Bayar) + empty states + action buttons
+- **[UI]** Tambah AlertCircle ke error alerts di customer/technician/collector login pages
+- **[UI]** Tambah Wallet icon ke agent balance card label
+- **[UI]** Tambah ikon ke collector my-collections stat cards (Receipt/Wallet/Banknote/ArrowRightLeft)
+
+### Other
+- **[CHORE]** Bump service worker cache ke v28
+- **[CHORE]** Bump root & frontend package.json version ke 5.20.0
+
+---
+
+## [5.19.1] — 2026-09-06 — Rekap Voucher Rombak + PPPoE Profile Sync + CSP Fix
+
+### Summary
+Rombak total laporan Rekap Voucher agar support penjualan harian/mingguan/bulanan berdasarkan tanggal terjual (`firstLoginAt`), bukan tanggal batch dibuat (`createdAt`). Fix PPPoE user stuck di profile isolir setelah restore. Fix Cloudflare Web Analytics CSP error. Cleanup file debug/temp dari repo.
+
+### Rekap Voucher — Rombak Laporan Penjualan
+- **[FEATURE]** Filter periode (Harian/Mingguan/Bulanan) sekarang filter by `firstLoginAt` (tanggal voucher terjual/digunakan), bukan `createdAt` (tanggal batch dibuat)
+- **[FEATURE]** Mode "Semua Data" tetap filter by `createdAt` dengan full batch counts (qty, stock, sold, active, expired)
+- **[FEATURE]** Tabel "Rincian Penjualan per Hari" — rincian penjualan per tanggal dalam periode (sold, active, expired, revenue)
+- **[FEATURE]** Tabel "Pendapatan per Agent" — summary terjual & profit per agent
+- **[FEATURE]** Export Excel ikut rombak — konsisten dengan API
+- **[FEATURE]** Support both RADIUS NAS (`post-auth` hook set `firstLoginAt`) dan Local NAS (sync dari MikroTik `/system/script` format `user/price/sales/date/time/phone/seller`)
+- **[UI]** Rombak tampilan lebih simple & clean — hilangkan efek neon/glow/blur berlebihan, compact stat pills, responsive card/table
+- **[FIX]** colSpan tfoot mode "Semua" (8 → 6) agar baris Total sejajar dengan kolom
+- **[FIX]** `whitespace-nowrap` + `min-w` di semua tabel agar kolom tidak wrap/truncate
+
+### PPPoE Profile Synchronization
+- **[CRITICAL]** User active di DB tapi MikroTik masih pakai profile `isolir` setelah restore — session tidak di-kick, RouterOS retain profile lama
+- **[FIX]** Kick active PPPoE session saat restore dari isolated/blocked/stop ke active (`status/route.ts`, `bulk-status/route.ts`)
+- **[FIX]** CoA handler: gunakan router user yang sebenarnya untuk MikroTik API fallback kick (`coa-handler.service.ts`)
+- **[FIX]** `runSuspendCheck`: sync RADIUS + MikroTik saat manual suspend
+- **[FEATURE]** Reconciliation script: cek MikroTik PPP secret langsung, repair RADIUS group + MikroTik secret profile, kick affected sessions (`profile-sync-repair.service.ts`)
+
+### Cloudflare Web Analytics CSP Fix
+- **[FIX]** `VM... startTime` error dari Cloudflare beacon.min.js yang inject `reportAllChanges`
+- **[FIX]** Remove `https://static.cloudflareinsights.com` dan `https://cloudflareinsights.com` dari CSP `script-src` dan `connect-src` di `frontend/next.config.ts`
+
+### Project Cleanup
+- **[CHORE]** Remove 18 file debug/temp dari git tracking (`.check-*`, `.debug-*`, `.test-*`, `.commit-msg-*`, `.trigger-*`)
+- **[CHORE]** Update `.gitignore` untuk mencegah file debug/temp ter-commit lagi
+- **[CHORE]** Update README — tambah info Rekap Voucher di feature table
+
+---
+
+## [5.19.0] — 2026-09-01 — Payment Webhook Fixes & HOTSPOT Isolation/Reactivation Support
+
+### Summary
+Audit dan perbaikan menyeluruh untuk payment webhook (Midtrans), payment success page, dan isolasi/reactivation user untuk kedua mode autentikasi (RADIUS & local MikroTik). Perbaikan bug kritis pada orderId parsing, variable shadowing yang mencegah RADIUS reactivation, serta penambahan dukungan HOTSPOT connectionType untuk isolasi dan reaktivasi di semua route.
+
+### Bug Fixes
+- **[CRITICAL]** Webhook `orderId` parsing tidak strip trailing hex segment — invoice tidak ditemukan, status tetap PENDING. Fix: strip semua trailing segments (timestamp + hex)
+- **[CRITICAL]** `wasDisabled` variable shadowing di `handleInvoicePayment` — `const wasDisabled` di dalam block shadowing outer `let wasDisabled`, menyebabkan RADIUS reactivation tidak pernah berjalan untuk user isolated/suspended. Fix: gunakan assignment `wasDisabled =` bukan `const wasDisabled`
+- **[CRITICAL]** HOTSPOT connectionType tidak ditangani di semua route reaktivasi (webhook, mark-paid, status, bulk-status, extend, invoices PUT) — user Hotspot local mode yang diisolir tidak bisa di-reactivate. Fix: cek `connectionType`, HOTSPOT → `manageHotspotUser(disabled=false)` + `kickHotspotSession`
+- **[FIX]** Invoice DELETE gagal karena foreign key constraints. Fix: hapus semua related records (manualPayment, paymentProof, invoiceAddon, paymentAttempt, registrationRequest, qrisPending) sebelum hapus invoice
+- **[FIX]** Missing translation keys di payment pages. Fix: tambah top-level `payment` section di `id.json`
+- **[FIX]** Payment success page tidak menampilkan data invoice/user lengkap. Fix: tambah user relation & customerUsername di invoice check response
+- **[FIX]** Race condition antara webhook dan frontend polling. Fix: tambah polling retry (5x, 2s delay) di payment success page
+- **[FIX]** Type error: `user.profileId` (string | null) tidak assignable ke `profileId: string`. Fix: coerce dengan `?? ''`
+
+### Features
+- **[FEATURE]** ConnectionType-aware isolation & reactivation — semua route sekarang mengecek `user.connectionType` dan menggunakan `manageHotspotUser`/`kickHotspotSession` untuk HOTSPOT atau `managePppSecret`/`kickPppoeSession` untuk PPPoE/STATIC_IP
+
+### Files Changed
+- `backend/src/app/api/payment/webhook/route.ts` — fix orderId parsing, wasDisabled shadowing, HOTSPOT reactivation, type fix
+- `backend/src/app/api/payment/check-order/route.ts` — fix parseInvoiceNumberFromOrder
+- `backend/src/app/api/invoices/check/route.ts` — add user relation & customerUsername
+- `backend/src/app/api/invoices/route.ts` — fix DELETE foreign keys, HOTSPOT reactivation in PUT
+- `backend/src/app/api/pppoe/users/[id]/mark-paid/route.ts` — HOTSPOT reactivation
+- `backend/src/app/api/pppoe/users/status/route.ts` — HOTSPOT enable/disable + kick
+- `backend/src/app/api/pppoe/users/bulk-status/route.ts` — HOTSPOT enable/disable + kick
+- `backend/src/app/api/pppoe/users/[id]/extend/route.ts` — HOTSPOT re-enable + kick
+- `frontend/src/app/payment/success/page.tsx` — polling retry
+- `frontend/src/locales/id.json` — payment translation keys
+
+---
+
+## [5.18.0] — 2026-08-31 — Notification & Push Notification System Audit
+
+### Summary
+Audit menyeluruh dan perbaikan sistem notifikasi dan push notification untuk semua portal (Admin, Agent, Customer, Technician, Collector). Perbaikan bug kritis dispatch push, vulnerability keamanan pada route agent, integrasi push ke cron jobs, serta penambahan push toggle dan in-app notification untuk collector.
+
+### Security
+- **[CRITICAL]** Agent push subscribe/unsubscribe route menerima `agentId` dari request body tanpa verifikasi — sekarang menggunakan `requireAgentAuth` dan mengambil `agentId` dari JWT token yang terverifikasi
+
+### Bug Fixes
+- **[CRITICAL]** Admin push subscriptions dikirim saat `recipientRole=technician` — push sekarang hanya dikirim ke admin subs ketika `recipientRole` adalah `admin` atau `all`
+- **[FIX]** Service worker notification click redirect hardcoded ke `/customer` — sekarang menggunakan `data.url`/`data.link` dari payload, fallback ke `/`
+
+### Features
+- **[FEATURE]** Admin push toggle di admin panel — komponen `AdminPushToggle.tsx` di user menu dropdown, route `/api/push/admin-subscribe` & `/api/push/admin-unsubscribe` dengan `checkAuth`
+- **[FEATURE]** Admin sebagai recipient role di broadcast push notifications page — type notification, quick templates, dan template content khusus admin
+- **[FEATURE]** Agent push toggle di sidebar — komponen `AgentPushToggle.tsx` dengan subscribe/unsubscribe via `apiAgent`
+- **[FEATURE]** Push notification terintegrasi di cron jobs: invoice reminder (overdue + reminder), auto-isolir (isolation-notice), auto-renewal (auto-renewal-success)
+- **[FEATURE]** `createAgentNotificationAndPush` helper — centralizes agent notification creation + web push sending, menggantikan semua `prisma.agentNotification.create` calls di 8 file
+- **[FEATURE]** Customer notification read state server-side — model `customerNotificationRead` di Prisma, PATCH endpoint untuk mark-as-read, `unreadCount` & `isRead` dari server
+- **[FEATURE]** Collector notification system — API `/api/collector/notifications` (derived dari payments, ONT tasks, tickets), komponen `CollectorNotificationBell.tsx` dengan push toggle + notification dropdown
+- **[FEATURE]** Technician notifications API — `/api/technician/notifications` dengan structured data dari tickets dan ONT tasks
+- **[FEATURE]** Service worker cache bumped to v17 untuk force update
+
+### Files Changed
+- `backend/src/server/services/push-notification.service.ts` — fix admin push dispatch logic, add 'admin' to recipientRole type
+- `backend/src/app/api/push/agent-subscribe/route.ts` — add `requireAgentAuth`
+- `backend/src/app/api/push/agent-unsubscribe/route.ts` — add `requireAgentAuth`
+- `backend/src/app/api/push/admin-subscribe/route.ts` — new route
+- `backend/src/app/api/push/admin-unsubscribe/route.ts` — new route
+- `backend/src/server/services/agent-notification.service.ts` — new helper
+- `backend/src/server/cron/invoice-jobs.ts` — add push for invoice reminders + auto-renewal
+- `backend/src/server/cron/auto-isolir.ts` — add push for isolation notices
+- `backend/src/app/api/admin/agent-deposits/route.ts` — use `createAgentNotificationAndPush`
+- `backend/src/app/api/agent/deposit/webhook/route.ts` — use `createAgentNotificationAndPush`
+- `backend/src/app/api/agent/generate-voucher/route.ts` — use `createAgentNotificationAndPush`
+- `backend/src/app/api/agent/deposit/manual-request/route.ts` — use `createAgentNotificationAndPush`
+- `backend/src/app/api/hotspot/agents/balance/route.ts` — use `createAgentNotificationAndPush`
+- `backend/src/server/services/hotspot.service.ts` — use `createAgentNotificationAndPush`
+- `backend/src/app/api/hotspot/voucher/bulk-delete/route.ts` — use `createAgentNotificationAndPush`
+- `backend/src/app/api/hotspot/voucher/delete-multiple/route.ts` — use `createAgentNotificationAndPush`
+- `backend/src/app/api/hotspot/voucher/[id]/route.ts` — use `createAgentNotificationAndPush`
+- `backend/src/app/api/customer/notifications/route.ts` — add PATCH mark-as-read, server-side read state
+- `backend/src/app/api/technician/notifications/route.ts` — new route
+- `backend/src/app/api/collector/notifications/route.ts` — new route
+- `backend/prisma/schema.prisma` — add `customerNotificationRead` model
+- `frontend/src/components/admin/AdminPushToggle.tsx` — new component
+- `frontend/src/components/agent/AgentPushToggle.tsx` — new component
+- `frontend/src/components/collector/CollectorNotificationBell.tsx` — new component
+- `frontend/src/app/admin/AdminClientLayout.tsx` — add `AdminPushToggle` to user menu
+- `frontend/src/app/agent/AgentLayoutClient.tsx` — add `AgentPushToggle` to sidebar
+- `frontend/src/app/collector/CollectorPortalLayout.tsx` — add `CollectorNotificationBell` to header
+- `frontend/src/app/customer/CustomerClientLayout.tsx` — server-side read state, `markAllAsRead` on bell open
+- `frontend/src/app/admin/push-notifications/page.tsx` — add 'admin' recipient role
+- `frontend/public/sw.js` — role-based redirect, cache v17
+- `package.json` — version bump to 5.18.0
+- `frontend/package.json` — version bump to 5.18.0
+- `README.md` — version update
+- `CHANGELOG.md` — this entry
+
+### Schema Changes
+- New model `customerNotificationRead` — table `customer_notification_reads` with `userId`, `eventKey`, `readAt`, unique constraint on `[userId, eventKey]`
+- Auto-applied via `prisma db push` on VPS update
+
+### Deployment
+```bash
+cd /var/www/salfanet-radius
+git pull origin master
+# updater.sh handles: pnpm install, prisma generate, prisma db push, build, PM2 restart
+bash frontend/vps-install/updater.sh --branch master
+```
+
+---
+
+## [5.17.0] — 2026-08-30 — Bulk Import Fixes, Null-Safe Profile Access & Auto-Refresh
+
+### Summary
+Perbaikan komprehensif untuk fitur import pelanggan PPPoE: error 400 saat import, crash frontend saat menampilkan/mengedit user tanpa profile, data tidak auto-refresh setelah import, serta cleanup project dari file temporary.
+
+### Fixes
+- **[CRITICAL]** `TypeError: Cannot read properties of null (reading 'name')` — frontend crash saat menampilkan user tanpa profile di card view, table view, dan CSV export. Ditambahkan optional chaining (`?.`) dan fallback values
+- **[CRITICAL]** `TypeError: Cannot read properties of null (reading 'id')` — frontend crash saat membuka modal edit pelanggan (`UserDetailModal`) dan extend modal untuk user tanpa profile. `user.profile.id` diubah ke `user.profile?.id || ''`
+- **[FIX]** Bulk import 400 Bad Request — ditambahkan detailed error logging di setiap validation point di backend route, frontend error parsing diperbaiki untuk menampilkan pesan spesifik dari backend
+- **[FIX]** Data tidak auto-refresh setelah import — `invalidateQueries` dengan `staleTime: 30000` tidak memaksa refetch. Diubah ke `refetchQueries` yang memaksa immediate refetch regardless of staleTime
+- **[FIX]** Backend env variables truncated saat PM2 restart — `awk` memotong `DATABASE_URL` dan `NEXTAUTH_SECRET` di karakter `&`. Diganti dengan `sed` untuk extraction yang reliable
+- **[FIX]** Excel parsing debug logs — ditambahkan logging untuk file name, size, row count, dan sample data untuk diagnosing import issues
+- **[FIX]** PM2 frontend NEXTAUTH_SECRET kosong setelah restart — fix dengan script bash yang extract env dari `.env` file menggunakan `sed` dan restart PM2 dengan `delete` + `start` (bukan `restart --update-env`)
+
+### Features
+- **[FEATURE]** Import dialog file preview — parse CSV/Excel client-side, tampilkan file name, row count summary (valid/without profile/skipped), dan preview table dengan status indicators
+- **[FEATURE]** Collapsible import column guide dengan 3-tier status (Wajib/Disarankan/Opsional), MAC Address & Komentar columns, legend, descriptions dan tips
+- **[FEATURE]** PPPoE sync audit — compare DB vs MikroTik PPP secrets (username, password, profile, status) dengan fix actions
+- **[FEATURE]** Cloudflare 524 timeout fix — web update berjalan sebagai detached background process dengan status polling
+
+### Cleanup
+- Removed `check-encoding.ps1` — temporary PowerShell script untuk check BOM/encoding
+- Removed `fix-encoding.ps1` — temporary PowerShell script untuk fix BOM/encoding
+- Removed `AUTOCHANGELOG.md` — auto-generated changelog, redundant dengan CHANGELOG.md
+- Updated `.gitignore` — pattern `deploy-*.sh`, `restart-*.sh`, `fix-fe-env.sh`, `check-encoding.ps1`, `fix-encoding.ps1`, `AUTOCHANGELOG.md`
+
+### Files Changed
+- `frontend/src/app/admin/pppoe/users/page.tsx` — null-safe `profile?.name`, `profile?.id`, `profile?.groupName` di card/table/extend/CSV; `refetchQueries` menggantikan `invalidateQueries`
+- `frontend/src/components/UserDetailModal.tsx` — `profile` type nullable, `profile?.id` di form init
+- `frontend/src/lib/api/pppoe.ts` — improved error parsing untuk bulk upload
+- `backend/src/app/api/pppoe/users/bulk/route.ts` — detailed error logging di semua 400 responses, Excel parsing debug logs
+- `.gitignore` — temp script patterns
+- `package.json` — version bump to 5.17.0
+- `README.md` — version update
+- `CHANGELOG.md` — this entry
+
+### Deployment
+```bash
+cd /var/www/salfanet-radius
+git pull origin master
+cd frontend && pnpm install --no-frozen-lockfile && pnpm build
+# Restart frontend dengan env yang benar (delete + start, bukan restart)
+export NEXTAUTH_SECRET=$(sed -n 's/^NEXTAUTH_SECRET=//p' frontend/.env | tr -d '"' | tr -d "'")
+export NEXTAUTH_URL=$(sed -n 's/^NEXTAUTH_URL=//p' frontend/.env | tr -d '"' | tr -d "'")
+pm2 delete salfanet-frontend && pm2 start ecosystem.config.js --only salfanet-frontend
+pm2 save
+```
+
+---
+
+## [5.16.0] — 2026-08-28 — Import Audit Fixes & Optional Profile
+
+### Summary
+Audit menyeluruh pada fitur import pelanggan PPPoE. Memperbaiki bug kritis di mana template tidak memiliki kolom Profile (menyebabkan semua import user baru gagal), menambahkan transaction untuk atomicity, membuat profile menjadi opsional (bisa assign manual setelah import), dan beberapa perbaikan lainnya.
+
+### Fixes
+- **[CRITICAL]** Template Excel/CSV tidak memiliki kolom Profile — semua import user baru selalu gagal dengan error "Profile tidak ditemukan". Ditambahkan kolom `Profile` dan `Router` ke template dengan sample data
+- **[CRITICAL]** Import loop tidak dibungkus transaction — jika server crash di tengah import, sebagian data masuk dan sebagian tidak. Sekarang seluruh loop dibungkus `prisma.$transaction()` dengan timeout 120 detik
+- **[FEATURE]** Profile sekarang opsional saat import — pelanggan tetap diimpor meskipun profile tidak ditemukan di file. Admin bisa assign profile manual setelah import melalui halaman edit pelanggan. Schema `profileId` diubah menjadi nullable
+- **[FIX]** CSV header parser tidak handle quoted values dengan koma — sekarang menggunakan regex yang sama dengan value parser
+- **[FIX]** Dead variables `profileId` dan `routerId` dari formData dibaca tapi tidak pernah dipakai — dihapus
+- **[FIX]** Return type `pppoeApi.bulkUpload` di frontend tidak match dengan response backend — diperbaiki
+- **[FIX]** Tidak ada limit jumlah baris import — ditambahkan batas maksimal 1000 baris per import
+- **[FIX]** RADIUS sync (radusergroup) sekarang hanya di-insert jika profile ada — mencegah crash saat profile null
+- **[FIX]** First invoice hanya dibuat jika profile ada (butuh `profile.price`)
+- **[FIX]** Null-safe fixes di 7 file backend: payment route, manual-payments, mark-paid, sync-radius, bulk-status, export, status route, pppoe.service.ts
+
+### Schema Changes
+- `pppoeUser.profileId`: `String` (required) → `String?` (nullable)
+- `pppoeUser.profile` relation: `pppoeProfile` (required) → `pppoeProfile?` (optional)
+- Migration: `20260828_make_profile_optional` — `ALTER TABLE pppoe_users MODIFY COLUMN profileId VARCHAR(255) NULL`
+
+### Files Changed
+- `backend/prisma/schema.prisma` — profileId nullable + relation optional
+- `backend/prisma/migrations/20260828_make_profile_optional/migration.sql` — new migration
+- `backend/src/app/api/pppoe/users/bulk/route.ts` — template, transaction, optional profile, CSV parser, row limit, dead variables
+- `frontend/src/lib/api/pppoe.ts` — bulkUpload return type fix
+- `frontend/src/app/admin/pppoe/users/page.tsx` — import modal info text update
+- `backend/src/app/api/customer/invoices/payment/route.ts` — null-safe profile access
+- `backend/src/app/api/manual-payments/[id]/route.ts` — null-safe profile access
+- `backend/src/app/api/pppoe/users/[id]/mark-paid/route.ts` — null-safe profile access
+- `backend/src/app/api/pppoe/users/[id]/sync-radius/route.ts` — guard radusergroup if no profile
+- `backend/src/app/api/pppoe/users/bulk-status/route.ts` — guard radusergroup if no profile
+- `backend/src/app/api/pppoe/users/export/route.ts` — null-safe profile access
+- `backend/src/app/api/pppoe/users/status/route.ts` — guard radusergroup if no profile
+- `backend/src/server/services/pppoe.service.ts` — null-safe newProfile access
+- `package.json` — version bump to 5.16.0
+- `README.md` — version update
+- `CHANGELOG.md` — this entry
+
+### Deployment
+```bash
+cd /var/www/salfanet-radius/backend
+npx prisma migrate deploy
+npx prisma generate
+pm2 restart salfanet-backend salfanet-frontend
+```
+
+---
+
+## [5.15.1] — 2026-08-25 — Mobile Scroll Fix (All Portals)
+
+### Summary
+Perbaikan issue scroll mobile yang tidak bisa sampai ke bawah halaman di semua portal (admin, customer, technician, agent, collector). Root cause: `min-h-screen` (100vh) menggunakan "large viewport" height yang tidak akurat saat toolbar browser mobile terlihat. Juga menambahkan `viewportFit: 'cover'` untuk safe area iOS dan class CSS `.safe-area-pb` yang hilang.
+
+### Fixes
+- **[FIX]** `min-h-screen` → `min-h-dvh` (dynamic viewport height) di semua layout: AdminClientLayout, CustomerClientLayout, TechnicianPortalLayout, AgentLayoutClient, CollectorPortalLayout — termasuk loading states dan Suspense fallback
+- **[FIX]** `viewportFit: 'cover'` ditambahkan ke viewport export di root `layout.tsx` untuk enable safe area insets di iOS notched devices
+- **[FIX]** Class CSS `.safe-area-pb` ditambahkan ke `globals.css` — dipakai oleh customer mobile bottom nav tapi belum didefinisikan
+- **[FIX]** Customer portal: bottom padding `pb-20` → `pb-24` untuk spacing yang lebih aman terhadap mobile bottom navigation
+
+### Files Changed
+- `frontend/src/app/layout.tsx` — viewportFit: 'cover'
+- `frontend/src/app/globals.css` — .safe-area-pb class
+- `frontend/src/app/admin/AdminClientLayout.tsx` — min-h-dvh (5 places)
+- `frontend/src/app/customer/CustomerClientLayout.tsx` — min-h-dvh + pb-24
+- `frontend/src/app/technician/TechnicianPortalLayout.tsx` — min-h-dvh (3 places)
+- `frontend/src/app/agent/AgentLayoutClient.tsx` — min-h-dvh (2 places)
+- `frontend/src/app/collector/CollectorPortalLayout.tsx` — min-h-dvh (2 places)
+- `package.json` — version bump to 5.15.1
+- `README.md` — version update
+- `CHANGELOG.md` — this entry
+
+---
+
+## [5.15.0] — 2026-08-25 — Semantic Color Token Migration & Responsive Layout Improvements
+
+### Summary
+Migrasi massif hardcoded color values (`bg-white`, `bg-slate-*`, `text-slate-*`, `border-slate-*`, `text-gray-*`) ke semantic CSS variables (`bg-card`, `text-foreground`, `text-muted-foreground`, `border-border`, `bg-input`, `bg-muted`, `hover:bg-accent`) di 83 file frontend. Perbaikan responsive layout: fluid typography dengan `clamp()`, responsive chart heights, fullscreen map picker di mobile, modal max-height dengan scroll overflow, aria-hidden pada mobile sidebars. Build berhasil dengan 0 error.
+
+### Semantic Color Token Migration (83 files)
+- **[FIX]** Agent portal (5 files): `dashboard/page.tsx`, `page.tsx` (landing), `sessions/`, `tickets/`, `vouchers/` — semua `bg-white dark:bg-slate-*` → `bg-card`, `text-slate-*` → `text-foreground`/`text-muted-foreground`, `border-slate-*` → `border-border`, `bg-slate-50` → `bg-input`
+- **[FIX]** Technician portal (13 files): Semua halaman `(portal)/` — dashboard, customers, genieacs, isolated, monitor, offline, online, ont-tasks, profile, register, tickets + `TechnicianPortalLayout.tsx` + `login/page.tsx` — migrasi cyberpunk theme colors (`dark:bg-[#1a0f35]`, `dark:text-[#e0d0ff]`) ke semantic tokens untuk light mode consistency
+- **[FIX]** Admin portal (37 files): Semua halaman dengan hardcoded colors — network diagrams, OLT monitoring, genieacs, sessions, settings, whatsapp, pppoe, hotspot, invoices, payment, tickets, logs, dll. + `AdminClientLayout.tsx` + `login/page.tsx`
+- **[FIX]** Customer portal (1 file): `tickets/[id]/page.tsx` — `bg-white dark:bg-gray-900` → `bg-card`, `text-gray-*` → `text-foreground`/`text-muted-foreground`
+- **[FIX]** Collector portal (1 file): `login/page.tsx` — logo container + feature cards
+- **[FIX]** Shared components (27 files): Network components (AddNodePanel, NetworkNodePanel, SplitterDiagram variants, FiberTracing, FilterPanel, SplicePointsSection, SplitterSection, AssignCustomerDialog, EditAssignmentDialog, FreeRadiusStatusCard), UI primitives (alert-dialog, checkbox, textarea, label), cyberpunk components (SimpleModal, CyberButton), agent NotificationDropdown, genieacs (GenieACSLayout, ParameterTree), UserDetailModal
+
+### Responsive Layout Improvements (from previous commit, documented here)
+- **[FEATURE]** Fluid typography dengan `clamp()` untuk headings dan paragraphs di `globals.css`
+- **[FEATURE]** Responsive chart heights via `useResponsiveHeight` hook — 25% height reduction on mobile
+- **[FEATURE]** MapPicker fullscreen on mobile dengan `50vh` map height
+- **[FEATURE]** Modal max-height dengan flex layout dan scroll overflow di `SimpleModal`
+- **[FEATURE]** Responsive table utilities: column hiding, `min-w-full`, horizontal scroll
+- **[FEATURE]** Fluid auto-fit grid classes untuk container width adaptation
+- **[FIX]** `aria-hidden` pada mobile sidebars (agent, technician) — sidebar hidden from screen readers when closed
+- **[FIX]** Admin stat grid: 6 cols → 4 cols at lg for more breathing room
+
+### Token Mapping Reference
+| Hardcoded | Semantic Token |
+|-----------|---------------|
+| `bg-white dark:bg-slate-*` | `bg-card` |
+| `bg-slate-50 dark:bg-slate-900` | `bg-input` |
+| `bg-slate-100 dark:bg-slate-700` | `bg-muted` |
+| `text-slate-900 dark:text-white` | `text-foreground` |
+| `text-slate-500 dark:text-slate-400` | `text-muted-foreground` |
+| `border-slate-200 dark:border-slate-700` | `border-border` |
+| `hover:bg-slate-100 dark:hover:bg-slate-700` | `hover:bg-accent` |
+| `divide-slate-200 dark:divide-slate-700` | `divide-border` |
+
+### Build Status
+- `next build` berhasil dengan 0 error, semua routes compiled successfully
+
+### Files Changed
+- 83 file `.tsx` di `frontend/src/app/` dan `frontend/src/components/`
+- `frontend/src/app/globals.css` — fluid typography, responsive utilities
+- `frontend/src/components/charts/RechartsComponents.tsx` — responsive chart heights
+- `frontend/src/components/MapPicker.tsx` — fullscreen mobile
+- `frontend/src/components/cyberpunk/SimpleModal.tsx` — modal max-height + scroll
+- `frontend/src/app/agent/AgentLayoutClient.tsx` — aria-hidden mobile sidebar
+- `frontend/src/app/technician/TechnicianPortalLayout.tsx` — aria-hidden mobile sidebar
+- `frontend/src/app/admin/AdminClientLayout.tsx` — aria-hidden revert (lg:translate-x-0)
+- `frontend/src/app/admin/page.tsx` — stat grid cols adjustment
+- `frontend/src/app/collector/CollectorPortalLayout.tsx` — aria-hidden revert
+- `package.json` — version bump to 5.15.0
+- `README.md` — version update, auto-changelog sync
+- `CHANGELOG.md` — this entry
+
+---
+
+## [5.14.0] — 2026-08-24 — Collector Portal, APK Download Audit (Logo Integration) & Backend Security/Validation Fixes
+
+### Summary
+Dokumentasi lengkap fitur Collector Portal (kolektor/tagihan) yang sebelumnya tidak terdokumentasi di README dan CHANGELOG. Audit dan perbaikan proses APK generation: logo perusahaan sekarang digunakan sebagai ikon APK di kedua mode (server build dan ZIP download). Perbaikan konsistensi versi antara package.json, README, dan CHANGELOG. Batch fix untuk validasi input, N+1 query, dan transaction safety di backend API.
+
+### Collector Portal — Documentation & Feature Summary
+- **[FEATURE]** Collector portal dengan login (Bearer token), dashboard, billing, isolir, ONT removal, my-collections, settlements, proofs
+- **[FEATURE]** Admin: Kelola Kolektor (CRUD kolektor dengan area assignment), Collector Settlements (verifikasi setoran harian: approve/reject)
+- **[FEATURE]** Bukti transfer upload di collector billing (auto-compress ke base64 MediumText)
+- **[FEATURE]** Payment proof model + admin proof verification (approve/reject) dengan invoice status rollback
+- **[FEATURE]** ONT removal workflow (cabut-ONT) untuk kolektor dengan task status tracking
+- **[FEATURE]** Area-based access control: kolektor hanya bisa akses data di PPPoE area yang di-assign
+- **[FEATURE]** Settlement/setoran harian: summary cash vs transfer per kolektor, admin konfirmasi
+- **[FIX]** Collector dashboard: include `isolated` status dan `OVERDUE` invoices di counts
+- **[FIX]** Collector isolir API: include `isolated` status, tidak hanya `suspended`
+- **[FIX]** Collector users API: remove status filter untuk show all users in area
+- **[FIX]** Collector proofs API: fix relation query issue
+- **[FIX]** Collector history API: allow collector auth
+- **[FIX]** Collector login layout: consistency, sidebar company name+logo, dark mode init
+- **[FIX]** `collectorProof` column changed to `MediumText` untuk larger base64 images
+- **[FIX]** Collector isolir API: include `OVERDUE` status di unpaid invoice check (konsistensi dengan collector/users)
+- **[FIX]** Collector users API: validate `filter` param hanya allow `unpaid/all/paid`
+
+### APK Download Audit — Logo Integration
+- **[FIX]** `download-apk/route.ts` — ZIP download sekarang fetch company logo dari DB dan resize ke 5 Android density sizes (48px–192px) menggunakan `sharp`, menggantikan placeholder 1×1 pixel
+- **[FIX]** `download-apk/route.ts` — ZIP download sekarang fetch `company.baseUrl` dari DB untuk konsistensi dengan server build (`apk/trigger`)
+- **[FIX]** `download-apk/route.ts` — TypeScript fix: `session.user.role` → `(session.user as any)?.role` (next-auth Session type tidak include `role`)
+- **[FIX]** `frontend/download-apk/page.tsx` — Info note diperbaiki: sebelumnya bilang "ikon placeholder 1×1px" padahal server build sudah pakai logo
+- **[FIX]** `frontend/download-apk/page.tsx` — Filter `qris_listener` dari ZIP download links (API tidak support role ini, klik → 400 error)
+
+### Version Consistency
+- **[FIX]** `package.json` version dibump dari `2.36.0` → `5.14.0` (sebelumnya tidak sinkron dengan CHANGELOG 5.13.0 dan README 5.12.0)
+- **[FIX]** `README.md` version diupdate dari `5.12.0` → `5.14.0`
+- **[FIX]** `system/info/route.ts` — TypeScript fix: `session.user.role` → `(session.user as any)?.role`
+
+### Backend Security & Validation Fixes
+- **[FIX]** `technician/profile/route.ts` — verify `isActive` dan `role` untuk admin_user, verify `isActive` untuk legacy technician
+- **[FIX]** `technician/tickets/route.ts` — search filter tidak lagi menimpa `mine` filter, menggunakan AND untuk combine scope dan search conditions
+- **[FIX]** `collector/isolir/route.ts` — include `OVERDUE` status di unpaid invoice check, konsisten dengan `collector/users` API
+- **[FIX]** `collector/users/route.ts` — validate `filter` param hanya allow `unpaid/all/paid`
+- **[FIX]** `technician/tasks/route.ts` — validate `status` param di PUT against valid work order statuses
+- **[FIX]** `technician/ont-removal-tasks/route.ts` — validate `status` param di GET
+- **[FIX]** `technician/customers/route.ts` — validate `status` param untuk prevent arbitrary filter values
+- **[FIX]** `admin/ont-removal-tasks/route.ts` — fix N+1 query: batch fetch technician dan admin names instead of individual queries
+- **[FIX]** `admin/isolate-user/route.ts` — wrap DB status update + RADIUS changes dalam transaction untuk consistency
+
+### Files Changed
+- `backend/src/app/api/admin/download-apk/route.ts` — logo integration, TypeScript fix, baseUrl from DB
+- `backend/src/app/api/admin/system/info/route.ts` — TypeScript fix
+- `frontend/src/app/admin/download-apk/page.tsx` — info note fix, qris_listener filter
+- `package.json` — version bump to 5.14.0
+- `README.md` — version update to 5.14.0, collector portal section + features table
+- `CHANGELOG.md` — this entry
+- `backend/src/app/api/technician/profile/route.ts` — isActive + role verification
+- `backend/src/app/api/technician/tickets/route.ts` — search + mine filter AND fix
+- `backend/src/app/api/collector/isolir/route.ts` — OVERDUE status inclusion
+- `backend/src/app/api/collector/users/route.ts` — filter param validation
+- `backend/src/app/api/technician/tasks/route.ts` — status param validation
+- `backend/src/app/api/technician/ont-removal-tasks/route.ts` — status param validation
+- `backend/src/app/api/technician/customers/route.ts` — status param validation
+- `backend/src/app/api/admin/ont-removal-tasks/route.ts` — N+1 batch fetch fix
+- `backend/src/app/api/admin/isolate-user/route.ts` — transaction wrapper
+- `backend/src/app/api/collector/` — 13 API routes: auth, dashboard, users, isolir, mark-paid, ont-removals, proofs, my-collections, my-settlements, setoran, history, list, confirm-settlement
+- `frontend/src/app/collector/` — Collector portal: login, dashboard, billing, isolir, ont, proofs, my-collections, settlements
+- `frontend/src/app/admin/collectors/page.tsx` — Admin CRUD kolektor dengan area assignment
+- `frontend/src/app/admin/collector-settlements/page.tsx` — Admin verifikasi setoran harian
+
+---
+
+## [5.13.0] — 2026-08-17 — MikroTik Local-Only Voucher Sync & Cleanup
+
+### Summary
+Implementasi sinkronisasi voucher hotspot ke MikroTik router untuk mode `local` (tanpa RADIUS). Voucher yang di-generate dari admin panel otomatis dibuat sebagai hotspot user di MikroTik via RouterOS API. Saat voucher dihapus dari DB, user di MikroTik juga dihapus. Termasuk cron job untuk sync status voucher, cleanup orphaned users, dan comment marker `salfanet:` untuk identifikasi.
+
+### MikroTik Local-Only Voucher Sync
+- **[FEATURE]** `syncVoucherToMikrotik` — create/update hotspot user di MikroTik via RouterOS API (node-routeros)
+- **[FEATURE]** `removeVoucherFromMikrotik` — hapus hotspot user + active session + scheduler dari MikroTik
+- **[FEATURE]** `removeBatchVouchersFromMikrotik` — hapus multiple voucher dalam satu koneksi MikroTik (efficient batch removal)
+- **[FEATURE]** `removeVoucherFromAllMikrotik` — hapus voucher dari semua local-only router
+- **[FEATURE]** `fetchVoucherStatusFromMikrotik` — sync status voucher (WAITING/ACTIVE/EXPIRED) dari MikroTik ke DB
+- **[FEATURE]** `fetchAllVoucherStatusesFromMikrotik` — sync status dari semua local-only router (untuk cron job)
+- **[FEATURE]** `cleanupOrphanedMikrotikUsers` — hapus user orphaned (ada di MikroTik tapi tidak di DB) dengan filter `salfanet:` comment
+- **[FEATURE]** `cleanupAllOrphanedMikrotikUsers` — cleanup semua local-only router
+- **[FEATURE]** Comment marker `salfanet:admin` atau `salfanet:agent-phone-name` pada hotspot user MikroTik untuk identifikasi system-generated vouchers
+- **[FEATURE]** API endpoint `POST /api/hotspot/voucher/cleanup-mikrotik` — trigger cleanup orphaned users (support dryRun + profileName filter)
+- **[FEATURE]** API endpoint `POST /api/hotspot/voucher/sync-status` — trigger status sync manual
+- **[FEATURE]** Cron job `hotspot_voucher_sync` — scheduled sync voucher status dari MikroTik
+
+### Voucher Generate — MikroTik Sync
+- **[FIX]** MikroTik local sync sekarang fire-and-forget (non-blocking) saat generate voucher
+- **[FIX]** Group voucher by `routerId` untuk efisiensi koneksi MikroTik
+- **[FIX]** Voucher tanpa `routerId` di-sync ke semua local-only router
+
+### Voucher Delete — MikroTik Cleanup
+- **[FIX]** `DELETE /api/hotspot/voucher?batchCode=` — MikroTik cleanup di-await dengan `removeBatchVouchersFromMikrotik` (single connection per router)
+- **[FIX]** `POST /api/hotspot/voucher/delete-multiple` — tambah MikroTik cleanup (sebelumnya missing entirely)
+- **[FIX]** `DELETE /api/hotspot/voucher/[id]` — tambah MikroTik cleanup (sebelumnya missing entirely)
+- **[FIX]** `routerId` ditambahkan ke select query di batch delete untuk pass ke MikroTik cleanup
+
+### node-routeros Error Handling
+- **[FIX]** Global `uncaughtException` handler untuk swallow `!empty` errors (node-routeros throws dari event handlers, bypass try/catch)
+- **[FIX]** `safeWrite` helper — wrapper untuk MikroTik API calls, return empty array pada `!empty` reply
+- **[FIX]** Semua filter-based queries diganti dengan fetch-all + JS filter untuk menghindari `!empty` exception
+- **[FIX]** Applied ke `hotspot-voucher.service.ts` dan `hotspot-profile.service.ts`
+
+### Files Changed
+- `backend/src/server/services/mikrotik/hotspot-voucher.service.ts` — core MikroTik voucher sync/remove/cleanup functions
+- `backend/src/server/services/mikrotik/hotspot-profile.service.ts` — safeWrite + uncaughtException handler untuk profile sync
+- `backend/src/server/services/hotspot.service.ts` — integrate MikroTik sync ke generate/delete voucher
+- `backend/src/app/api/hotspot/voucher/cleanup-mikrotik/route.ts` — new API endpoint
+- `backend/src/app/api/hotspot/voucher/sync-status/route.ts` — new API endpoint
+- `backend/src/app/api/hotspot/voucher/delete-multiple/route.ts` — add MikroTik cleanup
+- `backend/src/app/api/hotspot/voucher/[id]/route.ts` — add MikroTik cleanup
+- `backend/src/app/api/cron/route.ts` — add `hotspot_voucher_sync` cron case
+
+---
+
+## [5.12.0] — 2026-08-17 — QRIS Mandiri Payment, Auto-Update System, Installer & Cloudflare Tunnel Fixes
+
+### Summary
+Batch fitur dan fix: implementasi QRIS Mandiri payment gateway (static-to-dynamic QRIS + Android listener), sistem auto-update dari admin panel (changelog + git pull + build + PM2 restart), auto-version dari git commit count, fix port 8080 UFW di semua installer scripts, fix cloudflare tunnel nginx port switching, dan fix installer seed exit code masking.
+
+### QRIS Mandiri Payment Gateway
+- **[FEATURE]** Implementasi QRIS Mandiri (qris_own) — konversi static QRIS ke dynamic QRIS dengan amount unik per invoice (TLV parser, CRC16 EMVCo standard)
+- **[FEATURE]** Android QrisListener app support — webhook `/api/payment/qris-notify` menerima notifikasi pembayaran dari Android listener
+- **[FEATURE]** QRIS test simulation endpoint `/api/payment/qris-test` untuk testing tanpa Android app
+- **[FEATURE]** QRIS status polling endpoint `/api/payment/qris-status` untuk cek status pembayaran
+- **[FEATURE]** QRIS Mandiri tab di admin payment-gateway page — konfigurasi static code, merchant name, device key, test simulation
+- **[FEATURE]** `qris.ts` utility library — validateQris, staticToDynamic, generateUniqueAmount (deterministic suffix 1-999 dari MD5 hash invoice ID)
+- **[FEATURE]** QrisPending model di Prisma schema untuk tracking pending QRIS payments
+- **[FEATURE]** QRIS fields di company model: qrisStaticCode, qrisMerchantName, qrisEnabled, qrisDeviceKey
+
+### Auto-Update System
+- **[FEATURE]** Backend API `/api/admin/system/changelog` (GET) — fetch git log antara local vs remote commit sebagai changelog
+- **[FEATURE]** Backend API `/api/admin/system/changelog` (POST) — execute update: git pull, prisma db push, pnpm install + build (backend & frontend), PM2 restart semua service, dengan step-by-step progress reporting
+- **[FEATURE]** Frontend admin/system page — tombol "Lihat Changelog" dan "Update Sekarang" dengan konfirmasi dan progress display
+- **[FEATURE]** Auto-version dari git commit count — version format `2.35.0+1398` (base version + total commits), tidak perlu manual update package.json
+- **[FEATURE]** System info API sekarang return gitBranch, totalCommits, behindCount, baseVersion
+
+### Installer Fixes
+- **[FIX]** Port 8080 ditambahkan ke UFW rules di semua installer scripts (install-nginx.sh, common.sh, install-security.sh, install-wizard.html, README.md) — Cloudflare tunnel menggunakan port 8080
+- **[FIX]** `seed_database` pipe-to-tee masks exit code — gunakan PIPESTATUS untuk real exit code detection
+- **[FIX]** Cloudflare tunnel `switch_nginx_port` regex tidak handle `[::]:80` dan `default_server` format — fix regex pattern
+
+### Commits
+- `6f46dcf2` — feat: implement QRIS Mandiri payment gateway
+- `597e3790` — fix: add port 8080 to UFW firewall rules in all installer scripts
+- `01147df8` — feat: add auto-changelog and manual update from admin/system page
+- `788ee001` — fix: showConfirm signature and regex flag for TS compatibility
+- `fde04827` — feat: auto-version from git commit count + show branch, total commits, behind count
+- `3b9a4e9c` — fix: installer seed_database pipe-to-tee masks exit code
+- `da73801a` — fix: cloudflare tunnel switch_nginx_port regex
+- `a90bb57a` — chore: remove debug scripts from repo
+
+---
+
+## [5.11.0] — 2026-08-16 — MikroTik Local-Auth Sync, Realtime Status, MAC Cleanup & Installer Fixes
+
+### Summary
+Batch fix untuk sinkronisasi MikroTik local-auth (isolir profile, password, active sessions), realtime status polling di halaman pelanggan, hapus placeholder MAC address, fix 429 rate limit, dan perbaikan kritis path di installer/uninstaller/updater scripts.
+
+### MikroTik Local-Auth Fixes
+- **[CRITICAL]** Isolir profile ditimpa oleh `sync_mikrotik_create` task — task menggunakan profile dari DB (PAKET 100MBPS) alih-alih `isolir`. Fix: cek status user terbaru dari DB sebelum eksekusi task, override profile ke `isolir` jika status=`isolated`.
+- **[CRITICAL]** Isolated user di-disable (`disabled=true`) — SALAH. Isolated user harus tetap enabled agar bisa login dan dapat isolir profile. Fix: hanya `stop`/`blocked` yang di-disable.
+- **[FIX]** Empty password dari form edit menimpa PPP secret MikroTik dengan password kosong. Fix: truthy check sebelum kirim password ke MikroTik.
+- **[FIX]** Isolir pada local-auth router tidak update PPP secret profile — hanya kick session. Fix: `enable`/`disable` action juga update profile saat provided.
+- **[FIX]** MikroTik API calls fire-and-forget causing race condition. Fix: await semua MikroTik operations dalam urutan yang benar (update secret → kick session).
+
+### Active Sessions untuk Local-Auth Routers
+- **[FEATURE]** Dashboard dan halaman sessions sekarang menampilkan active sessions dari MikroTik `/ppp/active` untuk local-auth routers (sebelumnya hanya dari `radacct`).
+- **[FEATURE]** PPPoE online/offline status polling dari MikroTik `/ppp/active` untuk non-RADIUS routers.
+- **[FEATURE]** Hotspot active sessions dari MikroTik untuk local-auth routers.
+- **[FIX]** `listPppActive()` tidak lagi menelan error — throw agar cron skip cycle instead of false-closing sessions.
+- **[FIX]** `iconv-lite` ditambahkan ke `serverExternalPackages` untuk Next.js standalone deployment.
+
+### Realtime Status Polling
+- **[FEATURE]** Halaman data pelanggan sekarang polling status (isolated/active/stop/blocked) setiap 10 detik tanpa reload halaman. Sebelumnya status hanya update saat manual refresh.
+- **[FEATURE]** Endpoint `/api/pppoe/users/online-status` sekarang return `statusMap` (username → status) bersamaan dengan online set.
+
+### MAC Address Cleanup
+- **[FIX]** Placeholder MAC addresses (`00:00:00:00:00:00`, `AA:BB:CC:DD:EE:FF`, dll) tidak lagi disimpan di database. Validasi `isPlaceholderMac()` menolak MAC placeholder saat create/update user.
+- **[FIX]** ARP service tidak lagi default ke `00:00:00:00:00:00` saat MAC kosong — MikroTik menerima ARP entry tanpa MAC.
+- **[FIX]** Cleanup script untuk set placeholder MAC yang sudah ada di DB ke `null`.
+
+### Rate Limit Fix
+- **[FIX]** `/api/company/info` return 429 Too Many Requests setelah navigasi normal. Fix: naikkan rate limit dari `relaxed` (100/min) ke `veryRelaxed` (500/min), tambah Cache-Control header, dan throttle frontend fetch ke 5 menit.
+
+### Auth Mode & Connection Type Migration
+- **[FEATURE]** Support perubahan authMode router (radius → local) dengan auto-create PPP secrets dari existing customer data.
+- **[FEATURE]** Support perubahan connectionType customer (PPPoE → Static IP / Hotspot) dengan cleanup MikroTik entries lama.
+- **[FIX]** CoA disconnect untuk kick session lama saat authMode atau connectionType berubah.
+
+### Customer Delete Fix
+- **[FIX]** Delete customer tidak mengirim password konfirmasi ke backend. Fix: frontend DELETE helper sekarang mengirim `{ confirmPassword }`.
+- **[FIX]** `external_task.id` dan `entity_id` terlalu pendek untuk composite IDs. Fix: widen ke `VARCHAR(191)`.
+
+### Installer/Updater/Uninstaller Fixes
+- **[CRITICAL]** `updater.sh` line 318: `apply_sql_migrations || true ────` punya trailing dashes yang menyebabkan bash syntax error. Fix: hapus trailing dashes.
+- **[CRITICAL]** `updater.sh`: 15 referensi path `$APP_DIR/vps-install/` SALAH — seharusnya `$APP_DIR/frontend/vps-install/`. Post-update steps untuk auth fix, security, VPN, WireGuard, dan L2TP silently skipped karena path tidak ditemukan. Fix: semua path diperbaiki.
+- **[FIX]** `vps-uninstaller.sh`: reinstall instruction menunjuk ke `/root/SALFANET-RADIUS-main/vps-install` (legacy). Fix: `/root/salfanet-radius/frontend/vps-install`.
+
+### Commits
+- `e612ed42` — fix: remove default/placeholder MAC addresses from customer data
+- `f12eccef` — feat: realtime status (isolated/active/stop) polling on customer page
+- `4d5046c5` — fix: sync_mikrotik_create task overwrites isolir profile with original package
+- `c8b42f4c` — fix: resolve 429 Too Many Requests on /api/company/info
+- `c91165de` — fix: isolir on local-auth routers — update PPP secret profile + await MikroTik calls
+- `8306a0b2` — feat: show MikroTik local-auth active sessions on dashboard & sessions page
+- `b5a26caf` — fix: prevent empty password from overwriting MikroTik PPP secret
+- `c111a9d8` — fix: use sync_mikrotik_create (upsert) + CoA disconnect on authMode & connectionType change
+- `6b11f5fa` — feat: support connectionType change & authMode migration with MikroTik sync
+- `75c7fc70` — fix: delete customer — send confirmPassword to backend
+
+---
+
+## [5.7.0] — 2026-08-15 — Fix: Diskon Pelanggan Tidak Diterapkan ke Tagihan
+
+### Summary
+Bug kritis: diskon pelanggan (field `discount` di `PppoeUser`) hanya diterapkan pada cron monthly invoice generation (postpaid) dan first invoice saat create customer. 5 path lain tidak mengurangi diskon dari base price, menyebabkan tagihan tidak sesuai dengan diskon yang sudah di-set di form tambah/edit pelanggan.
+
+### Root Cause
+Pattern yang benar (sudah ada di cron monthly + first invoice):
+```ts
+const baseAmount = Math.max(0, profile.price - (user.discount || 0));
+```
+
+Pattern yang salah (5 path lain, tidak mengurangi diskon):
+```ts
+const baseAmount = profile.price;  // BUG: tidak - user.discount
+```
+
+### Fixed Paths (5 bug)
+1. **Customer renewal API** (`/api/customer/renewal`) — perpanjangan dari customer portal
+2. **Admin renewal API** (`/api/admin/users/[id]/renewal`) — perpanjangan dari admin panel
+3. **PREPAID auto-renewal cron** (`invoice-jobs.ts`) — auto-renewal dari balance prepaid
+4. **Admin extend route** (`/api/pppoe/users/[id]/extend`) — perpanjangan langsung dari admin
+5. **Admin invoices/generate** (`/api/invoices/generate`) — generate invoice manual dari admin
+
+### Already Working (tidak diubah)
+- Cron monthly invoice generation (postpaid) — sudah apply diskon
+- First invoice saat create customer — sudah apply diskon
+- Save diskon di form tambah pelanggan — sudah berfungsi
+- Save diskon di form edit pelanggan (UserDetailModal) — sudah berfungsi
+
+### Commits
+- `2b55e056` — fix(billing): apply customer discount to all invoice generation paths
+
+---
+
+## [5.6.0] — 2026-08-15 — Frontend Performance Optimization + Auto-Changelog Fix
+
+### Summary
+Frontend performance optimization pass: remove dead dependency, code-split heavy chart library, fix broken auto-changelog script path.
+
+### Performance Optimizations
+- **[REMOVED]** `sweetalert2` dari `dependencies` — dead dependency, sudah diganti CyberToast bridge (`@/lib/sweetalert`). Reduce install size ~150KB.
+- **[MOVED]** `@types/leaflet` dari `dependencies` ke `devDependencies` — type-only package, tidak perlu di production deps.
+- **[CODE-SPLIT]** `recharts` (~400KB) sebelumnya static import di `components/charts/index.tsx` → sekarang dynamic import via `next/dynamic` dengan `ssr: false`. recharts hanya loaded saat chart components dibutuhkan (dashboard/analitik pages), tidak di initial bundle untuk non-chart pages.
+  - Split: `charts/RechartsComponents.tsx` (internal, recharts imports) + `charts/index.tsx` (public API, dynamic load)
+  - Non-recharts components (`ChartCard`, `TopRevenueSources`) tetap static export
+
+### Auto-Changelog Fix
+- **[FIXED]** `sync-readme-changelog.mjs` dipindah dari `backend/scripts/` ke root `scripts/` — GitHub Action (`sync-readme-changelog.yml`) memanggil `node scripts/sync-readme-changelog.mjs` dari repo root, tapi file ada di `backend/scripts/` setelah monorepo restructure. Auto-sync README changelog sekarang berfungsi lagi.
+- **[VERIFIED]** Script berjalan sukses dari root: `node scripts/sync-readme-changelog.mjs` → "README.md updated from CHANGELOG.md"
+
+### Build Performance
+- Compile: 11.2s (Turbopack, sebelumnya 13.0s) — 14% faster
+- TypeScript: 6.2s
+- Total: ~18s
+- Bundle: 8,863 KB (257 files) — recharts sekarang di separate chunk (443 KB), hanya loaded on-demand
+
+### Commits
+- `9464c61d` — perf: remove dead sweetalert2 dep, move @types/leaflet to devDeps, dynamic import recharts, fix auto-changelog script path
+
+---
+
+## [5.5.0] — 2026-08-15 — Active Session Sync Fix + Frontend Audit (Responsive + Accessibility + Nav)
+
+### Summary
+Dua kategori perbaikan: (1) Critical fix untuk sync active session MikroTik → web (mismatch status aktif), dan (2) Frontend audit menyeluruh untuk responsive, accessibility, loading/error state, dan menu navigation consistency across all 4 role layouts.
+
+### Active Session Sync Fix (CRITICAL)
+- **[CRITICAL]** `listPppActive()` sebelumnya menelan error MikroTik API dan return empty Set → cron menganggap semua session stale dan menutupnya. Fix: sekarang throw error pada failure, sehingga cron skip cycle instead of false-closing sessions.
+- **[CRITICAL]** `iconv-lite` tidak tersedia di Next.js standalone deployment → semua MikroTik API calls gagal. Fix: tambah `iconv-lite` ke `serverExternalPackages`, copy ke standalone `node_modules` di postbuild.
+
+### Frontend Audit — Responsive Fixes
+- Fixed `grid-cols-N` tanpa mobile prefixes → `grid-cols-1/2 sm:grid-cols-N` di ~20+ pages:
+  - Referral stats, agent/technician login cards, technician isolated stats
+  - Splitter loss metrics dan ports, port selection dialogs
+  - User installation-photo grids, OLT tabs, GenieACS stats
+  - Hotspot agent/voucher report stats, IP pool, data usage cards
+  - PPPoE installation photos, SMTP settings, WhatsApp summaries
+  - Customer top-up payment methods, VPN status summaries
+  - Invoice generation results, Splitter/ODP/ODC diagrams
+  - Fiber cable presets, VPN client pool summaries
+- Added `overflow-x-auto` wrappers untuk tables yang bisa overflow di small screens:
+  - `admin/genieacs/files/page.tsx`
+  - `admin/genieacs/devices/[deviceId]/page.tsx`
+
+### Frontend Audit — Loading/Error State
+- Created route-level `loading.tsx` dan `error.tsx` untuk `/app/agent/` (sebelumnya missing)
+- Loading: centered `Loader2` spinner + "Memuat..."
+- Error: client component, logs error, generic Indonesian message, "Coba Lagi" + link ke `/agent`, shows error digest
+
+### Frontend Audit — Accessibility & Navigation
+- Added `aria-label` ke icon-only close buttons di semua 4 layout (Admin, Agent, Customer, Technician)
+- Added `aria-label` ke mobile menu/hamburger buttons where missing
+- Added `aria-expanded` ke Admin category dan submenu toggle buttons
+- Added `aria-label="X navigation"` ke semua nav landmarks
+- Increased close-button padding dari `p-1.5` → `p-2.5` untuk touch targets ≥44px
+- Fixed Admin submenu `max-h-96` → `max-h-[500px]` untuk accommodate GenieACS group (11 children)
+- Verified route-change sidebar closing behavior di semua layout
+- Verified semua 4 layout menggunakan single source of truth untuk menu (no desktop/mobile duplication)
+
+### Performance Audit Findings
+- Build: 13s compile + 5.6s TypeScript = ~20s total (Next.js 16 Turbopack)
+- Bundle: 8.8 MB total static (257 files), largest JS chunk 409 KB, largest CSS 539 KB (Tailwind v4)
+- Heavy deps properly code-split: `jspdf`, `xlsx`, `leaflet` menggunakan dynamic `await import()`
+- `sweetalert2` di `package.json` tapi TIDAK di-import (sudah diganti CyberToast) — dead dependency
+- `recharts` statically imported di `components/charts/index.tsx` — bisa di-optimize dengan dynamic import tapi low priority
+
+### Commits
+- `076501c0` — fix(critical): listPppActive must throw on error, not return empty Set
+- `54b45403` — fix: add iconv-lite to serverExternalPackages for standalone build
+- `432e3593` — fix: copy iconv-lite to standalone node_modules in postbuild
+- `fa9ddd1f` — fix: copy iconv-lite from pnpm store to standalone node_modules
+- `0b330fe1` — fix(frontend): responsive, accessibility, and loading/error state improvements
+- `a13c609a` — fix(nav): menu navigation desktop/mobile audit - accessibility and UI fixes
+
+---
+
+## [5.4.0] — 2026-08-15 — Final Production Completion (Security + safeCompare + JWT + CoA)
+
+### Summary
+Final production completion pass: safeCompare fail-closed hardening, JWT_SECRET separation, CoA/disconnect auth fixes, payment gateway credential logging fix, email timezone fix, and full 112/112 E2E test verification on VPS.
+
+### Security Fixes
+- **[CRITICAL]** `/api/radius/coa` POST + GET: Added `checkAuth()` — was completely unauthenticated (anyone could disconnect users)
+- **[CRITICAL]** `/api/sessions/disconnect` POST: Added `checkAuth()` — was completely unauthenticated (anyone could disconnect sessions)
+- **[CRITICAL]** `/api/payment-gateway/config` POST: Added `getServerSession` check — was unauthenticated (anyone could write payment gateway credentials)
+- **[CRITICAL]** `/api/payment-gateway/config` POST: Removed `console.log` that logged full payment gateway credentials (midtransServerKey, xenditApiKey, tripayPrivateKey, etc.)
+
+### safeCompare Defensive Hardening
+- **[FIXED]** `safeCompare()` now fail-closed on empty strings: `safeCompare('', '') === false`
+- **[FIXED]** `safeCompare('', 'abc') === false` and `safeCompare('abc', '') === false`
+- Production routes already guarded via truthiness checks, but helper is now independently fail-closed
+- Test assertions updated: 17/17 PASS (was 14/14)
+
+### JWT Secret Separation
+- **[CONFIGURED]** VPS now has dedicated `JWT_SECRET` (64 chars, distinct from `NEXTAUTH_SECRET`)
+- **[VERIFIED]** `JWT_SECRET !== NEXTAUTH_SECRET` on VPS
+- **[VERIFIED]** `AGENT_JWT_SECRET` is also distinct from both
+- Fallback to `NEXTAUTH_SECRET` remains as safety net, but production now uses dedicated secrets
+
+### Timezone Fix
+- **[FIXED]** `email.service.ts`: 2 hardcoded `'Asia/Jakarta'` in date formatting replaced with `getCurrentTimezone()`
+
+### GenieACS
+- **[STATUS]** GenieACS is NOT INSTALLED on VPS (service inactive, binaries not found, ports not listening)
+- **[STATUS]** GenieACS integration code is ready (DB-based credential loading, encrypted passwords, env fallback)
+- **[STATUS]** GENIEACS PRODUCTION = NOT VERIFIED (cannot test without GenieACS server)
+
+### RADIUS CoA
+- **[STATUS]** CoA uses per-router secrets from DB (`nas.secret`) as primary source
+- **[STATUS]** `RADIUS_COA_SECRET` env var is optional global fallback (NOT SET on VPS)
+- **[STATUS]** 1 router with secret in DB — CoA will use DB secret
+- **[STATUS]** CoA auth now requires admin session (401 without auth — verified)
+- **[STATUS]** CoA functional test = NOT VERIFIED (requires active MikroTik session to test disconnect)
+
+### Test Results (VPS — 2026-08-15)
+- Timezone: 27/27 PASS
+- Cron Schedule: 40/40 PASS
+- Cron Lock: 16/16 PASS
+- FreeRADIUS Concurrency: 12/12 PASS
+- CRON_SECRET: 17/17 PASS
+- **Total: 112/112 PASS**
+
+### Commits
+- `389a540f` — safeCompare fail-closed on empty strings
+- `ab18d892` — Fix malformed header test (HTTP layer rejection)
+- `4cc0895e` — Sync test safeCompare with production
+- `ce0c4cfc` — Add auth checks to CoA and session disconnect routes
+- `27bf2bda` — Fix payment gateway config auth + credential logging + email timezone
+
+---
+
+## [5.3.0] — 2026-08-15 — Final Production Hardening + E2E Verification
+
+### Summary
+Final production hardening pass: timezone bug fixes (invoice due dates, hardcoded Asia/Jakarta in 11 backend files), new E2E test suite (cron schedule, FreeRADIUS concurrency, CRON_SECRET), and full VPS production verification.
+
+### Timezone Hardening
+- **[FIXED]** Invoice due date calculation: `invoices/route.ts` now uses `nowWIB()` instead of `new Date()` for invoice number generation
+- **[FIXED]** Registration approve route: due date now uses `nowWIB()` instead of `Date.now()`
+- **[FIXED]** Registration mark-installed route: due date now uses `nowWIB()` instead of `Date.now()`
+- **[FIXED]** Invoice import route: default due date now uses `nowWIB()` instead of `Date.now()`
+- **[FIXED]** 11 backend files: replaced hardcoded `'Asia/Jakarta'` with `getCurrentTimezone()` (21 replacements total):
+  - `payment/webhook/route.ts` (1)
+  - `manual-payments/[id]/route.ts` (1)
+  - `notifications/whatsapp-templates.service.ts` (5)
+  - `notifications/telegram.service.ts` (3)
+  - `lib/utils/export.ts` (4)
+  - `whatsapp/broadcast/route.ts` (2)
+  - `telegram/test/route.ts` (1)
+  - `telegram/test-backup/route.ts` (1)
+  - `keuangan/export/route.ts` (1)
+  - `invoices/export/route.ts` (1)
+  - `evoucher/purchase/route.ts` (1)
+
+### New E2E Tests
+- **[TESTED]** `cron-schedule.test.ts`: 40/40 passed on VPS — tests all 19 production cron schedules with cron-parser, timezone difference (Jakarta vs UTC), month boundary, edge cases (06:59, 07:00, 07:01, 23:00, 00:00)
+- **[TESTED]** `freeradius-concurrency.test.ts`: 12/12 passed on VPS — tests atomic claim with 2 workers, status transitions (PENDING/FAILED/SYNCING/COMPLETED/DEAD), 10-item batch with no overlap
+- **[TESTED]** `cron-secret.test.ts`: 14/14 passed on VPS — tests timing-safe comparison, secret not in logs, API with correct/wrong/empty/no/malformed secret
+
+### Production Verification (VPS 192.168.54.129)
+- **[PRODUCTION VERIFIED]** All PM2 processes online (backend, cron, frontend, wa)
+- **[PRODUCTION VERIFIED]** Backend health: OK (port 3001)
+- **[PRODUCTION VERIFIED]** Frontend health: 200 OK (port 3000)
+- **[PRODUCTION VERIFIED]** Nginx: active, config test OK (port 8080)
+- **[PRODUCTION VERIFIED]** MySQL: active, timezone +07:00
+- **[PRODUCTION VERIFIED]** FreeRADIUS: active (v3.0.26)
+- **[PRODUCTION VERIFIED]** OS timezone: Asia/Jakarta
+- **[PRODUCTION VERIFIED]** CRON_SECRET: SET (length: 64)
+- **[PRODUCTION VERIFIED]** DATABASE_URL: SET
+- **[PRODUCTION VERIFIED]** NEXTAUTH_SECRET: SET
+- **[PRODUCTION VERIFIED]** No pending migrations
+- **[PRODUCTION VERIFIED]** payments.invoiceId unique index: EXISTS (non_unique=0)
+- **[PRODUCTION VERIFIED]** webhook_logs table: EXISTS
+- **[PRODUCTION VERIFIED]** All recent cron jobs: SUCCESS (hotspot_sync, freeradius_health, pppoe_session_sync, disconnect_sessions, pppoe_auto_isolir, radius_sync_retry)
+- **[PRODUCTION VERIFIED]** Automated cron (CRON_SECRET): 200 OK (no 409 double-lock)
+- **[PRODUCTION VERIFIED]** Manual trigger without auth: 401 Unauthorized
+- **[PRODUCTION VERIFIED]** GenieACS technician routes: routerId/areaId requirement present in code
+- **[PRODUCTION VERIFIED]** Backend build: SUCCESS
+- **[PRODUCTION VERIFIED]** Frontend build: SUCCESS
+
+### Not Set (Configuration Issues, Not Code Issues)
+- RADIUS_COA_SECRET: NOT SET (needed for CoA/Disconnect packets)
+- GENIEACS_HOST/USER/PASS: NOT SET (GenieACS integration not configured)
+- JWT_SECRET: NOT SET (falls back to NEXTAUTH_SECRET)
+
+### Test Summary
+| Test Suite | Tests | Passed | Failed | Environment |
+|------------|-------|--------|--------|-------------|
+| Timezone | 27 | 27 | 0 | VPS |
+| Cron Schedule | 40 | 40 | 0 | VPS |
+| Cron Lock | 16 | 16 | 0 | VPS |
+| FreeRADIUS Concurrency | 12 | 12 | 0 | VPS |
+| CRON_SECRET | 14 | 14 | 0 | VPS |
+| **Total** | **109** | **109** | **0** | |
+
+---
+
+## [5.2.0] — 2026-08-15 — Production Hardening Audit (Cron + Security + Timezone)
+
+### Summary
+Comprehensive production hardening pass covering cron reliability, distributed locking, CRON_SECRET security, timezone handling, FreeRADIUS queue concurrency, GenieACS technician authorization, secret leak prevention, and frontend API error handling.
+
+### Cron System Hardening
+- **[FIXED]** Heartbeat integration: `cron-runner.ts` now starts a heartbeat timer that renews the DB lock periodically while a job is running. If renewal fails (LOCK_LOST), the job result is recorded as error to prevent duplicate processing.
+- **[FIXED]** Production fail-closed: In production (`NODE_ENV=production`), if the DB lock service fails, the job is NOT run. The in-memory `runningJobs` Set is now an optimization only, never the reliability mechanism. Development mode retains the in-memory fallback for convenience.
+- **[FIXED]** `CRON_SECRET` hardening: Both `cron-runner.ts` and `/api/cron` route now fail-fast in production if `CRON_SECRET` is not set. Secret comparison uses `timingSafeEqual` to prevent timing attacks. Secret length is logged, never the value.
+- **[FIXED]** Per-job HTTP timeout: Jobs now have configurable timeouts (120s default, 300s for heavy jobs like invoice_generate and radius_reconciliation).
+- **[FIXED]** `server-only` import removed from `cron-lock.service.ts`, `monitoring.service.ts`, and `db/client.ts` — this was the root cause of the original in-memory fallback issue (standalone cron-runner could not import server-only modules).
+- **[FIXED]** Cron schedule timezone: `cron-runner.ts` now loads company timezone from DB and passes it to `node-cron` via `{ timezone: companyTimezone }` option, ensuring jobs run at correct local time regardless of VPS system timezone.
+- **[FIXED]** `nextRun` calculation: Replaced heuristic interval estimation with `cron-parser` library for accurate next-run calculation in `/api/cron/status`.
+
+### Timezone Fixes
+- **[FIXED]** `cron-runner.ts`: Removed manual `+7h` manipulation (`new Date(now.getTime() + 7 * 60 * 60 * 1000)`). Now uses `new Date()` which respects the system timezone (`TZ=Asia/Jakarta` in production).
+- **[FIXED]** `getTimezoneOffset()` in both backend and frontend `timezone.ts`: Added explicit handling for UTC/GMT timezone (previously fell back to `+07:00` for UTC, causing incorrect offset calculations).
+- **[FIXED]** Frontend: Replaced hardcoded `'Asia/Jakarta'` in `formatInTimeZone()` calls with dynamic `getCurrentTimezone()` in 5 layout files (TechnicianPortalLayout, CustomerClientLayout, AgentLayoutClient, AdminClientLayout, customer/suspend page).
+
+### FreeRADIUS Queue Concurrency
+- **[FIXED]** Atomic claim in `processRetryQueue()`: Replaced unconditional `prisma.radiusSyncQueue.update()` with conditional `updateMany({ where: { id, status: { in: ['PENDING', 'FAILED'] } } })`. This prevents two workers from processing the same queue item simultaneously. If `count === 0`, the item was already claimed by another worker and is skipped.
+
+### GenieACS Technician Authorization
+- **[FIXED]** Technician device list route (`/api/technician/genieacs/devices`): Field technicians (non-admin) must now provide `routerId` or `areaId` query parameter. Devices are filtered to only show those matching customers in the assigned scope. This matches the security pattern already used in the technician customers route.
+- **[FIXED]** Technician single device route (`/api/technician/genieacs/devices/[deviceId]`): Field technicians must provide `routerId`/`areaId` and the device must match a customer in their assigned scope. Returns 403 if the device is not in their area.
+- **[FIXED]** `verifyTechnician()` in both GenieACS routes now returns `isAdminUser` flag for consistent authorization logic.
+
+### Secret Leak Prevention
+- **[FIXED]** Payment webhook (`/api/payment/webhook`): Removed raw body logging and form data logging. Signature headers are now truncated to first 16 characters instead of logged in full. Tripay signature validation log now truncates both received and expected signatures.
+- **[FIXED]** Payment token route (`/api/pay/[token]`): Removed debug `console.log` statements that logged the full payment token, invoice search results, and fallback search details.
+
+### Frontend API Error Handling
+- **[FIXED]** GenieACS files upload page: Added `res.ok` check before `res.json()` to prevent JSON parse errors on non-JSON error responses (e.g., 405 Method Not Allowed with HTML body).
+- **[FIXED]** Pay-manual page: Wrapped error response `response.json()` in try/catch to handle non-JSON error bodies gracefully.
+
+### Database Schema
+- **[VERIFIED]** All Prisma `@map()` and `@@map()` annotations are correct and match the production database. Every snake_case database column has an explicit field mapping. No mismatches found.
+
+### Tests
+- **[TESTED]** Timezone utility tests: 27/27 passed locally (`npx tsx tests/timezone.test.ts`). Covers `nowWIB()`, `parseDateAsWIB()`, `formatWIB()`, `isExpiredWIB()`, `daysUntilExpiry()`, `startOfDayWIBtoUTC`/`endOfDayWIBtoUTC`, and timezone switching (Asia/Jakarta ↔ UTC).
+- **[CREATED]** Cron lock service tests (`tests/cron-lock.test.ts`): Tests acquire/release, concurrent acquisition, release by non-owner, heartbeat renewal, heartbeat failure after release, and stale lock recovery. Must be run on the VPS where the database is accessible.
+
+### Files Changed
+- `backend/cron-runner.ts` — Complete rewrite with heartbeat, fail-closed, timezone, per-job timeout
+- `backend/src/app/api/cron/route.ts` — CRON_SECRET fail-fast + timingSafeEqual
+- `backend/src/server/cron/jobs.ts` — cron-parser for nextRun calculation
+- `backend/src/server/services/cron-lock.service.ts` — Removed `server-only` import
+- `backend/src/server/services/monitoring.service.ts` — Removed `server-only` import
+- `backend/src/server/db/client.ts` — Removed `server-only` import
+- `backend/src/server/services/radius/radius-sync-queue.service.ts` — Atomic claim
+- `backend/src/app/api/technician/genieacs/devices/route.ts` — routerId/areaId scope
+- `backend/src/app/api/technician/genieacs/devices/[deviceId]/route.ts` — Authorization check
+- `backend/src/app/api/payment/webhook/route.ts` — Secret leak fixes
+- `backend/src/app/api/pay/[token]/route.ts` — Removed debug logging
+- `backend/src/lib/timezone.ts` — UTC offset fix
+- `frontend/src/lib/timezone.ts` — UTC offset fix
+- `frontend/src/app/technician/TechnicianPortalLayout.tsx` — Dynamic timezone
+- `frontend/src/app/customer/CustomerClientLayout.tsx` — Dynamic timezone
+- `frontend/src/app/agent/AgentLayoutClient.tsx` — Dynamic timezone
+- `frontend/src/app/admin/AdminClientLayout.tsx` — Dynamic timezone
+- `frontend/src/app/customer/suspend/page.tsx` — Dynamic timezone
+- `frontend/src/app/admin/genieacs/files/page.tsx` — res.ok check
+- `frontend/src/app/pay-manual/page.tsx` — Error handling fix
+- `backend/tests/cron-lock.test.ts` — New test file
+- `backend/tests/timezone.test.ts` — New test file
+
+---
+
+## [5.1.0] — 2026-08-15 — Phase 8: Complete React Query Migration
+
+### Summary
+Completed React Query migration for all remaining admin pages. 80 files changed, net reduction of 875 lines of code. All admin pages now use `useApiQuery`/`useQueryClient` instead of manual `useEffect + apiAdmin + load()` patterns.
+
+### Pages Migrated (65+ pages across 8 batches)
+- **Settings** (15 files): company, cloudflare-tunnel, cron, database, email, footer, genieacs, isolation (+ mikrotik + templates), referral, security, subdomain, telegram
+- **GenieACS** (6 files): auto-provision, devices, parameter-config, tasks, virtual-parameters, vp-scripts
+- **Network** (11 files): customers, diagrams, fiber-cables, fiber-cores, fiber-joint-closures, map, odcs, splice-points, unified-map, vpn-client, vpn-server
+- **PPPoE + Hotspot** (10 files): addons, profiles, registrations, stopped, agent (+ deposits), evoucher, profile, rekap-voucher, template
+- **FreeRADIUS** (6 files): backup, config, logs, radcheck, radtest, status
+- **Other admin** (23 files): data-usage, download-apk, ippool, isolated-users, laporan/analitik, logs/activity, management, manual-payments, notifications, olt/alerts, olt/monitoring, payment/bank-accounts, payment-gateway, push-notifications, referrals, sessions/pppoe, suspend-requests, system, technicians, topup-requests, tickets (+ [id] + categories), whatsapp (5 files), inventory (4 files)
+
+### Key Changes
+- Mutations now use `queryClient.invalidateQueries()` instead of manual `load()` reloads
+- Filter/pagination params included in query keys for automatic refetch tracking
+- Reference data (routers, company, templates) cached with `staleTime: 300000` (5 min)
+- Polling uses `refetchInterval` instead of `setInterval`
+- Form/edit state synced from query data via `useMemo` + `useEffect`
+- Auth pages (login, 2FA) intentionally NOT migrated
+
+### Verification
+- `npx tsc --noEmit`: 0 errors
+- `npx next build`: success (local + VPS)
+- PM2: all 4 processes online
+- Smoke tests: health 200, login 200, 404, protected 401, upload 401
+
+---
+
+## [5.0.0] — 2026-08-15 — Phase 7: React Query + Performance Optimizations
+
+### React Query Implementation
+- Installed `@tanstack/react-query` v5.101.4
+- Added `QueryProvider` at root layout (`components/providers/QueryProvider.tsx`)
+- Created API hooks: `useApiQuery`, `useApiMutation`, `useAdminQuery`, `useCustomerQuery`, `useAgentQuery` (`lib/api/hooks.ts`)
+- Default: staleTime=30s, gcTime=5min, retry=1, refetchOnWindowFocus=false
+
+### Pages Migrated (15 pages)
+- **Dashboard** (`admin/page.tsx`) — 30s/5min polling via refetchInterval, RADIUS restart mutation
+- **PPPoE users** (`pppoe/users/page.tsx`) — 10s online status polling, optimistic updates, 5min staleTime for reference data
+- **Hotspot voucher** (`hotspot/voucher/page.tsx`) — eliminates 3x duplicate loadVouchers on mount, 30s polling, SSE invalidation
+- **PPPoE sessions** (`sessions/page.tsx`) — 10s polling, disconnect mutation, keepPreviousData for pagination
+- **Hotspot sessions** (`sessions/hotspot/page.tsx`) — 10s polling, sync/disconnect mutations
+- **Network routers** — list query + create/update mutations
+- **Network OLTs** — list query + CRUD mutations + FormData import
+- **Network ODPs** — list query + CRUD mutations
+- **Network trace** — 4 parallel queries via useApiQuery
+- **Network infrastruktur** — 4 table queries with pagination + search
+- **GenieACS presets/provisions/files/config/faults** — 1min staleTime, removed cache:no-store
+- **Invoices** — list query + mark-as-paid/send-reminder/broadcast/generate mutations
+- **Keuangan** — transactions query + categories (5min staleTime) + CRUD mutations
+
+### Performance Optimizations
+- Removed dead code: `lib/utils/export.ts` (unused, had eager jsPDF/exceljs imports)
+- Added `loading="lazy"` to 27 `<img>` tags across 16 files
+- Removed `{ cache: 'no-store' }` from 5 GenieACS pages (RQ handles caching)
+- Net code reduction: -1132 lines (1044 insertions, 2176 deletions)
+
+### Verification
+- `npx tsc --noEmit`: 0 errors
+- `npx next build`: success
+- VPS deploy: all PM2 processes online
+- Smoke test: health, login, 404, auth (401), upload (401) — all pass
+- No business logic, API endpoint, or HTTP method changes
+
+---
+
+## [4.9.0] — 2026-08-15 — Phase 6D: UI State & Error Handling Audit
+
+### Error Handling Standardization
+- Replaced 23 `alert()` calls with `showError`/`showSuccess`/`showInfo` from CyberToast bridge (7 files)
+- Replaced 15 bare `confirm()`/`window.confirm()` with `await showConfirm()` (12 files)
+- Replaced 14 direct `Swal.fire()` calls with CyberToast bridge (3 files: AddNodePanel, NetworkNodePanel, unified-map)
+- Fixed 22 silent catch blocks — added `console.error`/`console.warn` with `unknown` typed catch variables (10 files)
+
+### Route Boundaries
+- Added root `error.tsx`, `loading.tsx`, `not-found.tsx`
+- Added `customer/error.tsx`, `customer/loading.tsx`
+- Added `technician/error.tsx`, `technician/loading.tsx`
+- Total: 4 error boundaries, 4 loading boundaries, 1 not-found page
+
+### Shared Components
+- `components/feedback/EmptyState.tsx` — consistent "no data" UI
+- `components/feedback/LoadingSpinner.tsx` — consistent loading indicator
+- `components/feedback/ErrorState.tsx` — consistent error display with retry
+- Updated `components/feedback/index.ts` barrel exports
+
+### Verification
+- `npx tsc --noEmit`: 0 errors
+- `npx next build`: success
+- No business logic, API endpoint, or HTTP method changes
+- React Query not implemented (deferred to Phase 7)
+
+---
+
+## [4.8.0] — 2026-08-14 — Phase 6C: API Client Correctness & Type-Safety Hardening
+
+### Critical Fix
+- **API Client Content-Type** — `apiAdmin()` tidak lagi memaksakan `Content-Type: application/json` untuk FormData, Blob, ArrayBuffer, atau request tanpa body. Sebelumnya, ini berpotensi merusak semua upload file (logo, APK, payment proof, backup restore, import file) karena browser tidak bisa set `multipart/form-data; boundary=...` secara manual.
+
+### Type-Safety Improvements
+- `: any` reduced from 70 → 2 (97% reduction) — sisa hanya di `midtrans-client.d.ts` (third-party)
+- `as any` reduced from 37 → 0 (100% reduction)
+- `<any>` reduced from 9 → 5 (44% reduction) — sisa hanya di `midtrans-client.d.ts` (third-party)
+- `as unknown as` — all 24 usages documented with inline comments (Leaflet, jsPDF, API type boundaries, SplitterNode, custom DOM)
+- `metadata?: any` on SplitterDiagram → `PortMetadata` / `SplitterNodeMetadata` interfaces
+- AddNodePanel — 20 `: any` → 8 new interfaces
+- Recharts — 4 `: any` → `TooltipPayloadEntry`, `TooltipValueType` from recharts
+- `useTranslation.ts` — `obj: any` → `obj: unknown` with safe narrowing
+- `useSSE.ts` — `event: any` → `event: MessageEvent`
+- `network/map/page.tsx` — `useRef<any>` → `useRef<LeafletMap>`
+
+### API Client Improvements
+- Error handling: 401, 403, 404, 405, 429, 500+ with user-friendly messages
+- 204 No Content: return `null` instead of calling `res.json()`
+- `ApiErrorResponse` interface for typed error parsing
+- `server.ts` — same Content-Type logic for server-side fetch
+
+### Documentation
+- `docs/TYPE_SAFETY_EXCEPTIONS.md` — all remaining `any` and `as unknown as` documented with reasons, risk levels, and future solutions
+- `FRONTEND_AUDIT.md` — Phase 6C section added
+- `TODO.md` — Phase 6C marked as completed
+- `README.md` — version bumped to 4.8.0
+
+### Verification
+- `npx tsc --noEmit`: 0 errors
+- `npx next build`: success
+- No business logic, API endpoint, or HTTP method changes
+- No UI behavior changes
+- React Query not implemented (deferred to Phase 7)
+
+---
+
+## [4.7.0] — 2026-08-14 — Phase 6B: Frontend Type-Safety Hardening
+
+### Type-Safety Improvements
+- `catch (e: any)` → `catch (e: unknown)` with safe narrowing — 257 occurrences in 88 files
+- `(data as any)` casts removed — 272 occurrences in 40 files, replaced with explicit `apiAdmin<T>()` type arguments
+- `Record<string, any>` → `Record<string, unknown>` — 6 occurrences
+- `Promise<any>` → `Promise<unknown>` in rateLimiter.ts
+- 40+ inline response interfaces defined
+- `EntityFormData`, `OnuDetailResponse` interfaces for state typing
+
+### Metrics
+- `: any` reduced from 418 → 70 (83%)
+- `as any` reduced from 483 → 37 (92%)
+- `(data as any)` reduced from 272 → 0 (100%)
+- `catch (e: any)` reduced from 257 → 0 (100%)
+
+---
+
+## [4.6.0] — 2026-08-14 — Frontend Audit Phase 5 (API Types, Utilities, Security)
+
+### Overview — Frontend Audit Phase 5
+
+Lanjutan frontend audit setelah Phase 1–4 dan deployment. Phase 5 mencakup production testing, API contract types, dark mode audit, utilities consolidation, server/client component audit, dan security audit.
+
+**Commit**: `8e39478f` — `feat: Phase 5 frontend audit — API types, utilities, security, server components`
+
+### Phase 5A — Production Testing
+- Test 17 halaman admin via VPS dengan Playwright
+- Login, dashboard, PPPoE, billing, network, settings, cron, GenieACS
+- 0 console errors, 0 warnings
+- Dokumentasi: `docs/FRONTEND_PRODUCTION_TEST.md`
+
+### Phase 5B — API Contract Types
+- Buat `frontend/src/types/api/` dengan 10 file typed contracts
+- `common.ts`, `auth.ts`, `pppoe.ts`, `billing.ts`, `network.ts`, `voucher.ts`, `settings.ts`, `notification.ts`, `dashboard.ts`, `index.ts`
+- Update domain modules: `pppoeApi`, `invoiceApi`, `billingApi`, `networkApi`, `dashboardApi`, `settingsApi`
+- Types berdasarkan actual Prisma schema dan backend route responses
+- Build: TypeScript 0 errors
+
+### Phase 5C — Dark Mode Audit
+- Audit dark mode consistency
+- Project sudah punya design system TailAdmin dengan CSS variables lengkap
+- Dark mode berfungsi dengan baik (`.dark` class toggle)
+- Hardcoded hex colors (`#bc13fe`, `#00f7ff`) adalah intentional brand colors
+- Tidak ada fix needed
+
+### Phase 5D — Utilities Consolidation
+- Hapus `frontend/src/lib/utils/dateUtils.ts` (deprecated wrapper)
+- Migrasi 2 file (`evoucher/page.tsx`, `registrations/page.tsx`) ke `formatWIB` dari `@/lib/timezone`
+- Hapus 6 inline `formatRupiah`/`formatCurrency` di 6 file, ganti dengan import dari `@/lib/utils`
+
+### Phase 5E — React Query (Skipped)
+- React Query adalah optimization, bukan fix
+- Current approach dengan `apiAdmin()` sudah bekerja dengan baik
+- Dapat ditambahkan nanti jika dibutuhkan
+
+### Phase 5F — Server/Client Component Audit
+- Audit 208 `'use client'` directives
+- `components/ui/table.tsx` converted ke Server Component (pure presentational)
+- Komponen UI lain sudah tidak punya `'use client'`
+- Semua Radix UI primitives, charts, dan pages dengan hooks tetap Client Component
+
+### Phase 5G — Security Audit
+- **Fix**: `l2tpPassword` sebelumnya disimpan di localStorage di `vpn-server/page.tsx` — sudah dihapus
+- SSH credentials hanya simpan `{ host, port, username }` (tidak ada password)
+- NEXT_PUBLIC vars aman: timezone, app name, app url, api url
+- Tidak ada `DATABASE_URL`, `RADIUS_SECRET`, `API_SECRET`, atau secrets lain di frontend code
+
+### Phase 5H — Final Validation
+- TypeScript: 0 errors
+- Build: ✓ Compiled successfully
+- Lint: 1 error fixed (`<a>` → `<Link>` di genieacs settings), 425 warnings (pre-existing, unused vars)
+- Deploy: VPS `192.168.54.129` — PM2 all online, health check OK, frontend 200, nginx 200
+
+---
+
+## [4.5.0] — 2026-08-14 — Phase 4 Type Safety + VPS Deployment
+
+### Phase 4.1 — NextAuth Session Types
+- Hapus semua `(session.user as any)` casts
+- Typed session: `id`, `username`, `role`, `name`, `email`
+
+### Phase 4.5 — TypeScript Build Checks
+- Enable `typescript.ignoreBuildErrors: false` di `next.config.ts`
+- Fix 8 pre-existing TS errors (ippool, fiber-cores, olt/monitoring, charts)
+
+### Deployment
+- VPS `192.168.54.129` — git pull, build, PM2 restart
+- Health check: `{"status":"ok"}`
+- Frontend: HTTP 200, Nginx: HTTP 200
+
+---
+
+## [4.4.0] — 2026-08-14 — Frontend Centralized API Migration (Phase 2 Batch 1–52)
+
+### Overview — Frontend Audit & Centralized API Client Migration
+
+Migrasi massif frontend dari inline `fetch()` ke **centralized API client** (`@/lib/api`) untuk semua halaman admin. Tujuan: konsistensi error handling, typed responses, dan pemisahan frontend (UI-only) dari backend (data + integrations).
+
+**Total: 52 batch, 361 inline `fetch()` calls di-migrasi, 0 inline `fetch()` tersisa di halaman yang sudah di-migrasi.**
+
+Dokumentasi lengkap: [`FRONTEND_AUDIT.md`](FRONTEND_AUDIT.md)
+
+### Phase 1 — Architectural Cleanup (Prasyarat)
+
+#### Phase 1A — Dead Code Removal
+- Hapus import tidak terpakai, komponen yatim, dan type definitions obsolete di frontend
+- Cleanup `node_modules` artifacts dan stale config
+
+#### Phase 1B — NextAuth Refactor & Prisma Removal dari Frontend
+- Frontend tidak lagi import `@prisma/client` atau `lib/prisma` langsung
+- NextAuth session di-refactor agar tidak ada direct DB access dari frontend
+- Semua data access melalui HTTP API ke backend
+
+#### Phase 1C — Uploads ke Nginx
+- File upload serving dipindahkan dari Next.js route ke Nginx static serving (`/uploads/`)
+- Frontend tidak lagi handle upload file system access
+
+### Phase 2 — Centralized API Client Migration (Batch 1–52)
+
+#### Batch 1–8b — Fondasi API Client + 8 Pages + Type Fixes
+- **Created**: `frontend/src/lib/api/` — centralized API client dengan:
+  - `apiAdmin()` — untuk endpoint admin (auth-aware, error handling via `ApiError`)
+  - Typed response parsing
+  - Multipart & blob download support
+- **Migrated pages**: pppoe/profiles, pppoe/areas, pppoe/users, invoices, admin dashboard, keuangan, ippool
+- **Type fixes**: resolve type errors dari API client migration
+- **Calls migrated**: 80
+- **Commits**: `ebf9b861`, `688dccb2`, `62716541`, `115d625b`, `6a98b0ab`, `3830db3a`, `44904978`
+
+#### Batch 9 — Hotspot Voucher
+- `admin/hotspot/voucher/page.tsx` — 15 fetch calls
+- Commit: `6d2c9a5a`
+
+#### Batch 10–11 — VPN Server + VPN Client
+- `admin/vpn-server/page.tsx` + `admin/vpn-client/page.tsx` — 31 fetch calls
+- Commit: `e58c4173`
+
+#### Batch 12 — GenieACS Devices
+- `admin/genieacs/devices/page.tsx` — 13 fetch calls
+- Commit: `06e1adb5`
+
+#### Batch 13 — Network Diagrams
+- `admin/network/diagrams/page.tsx` — 10 fetch calls
+- Commit: `994ce54b`
+
+#### Batch 14 — Network Map
+- `admin/network/map/page.tsx` — 9 fetch calls
+- Commit: `f0dd4a5d`
+
+#### Batch 15 — Network OLTs
+- `admin/network/olts/page.tsx` — 8 fetch calls
+- Commit: `b0822f75`
+
+#### Batch 16 — Hotspot Agent
+- `admin/hotspot/agent/page.tsx` — 9 fetch calls
+- Commit: `3c46f769`
+
+#### Batch 17 — Network Infrastruktur
+- `admin/network/infrastruktur/page.tsx` — 8 fetch calls
+- Commit: `6c503c5a`
+
+#### Batch 18 — WhatsApp Providers
+- `admin/whatsapp/providers/page.tsx` — 7 fetch calls
+- Commit: `1ff826f5`
+
+#### Batch 19 — Network Routers
+- `admin/network/routers/page.tsx` — 8 fetch calls
+- Commit: `0d3d7a74`
+
+#### Batch 20 — Download APK
+- `admin/download-apk/page.tsx` — 7 fetch calls
+- Commit: `e406a1de`
+
+#### Batch 21 — GenieACS Parameter Config
+- `admin/genieacs/parameter-config/page.tsx` — 7 fetch calls
+- Commit: `899d9ee7`
+
+#### Batch 22 — PPPoE Registrations
+- `admin/pppoe/registrations/page.tsx` — 7 fetch calls
+- Commit: `f7acfefa`
+
+#### Batch 23 — GenieACS VP Scripts
+- `admin/genieacs/vp-scripts/page.tsx` — 6 fetch calls
+- Commit: `c9613760`
+
+#### Batch 24 — Management
+- `admin/management/page.tsx` — 6 fetch calls
+- Commit: `1945629b`
+
+#### Batch 25 — Network Trace
+- `admin/network/trace/page.tsx` — 4 fetch calls
+- Commit: `68114996`
+
+#### Batch 26 — Settings Email
+- `admin/settings/email/page.tsx` — 6 fetch calls
+- Commit: `1c1712c8`
+
+#### Batch 27 — Sessions
+- `admin/sessions/page.tsx` — 4 fetch calls
+- Commit: `04e717c4`
+
+#### Batch 28 — Notifications
+- `admin/notifications/page.tsx` — 6 fetch calls
+- Commit: `d519f096`
+
+#### Batch 29 — Settings Database
+- `admin/settings/database/page.tsx` — 6 fetch calls
+- Commit: `03711805`
+
+#### Batch 30 — Settings Company
+- `admin/settings/company/page.tsx` — 5 fetch calls
+- Commit: `909c5365`
+
+#### Batch 31 — Settings Telegram
+- `admin/settings/telegram/page.tsx` — 5 fetch calls
+- Commit: `cb5823da`
+
+#### Batch 32 — Tickets
+- `admin/tickets/page.tsx` — 5 fetch calls
+- Commit: `95e59b99`
+
+#### Batch 33 — Inventory Items
+- `admin/inventory/items/page.tsx` — 5 fetch calls
+- Commit: `0691ff2e`
+
+#### Batch 34 — Settings Cron
+- `admin/settings/cron/page.tsx` — 5 fetch calls
+- Commit: `2570c572`
+
+#### Batch 35 — Sessions PPPoE
+- `admin/sessions/pppoe/page.tsx` — 4 fetch calls (1 blob export intentionally retained)
+- Commit: `ca2b4046`
+
+#### Batch 36 — Network Unified Map
+- `admin/network/unified-map/page.tsx` — 5 fetch calls
+- Commit: `a1ac70d4`
+
+#### Batch 37 — Network Customers
+- `admin/network/customers/page.tsx` — 5 fetch calls
+- Commit: `b15a3c39`
+
+#### Batch 38 — Network Splice Points
+- `admin/network/splice-points/page.tsx` — 5 fetch calls
+- Known backend issue: `/api/network/cables` returns 500 (pre-existing, documented in audit)
+- Commit: `147d720e`
+
+#### Batch 39 — FreeRADIUS Backup
+- `admin/freeradius/backup/page.tsx` — 5 fetch calls
+- Commit: `aa7d45e6`
+
+#### Batch 40 — Ticket Detail
+- `admin/tickets/[id]/page.tsx` — 5 fetch calls
+- Commit: `7004ed0a`
+
+#### Batch 41 — Network ODPs
+- `admin/network/odps/page.tsx` — 5 fetch calls
+- Commit: `bd120916`
+
+#### Batch 42 — PPPoE User Detail
+- `admin/pppoe/users/[id]/page.tsx` — 5 fetch calls
+- Commit: `171fa372`
+
+#### Batch 43 — Manual Payments
+- `admin/manual-payments/page.tsx` — 4 fetch calls
+- Commit: `4212a619`
+
+#### Batch 44 — Settings Security (2FA)
+- `admin/settings/security/page.tsx` — 4 fetch calls
+- Commit: `11128b85`
+
+#### Batch 45 — Settings Isolation Templates
+- `admin/settings/isolation/templates/page.tsx` — 4 fetch calls
+- Commit: `8538112c`
+
+#### Batch 46 — Settings GenieACS
+- `admin/settings/genieacs/page.tsx` — 4 fetch calls
+- Commit: `c7dc6384`
+
+#### Batch 47 — PPPoE Addons
+- `admin/pppoe/addons/page.tsx` — 4 fetch calls
+- Commit: `97f0e58d`
+
+#### Batch 48 — Data Usage
+- `admin/data-usage/page.tsx` — 4 fetch calls
+- Commit: `b98d7827`
+
+#### Batch 49 — WhatsApp Send
+- `admin/whatsapp/send/page.tsx` — 4 fetch calls
+- Commit: `c96e382d`
+
+#### Batch 50 — Push Notifications
+- `admin/push-notifications/page.tsx` — 4 fetch calls
+- Commit: `d68ca94f`
+
+#### Batch 51 — Referrals + Settings Referral
+- `admin/referrals/page.tsx` + `admin/settings/referral/page.tsx` — 4 fetch calls (2 per page)
+- Commit: `80869cbd`
+
+#### Batch 52 — WhatsApp Templates
+- `admin/whatsapp/templates/page.tsx` — 2 fetch calls
+- Commit: `c98f2e80`
+
+### Migration Pattern (per page)
+
+Setiap halaman mengikuti pola berikut:
+1. Identifikasi inline `fetch()` calls
+2. Tambah import `apiAdmin` dari `@/lib/api`
+3. Ganti `fetch(url)` → `apiAdmin(url)`
+4. Ganti `fetch(url, { method, headers, body })` → `apiAdmin(url, { method, body })` (headers auto-set)
+5. Ganti `const res = await fetch(...); const data = await res.json()` → `const data = await apiAdmin(...)`
+6. Hapus `if (!res.ok) throw ...` manual (apiAdmin throw otomatis via `ApiError`)
+7. Preserve: success/error toast, loading state, form payloads, query params, translations
+8. Intentional browser downloads (blob exports) tetap menggunakan `fetch()` atau `window.location.href`
+
+### Verification (per batch)
+
+- ✅ Local build (`npm run build`) — exit code 0
+- ✅ Deploy via `pscp` + remote build + `pm2 restart salfanet-frontend`
+- ✅ Production page test via Playwright (`https://radius.salfa.my.id/admin/...`)
+- ✅ Browser console errors check (0 errors expected)
+- ✅ Update `FRONTEND_AUDIT.md`
+- ✅ Git commit + push
+
+### Phase 2 Status
+
+- **Migrated**: 52 batch, 361 fetch calls
+- **Remaining**: ~176 fetch calls di halaman admin lainnya
+- **Phase 3** (pending): middleware improvements, error boundaries, theme improvements
+
+---
+
+## [4.5.0] — 2026-08-14 — Phase 2 Completion (Batch 53–111) + Phase 3 Architecture Improvements
+
+### Overview — Phase 2 Completion & Phase 3 Architecture
+
+Melanjutkan migrasi API client dari Batch 53 sampai Batch 111 (selesai), dilanjutkan dengan Phase 3 architecture improvements (middleware, error boundaries, permission constants, security fix).
+
+**Total Phase 2: 111 batch, ~510 fetch calls di-migrasi, 55 fetch calls tersisa (semua legitimate blob/FormData/streaming downloads).**
+
+Dokumentasi lengkap: [`FRONTEND_AUDIT.md`](FRONTEND_AUDIT.md)
+
+### Phase 2 — Batch 53–111 (Remaining Pages Migration)
+
+#### Batch 53–60 — 8 Pages (Commit `2f117d71`)
+- `genieacs/presets`, `network/fiber-cables`, `genieacs/provisions`, `hotspot/evoucher`, `genieacs/virtual-parameters`, `network/odcs`, `sessions/hotspot`, `freeradius/config`
+
+#### Batch 61–68 — 8 Pages
+- `inventory/movements`, `inventory/suppliers`, `payment/bank-accounts`, `hotspot/template`, `inventory/categories`, `tickets/categories`, `settings/footer`, `network/fiber-joint-closures`
+
+#### Batch 69–76 — 8 Pages (Commit `6e88dda0`)
+- `network/fiber-cores`, `technicians`, `olt/monitoring`, `olt/alerts`, `genieacs/auto-provision`, `freeradius/status`, `freeradius/radcheck`, `topup-requests`
+- Added `buildUrl` export to API barrel (`frontend/src/lib/api/index.ts`)
+
+#### Batch 77–84 — 8 Pages with 3 fetch calls each (Commit `2ae622f8`)
+- `genieacs/files` (1 FormData upload retained), `genieacs/config`, `pppoe/users` (3 blob downloads), `payment-gateway`, `technicians`, `genieacs/auto-provision`, `freeradius/radcheck`, `freeradius/status`
+
+#### Batch 85–90 — 6 Pages with 2 fetch calls each (Commit `2ae622f8`)
+- `settings/isolation`, `settings/cloudflare-tunnel`, `admin/login`, `pppoe/users/new` (2 FormData uploads retained), `sessions` (2 blob downloads), `suspend-requests`
+
+#### Batch 91–93 — 3 Pages with 2 fetch calls each (Commit `2ae622f8`)
+- `whatsapp/notifications`, `hotspot/agent/deposits`, `genieacs/faults`
+
+#### Batch 94–111 — 18 Pages with 1 fetch call each (Commit `2ae622f8`)
+- JSON → apiAdmin (11 pages): `auth/two-factor`, `freeradius/logs`, `freeradius/radtest`, `isolated-users`, `laporan`, `laporan/analitik`, `logs/activity`, `settings/isolation/mikrotik`, `settings/subdomain`, `system`, `whatsapp/history`
+- Blob/FormData/Streaming → buildUrl (7 pages): `invoices`, `invoices/import`, `keuangan`, `network/olts`, `network/vpn-server`, `sessions/pppoe`, `whatsapp/providers`
+
+#### Lint Fixes (Commit `8b743cfb`)
+- `settings/cloudflare-tunnel`: remove boolean from `showToast` string argument
+- `laporan/analitik`: use `any` type for recharts formatter params (pre-existing recharts ValueType incompatibility)
+
+### Phase 2 Final Status: ✅ COMPLETE
+
+- **Total batches**: 111
+- **Total fetch calls migrated to apiAdmin**: ~510
+- **Remaining fetch() calls**: 55 (all legitimate)
+  - Blob/binary downloads (Excel, CSV, PDF exports)
+  - FormData uploads (file uploads)
+  - Streaming responses (SSE, chunked)
+  - Mixed response types (JSON or blob)
+- All remaining use `fetch(buildUrl(...), { credentials: 'include' })`
+
+### Phase 3 — Architecture Improvements (Commit `8c8c00f3`)
+
+#### Phase 3.1 — middleware.ts for Admin Route Protection
+- **File**: `frontend/src/middleware.ts`
+- Protects all `/admin/*` routes (except `/admin/login`) with NextAuth JWT check
+- Redirects unauthenticated users to `/admin/login?callbackUrl=...`
+- Public routes skipped: `/admin/login`, `/login`, `/daftar`, `/evoucher`, `/pay`, `/pay-manual`, `/payment`, `/offline`, `/isolated`, `/docs`, `/download-apk`
+- Agent/customer/technician portals use client-side token auth, NOT enforced by middleware
+
+#### Phase 3.2 — error.tsx and loading.tsx for Admin Route Segment
+- **Files**: `frontend/src/app/admin/error.tsx`, `frontend/src/app/admin/loading.tsx`
+- Route-level error boundary with "Coba Lagi" and "Ke Dashboard" buttons
+- Route-level loading UI with spinner during page transitions
+
+#### Phase 3.3 — Migrate usePermissions.ts to apiAdmin
+- **File**: `frontend/src/hooks/usePermissions.ts`
+- Replaced inline `fetch()` with `apiAdmin()` from `@/lib/api`
+
+#### Phase 3.4 — Permission Constants File
+- **File**: `frontend/src/lib/permissions.ts`
+- Centralized permission key constants (`PERMISSIONS.DASHBOARD_VIEW`, etc.)
+- Role constants (`ROLES.SUPER_ADMIN`, `ROLES.FINANCE`, etc.)
+- Helper functions: `isStaffRole()`, `isSuperAdmin()`
+- Type exports: `PermissionKey`, `RoleKey`
+
+#### Phase 3.5 — Remove SSH Credentials from localStorage (C8 Fix)
+- **File**: `frontend/src/app/admin/network/vpn-server/page.tsx`
+- SSH password no longer stored in `localStorage` — only `{ host, port, username }`
+- User prompted to re-enter password on next action after page reload
+- `vpn-client/page.tsx` already only stored non-sensitive info — no change needed
+
+### Phase 3 Status: ✅ COMPLETE (Items 8–14 from audit plan)
+
+### Verification
+- ✅ Build: SUCCESS (exit code 0, middleware proxy active)
+- ⏳ Deploy: Pending (VPS unreachable)
+- ⏳ Production test: Pending deploy
+
+---
+
+## [4.3.0] — 2026-08-14 — Add-ons System + Janji Bayar + GPS Maps + Diskon + Teknisi Tracking
+
+### Added — Layanan Add-ons (Add-on Services)
+- **Prisma models**: `addonType`, `customerAddon`, `invoiceAddon` — mendukung recurring (bulanan) & one-time (sekali bayar)
+- **API endpoints**:
+  - `GET/POST /api/addon-types` — list & create addon types
+  - `PUT/DELETE /api/addon-types/[id]` — update & soft-delete addon types
+  - `GET/POST /api/pppoe/users/[id]/addons` — list & assign addon ke pelanggan
+  - `DELETE /api/customer-addons/[id]` — hentikan addon pelanggan (set endDate)
+- **Invoice integration**: addon recurring otomatis ditambahkan ke invoice bulanan saat cron generate
+- **Frontend admin page**: `/admin/pppoe/addons` — kelola jenis layanan tambahan (CRUD + toggle active)
+- **UserDetailModal**: tab "📦 Add-ons" — lihat addon aktif & riwayat, tambah/hentikan addon dengan price override
+
+### Added — Janji Bayar (Promise to Pay)
+- **Prisma model**: `paymentPromise` — status `active`/`fulfilled`/`broken`
+- **API endpoints**: `GET/POST/DELETE /api/pppoe/users/[id]/promise`
+- **Behavior**: membuat janji bayar akan membuka isolir pelanggan hingga tanggal janji; membatalkan akan mengisolir kembali
+- **UserDetailModal**: tab "🤝 Janji Bayar" — buat janji bayar dengan tanggal & catatan, lihat riwayat
+- **Dropdown aksi**: tombol "Janji Bayar" di menu aksi pelanggan (buka modal edit → tab Janji Bayar)
+
+### Added — GPS Maps di Customer Detail
+- **Embedded OpenStreetMap iframe** di tab Info Pengguna — menampilkan lokasi GPS pelanggan
+- **Google Maps link** — tombol "Google Maps ↗" untuk buka koordinat di Google Maps
+- Menggunakan koordinat `latitude`/`longitude` yang sudah ada di database
+
+### Added — Diskon Tagihan di Customer Detail
+- **Field diskon** (`discount` & `discountNote`) sekarang bisa di-edit dari UserDetailModal tab Info
+- **Invoice generation fix**: cron `invoice-jobs.ts` sekarang mengurangi `discount` dari `baseAmount` saat generate invoice bulanan
+- **Update API**: `updatePppoeUser` menerima & menyimpan perubahan `discount` & `discountNote`
+
+### Added — Teknisi Pemasang Tracking
+- **Field baru**: `registeredByTechnicianId` di `pppoeUser` model (nullable, relation ke `technician`)
+- **Display**: UserDetailModal tab Info menampilkan nama teknisi yang mendaftarkan pelanggan + tanggal registrasi
+- **List query**: `listPppoeUsers` sekarang include `registeredByTechnician` relation
+- **Create API**: `createPppoeUser` menerima `registeredByTechnicianId` (untuk PSB dari technician portal)
+- Legacy customers tanpa teknisi menampilkan "System / Admin"
+
+### Fixed — Invoice Generation
+- **Bug**: field `discount` di `pppoeUser` tidak digunakan saat generate invoice bulanan
+- **Fix**: `baseAmount = Math.max(0, user.profile.price - (user.discount || 0))` + tambah recurring addons
+- **Invoice addon records**: `invoiceAddon` records dibuat untuk setiap recurring addon aktif
+
+### Maintenance
+- **`.gitignore`**: untrack `home.pmynet.id-main/` reference repo & `.playwright-mcp/` snapshots
+- **Service worker**: cache version bumped to v16
+- **Sidebar menu**: tambah menu "Layanan Tambahan" di bawah PPPoE
+
+---
+
+## [4.2.0] — 2026-08-13 — Redis Cache + Realtime UI Fixes + RADIUS Script IP Fix + Auth Mode Cleanup
+
+### Added — Redis Cache untuk Data Non-Realtime
+- **Redis utility** (`backend/src/server/cache/redis.ts`): `getCached`, `setCached`, `invalidateKey`, `invalidatePattern`, `cacheAside` dengan graceful degradation (fallback ke DB jika Redis unavailable)
+- **Cache endpoints** (TTL 5 menit):
+  - `GET /api/pppoe/profiles` → cache key `pppoe:profiles`
+  - `GET /api/pppoe/areas` → cache key `pppoe:areas`
+  - `GET /api/network/routers` → cache key `network:routers`
+- **Cache invalidation** otomatis saat create/update/delete pada profiles, areas, routers
+- **Tidak di-cache** (realtime): PPPoE users (online/offline status), sessions, invoices, payment status
+- Package: `ioredis ^6.0.0` ditambahkan ke backend dependencies
+
+### Fixed — Halaman Berhenti Langganan Realtime Update
+- **Root cause**: `loadData()` dipanggil setelah optimistic update dan menimpa state dengan data dari server (race condition)
+- **Root cause 2**: `setUsers` dipanggil setelah `await fetch` sukses — API RADIUS sync/CoA bisa makan 3-5 detik, user tetap di tabel selama menunggu
+- **Fix — True optimistic update**: hapus user dari list **sebelum** API call, rollback jika API gagal
+  - `handleReactivate`: hapus sebelum fetch + rollback jika gagal
+  - `handleDelete`: hapus sebelum fetch + rollback jika gagal
+  - `handleBulkDelete`: hapus sebelum fetch + rollback jika gagal
+- **Fix — Kolom No Layanan**: tampilkan `customerId` (nomor regis pelanggan) bukan `username` (PPPoE username)
+  - Mobile card view: tampilkan `customerId · username`
+  - Search filter: tambah `customerId` sebagai search field
+- **Cache no-store**: semua fetch PPPoE users, profiles, areas, routers, invoices pakai `cache: 'no-store'`
+- **Skip MikroTik polling**: `listPppoeUsers({ status: 'stop' })` skip MikroTik `/ppp/active` polling karena stopped users tidak mungkin online
+- **Service worker cache version** bump ke v11 untuk purge cache lama
+- File: `frontend/src/app/admin/pppoe/stopped/page.tsx`, `frontend/src/app/admin/pppoe/users/page.tsx`, `frontend/src/app/admin/pppoe/users/[id]/page.tsx`
+
+### Fixed — RADIUS Setup Script IP Server
+- **Root cause**: script generator pakai hostname dari `NEXTAUTH_URL` / request Host header → resolve ke domain `radius.salfa.my.id` → Cloudflare proxy IP (172.67.x.x / 104.21.x.x), bukan IP asli VPS
+- **Fix**: hapus DNS resolution dan domain fallback, gunakan `os.networkInterfaces()` untuk detect IP asli VPS
+- **Prioritas IP**: `RADIUS_SERVER_IP` env → `VPS_IP` env → auto-detect dari network interfaces
+- **VPN-specific**: WireGuard pakai VPN gateway IP, PPP VPN pakai RADIUS VPN client IP, public/direct pakai VPS IP + `src-address` = router `nasname`
+- **Generated script** sekarang pakai IP literal di: `# RADIUS Server:`, `/radius add address=`, CoA firewall rules, auth/accounting firewall rules, Netwatch host
+- File: `backend/src/app/api/network/routers/[id]/setup-radius/route.ts`
+
+### Fixed — Isolation Flow: Fallback MikroTik API Kick
+- **Root cause**: `disconnectPPPoEUser` return early saat tidak ada active `radacct` record, padahal user masih connected di MikroTik `/ppp/active`
+- **Fix**: tambah fallback — jika `radacct` kosong, cari active router → kick session via MikroTik API (`/ppp/active/remove`)
+- File: `backend/src/server/services/pppoe.service.ts`
+
+### Fixed — PPP Secret Re-enabled saat Isolir/Aktivasi (hybrid mode)
+- **Root cause**: `shouldManagePppSecretForSuspend` return `true` untuk `hybrid` mode → `managePppSecret('enable')` set `disabled=no` pada secret yang sudah di-disable manual
+- **Fix**: hanya `local` mode yang manage PPP secret. `radius` mode skip management (RADIUS primary, secret backup only)
+- **Fix**: RADIUS-created backup secrets sekarang `disabled=yes` by default
+- File: `backend/src/server/services/mikrotik/ppp-secret.service.ts`
+
+### Cleanup — Hapus hybrid Auth Mode
+- **hybrid** mode obsolete — hanya `local` dan `radius` yang didukung
+- Update router row di VPS: `authMode = hybrid` → `radius`
+- Update comments di `backend/src/app/api/invoices/route.ts`
+- `hybrid` di OLT VLAN/switch config commands tetap dipertahankan (valid RouterOS/ZTE networking term, bukan auth mode)
+- File: `backend/prisma/schema.prisma`, `backend/src/app/api/invoices/route.ts`, `backend/src/server/services/mikrotik/ppp-secret.service.ts`
+
+---
+
+## [4.1.0] — 2026-08-13 — PSB Wizard + Cron Jobs Implementation + Data Consistency Fix
+
+### Added — PSB Wizard 3-Step untuk Tambah Pelanggan
+- **Wizard 3-step** mengadopsi flow `home.pmynet.id` untuk tambah pelanggan baru
+- **Step 1 — Data Pelanggan**: nama, phone, NIK (16 digit), email, alamat, foto KTP (capture dari kamera HP via `capture="environment"`), GPS koordinat, MapPicker, foto instalasi, duplicate NIK & phone check
+- **Step 2 — Data Pembayaran**: paket/profile, subscription type (POSTPAID/PREPAID), billing day, discount amount + note, preview harga setelah discount, first invoice option (none/prorate/full), estimasi prorate
+- **Step 3 — Data Secret / Connection**: connection type (PPPoE/Static IP/Hotspot), PPPoE username+password, static IP, router/NAS, area, ODP, MAC address, auto-isolation, install date, comment, conditional "Buat PPP Secret di MikroTik" checkbox (muncul hanya untuk PPPoE + router `auth_mode='radius'`)
+- **Per-step validation** sebelum bisa lanjut ke step berikutnya
+- File: `frontend/src/app/admin/pppoe/users/new/page.tsx`
+
+### Added — Backend Support untuk PSB Wizard
+- `backend/src/features/pppoe/schemas.ts`: Extended `createPppoeUserSchema` dengan `odp`, `discount`, `discountNote`, `installDate`, `connectionType`
+- `backend/src/server/services/pppoe.service.ts`: Persist field baru ke database + NIK/phone duplicate check
+- `backend/src/app/api/pppoe/users/route.ts`: Validasi field baru
+
+### Added — Prisma Schema untuk PSB Wizard
+- `pppoeUser` model: tambah `odp` (varchar 100), `discount` (int default 0), `discountNote` (varchar 255), `installDate` (datetime)
+- Update: `backend/prisma/schema.prisma` + `frontend/prisma/schema.prisma`
+
+### Added — Implementasi 4 Cron Jobs yang Sebelumnya Placeholder
+Sebelumnya 4 cron jobs hanya return "not yet implemented". Sekarang sudah diimplementasi penuh:
+
+- **`hotspot_sync`** (setiap menit): Expire voucher hotspot dengan status `WAITING`/`ACTIVE` yang sudah lewat `expiresAt` → update ke `EXPIRED`
+- **`agent_sales`** (setiap 5 menit): Catat penjualan voucher agent ke `agent_sales` table dengan amount dari `hotspotProfile.sellingPrice`, skip duplicate
+- **`session_monitor`** (setiap 15 menit): Monitor sesi suspicious/stale/orphaned di `radacct`, **auto-close** orphaned (username tidak terdaftar) + stale (>30 hari)
+- **`pppoe_session_sync`** (setiap 5 menit): Sync PPP active dari MikroTik via RouterOS API, **auto-close** stale sessions (tidak di MikroTik) + orphaned sessions (username tidak di `pppoe_users`/`hotspot_vouchers`)
+- File: `backend/src/server/cron/additional-jobs.ts` (baru)
+- File: `backend/src/app/api/cron/route.ts` — switch case untuk 4 jobs baru
+
+### Fixed — Cron Jobs `{"error":"Unauthorized"}`
+- **Root cause**: `CRON_SECRET` hanya ada di PM2 env cron-runner, tidak di `backend/.env`. Backend tidak bisa verify `x-cron-secret` header → fallback session auth → Unauthorized
+- **Fix**:
+  - Tambah `CRON_SECRET` ke `backend/.env` + `backend/.next/standalone/backend/.env` di VPS
+  - `deploy/ecosystem.config.js` + `frontend/production/ecosystem.config.js`: Tambah `CRON_SECRET` ke env backend + cron
+  - `frontend/vps-install/install-app.sh`: Auto-generate `CRON_SECRET` via `openssl rand -hex 32` saat install
+
+### Fixed — Inkonsistensi Data PPPoE (Status Online vs Active Sessions)
+- **Root cause**: `radacct` punya open sessions dari sistem lama (home.pmynet.id) yang username-nya tidak terdaftar di `pppoe_users`. Halaman sessions menampilkan semua radacct open sessions → muncul 3 active padahal hanya 1 user terdaftar
+- **Fix**:
+  - Cleanup 2 orphaned sessions langsung di VPS (`sucidwilestari@sukajadi`, `oomabdulrohman@sukajadi`)
+  - `pppoe_session_sync` cron: auto-close orphaned + stale sessions setiap 5 menit
+  - `session_monitor` cron: auto-close orphaned + stale (>30 hari) sessions setiap 15 menit
+- **Verifikasi**: `radacct_open = 1`, `pppoe_active = 1`, `orphaned_open = 0` ✅
+
+### Fixed — Static Assets 404 Setelah Build
+- **Root cause**: `npx next build` standalone tidak otomatis copy `.next/static/` ke standalone directory → CSS/JS chunks 404 + MIME type error
+- **Fix**: Manual `cp -r .next/static .next/standalone/frontend/.next/static/` (updater.sh sudah handle ini, masalah hanya saat build manual)
+
+---
+
+## [4.0.0] — 2026-08-13 — Two-Next.js App Architecture + Realtime Status + PPPoE Reconnect Fix
+
+### Architecture — Two Independent Next.js Apps
+- **Migrated from NestJS backend back to Next.js** — both frontend and backend are now Next.js 16 standalone apps
+- `frontend/` (port 3000): UI pages, components, NextAuth authentication routes
+- `backend/` (port 3001): API routes, Prisma, MikroTik services, RADIUS services, cron business logic
+- `packages/shared-types/`: Shared TypeScript types between apps
+- Frontend communicates with backend over HTTP via `lib/api-client.ts`
+- Nginx routes: `/api/auth/*` → frontend (3000), `/api/*` → backend (3001), `/` → frontend (3000)
+- PM2 processes: `salfanet-frontend`, `salfanet-backend`, `salfanet-cron`, `salfanet-wa`
+- Cron runner: standalone tsx process that calls backend APIs on schedule
+- Monorepo standalone build: `scripts/postbuild.js` copies static assets to nested standalone dirs
+
+### Fixed — PPPoE Tidak Reconnect Setelah Payment dari Isolir
+- **Root cause 1**: Isolir flow mengubah MikroTik PPP secret profile ke `isolir`, tapi payment restoration hanya update RADIUS tables tanpa restore PPP secret
+- **Root cause 2**: FreeRADIUS `rest` module `connect_uri` masih ke port 3000 (frontend) — seharusnya port 3001 (backend). Setelah split, route `/api/radius/authorize` ada di backend
+- **Root cause 3**: `sqlippool` di FreeRADIUS post-auth bersifat fatal — jika gagal allocate IP, Access-Accept berubah menjadi Access-Reject
+- **Root cause 4**: Auto-renewal cron hanya update `status: 'active'` tanpa restore RADIUS/PPP secret untuk user yang sebelumnya isolated
+
+#### Fixes Applied
+- `backend/src/app/api/invoices/route.ts` (PUT): Tambah `managePppSecret` + `kickPppoeSession` + `nas_identifier` di RADIUS queries
+- `backend/src/server/cron/invoice-jobs.ts`: Auto-renewal sekarang restore RADIUS + PPP secret untuk user isolated
+- `backend/freeradius-config/mods-enabled/rest`: `connect_uri` → `http://localhost:3001` (backend)
+- `backend/freeradius-config/sites-enabled/default`: `sqlippool`, `sql`, `cuisql` di post-auth → non-fatal (`-` prefix)
+- Clear stale `radippool` entries yang expired
+
+#### Verification
+- User `muhammadluthfi@rw02`: Access-Accept dengan `Mikrotik-Group=PAKET 100MBPS`
+- IP `192.168.14.2` dari `100mbps-pool` (bukan `pool-isolir`)
+- MikroTik: ACTIVE, session tersimpan di `radacct` dengan `acctstoptime=NULL`
+
+### Added — Realtime Online/Offline Status
+- **New API endpoint**: `GET /api/pppoe/users/online-status` — lightweight endpoint yang hanya return set username online
+  - Cek `radacct` (RADIUS auth users) + `batchListPppActive` (MikroTik local auth users)
+  - Support filter `?usernames=` untuk restrict ke user yang ditampilkan saja
+- **Frontend polling**: Setiap 10 detik, update `isOnline` field tanpa reload full data
+  - Hanya trigger re-render jika ada perubahan status (cegah unnecessary renders)
+  - Badge **"Live"** dengan indikator pulse di filter Sesi
+- File: `backend/src/app/api/pppoe/users/online-status/route.ts`
+- File: `frontend/src/app/admin/pppoe/users/page.tsx` — polling effect
+
+### Updated — FreeRADIUS Configuration
+- `rest` module: `connect_uri` diupdate dari `localhost:3000` → `localhost:3001` (backend API)
+- `sites-enabled/default` post-auth: semua modules (`sql`, `sqlippool`, `cuisql`, `rest`) sekarang non-fatal
+- Comment diupdate untuk reflect 2-app architecture
+
+### Updated — Deployment Configuration
+- `deploy/ecosystem.config.js`: 4 PM2 processes (frontend, backend, cron, wa)
+- `deploy/nginx-salfanet.conf`: 2-app routing (`/api/auth/*` → 3000, `/api/*` → 3001, `/` → 3000)
+- `frontend/production/ecosystem.config.js`: Updated untuk 2-app architecture
+- `frontend/production/nginx-salfanet-radius.conf`: Updated untuk 2-app routing
+
+### Updated — Installer/Updater/Uninstaller
+- `frontend/vps-install/install-pm2.sh`: Build dan setup 2 Next.js apps terpisah
+- `frontend/vps-install/updater.sh`: Build dan restart 2 apps + cron
+- `frontend/vps-install/vps-uninstaller.sh`: Hapus 4 PM2 processes (frontend, backend, cron, wa)
+- `frontend/vps-install/install-app.sh`: Install dependencies untuk frontend + backend
+
+---
+
+## [3.2.0] — 2026-08-12 — FreeRADIUS Integration + Admin UI
+
+### FreeRADIUS Server Configuration (Stage 1 — Verified on VPS)
+- Enabled `sqlippool` module (SQL-backed IP pool, not file-based `rlm_ippool`)
+- Enabled `cui` module with MySQL backend (`cuisql`)
+- Imported stored procedure `fr_allocate_previous_or_new_framedipaddress` (modified: removed `SET TRANSACTION` to avoid conflict with rlm_sql transaction wrapper)
+- Configured `queries.conf` to use stored procedure for atomic IP allocation
+- Added `sqlippool` + `cuisql` to `sites-enabled/default` post-auth section
+- Added `sqlippool` to accounting section for lease release on STOP/ON/OFF
+- Fixed `Pool-Name` attribute: moved from `radgroupreply` to `radgroupcheck` (check item, not reply)
+- Verified with `radtest`: Access-Accept + `Framed-IP-Address = 172.19.200.10` from `10Mbps-Pool`
+- Verified CUI table populated on auth
+- FreeRADIUS config validation: `freeradius -XC` exit 0
+- Service status: `active (running)`
+
+### Admin UI (Stage 2)
+- New page: `/admin/ippool` — IP Pool Management
+  - List pools with total IPs and range
+  - Pool statistics (total pools, total IPs, allocated, utilization %)
+  - Create pool (network + start/end octet)
+  - Expand pool (add more IPs to existing pool)
+  - Delete pool (only when no IPs allocated)
+  - Pool details modal with recent allocations
+  - Pool-Name → RADIUS group mappings (radgroupcheck)
+  - Map/unmap group to pool
+- New page: `/admin/data-usage` — Data Usage Reports
+  - Top Consumers tab (filter by 7/30/90 days, top 10/20/50)
+  - Monthly Summary tab (current month aggregate)
+  - Per User tab (search by username, date-range usage)
+  - Manual aggregate trigger button
+  - Upload/Download/Total in GB
+- Added sidebar menu entries under FreeRADIUS group: IP Pool, Data Usage
+- Added translation keys (id.json): `nav.ipPool`, `nav.dataUsage`
+
+### Deployment Scripts
+- `deploy/freeradius/install-radius-modules.sh` — idempotent installer for sqlippool + cui + SP
+- `deploy/freeradius/queries-sqlippool.conf` — FreeRADIUS queries using stored procedure
+- `deploy/freeradius/cui.conf` — CUI module config (MySQL)
+- `deploy/freeradius/sqlippool.conf` — sqlippool module config
+- `deploy/freeradius/fr_allocate_sp.sql` — stored procedure (modified from FreeRADIUS 3.2.8)
+
+### Legacy API Route Cleanup
+- Stubbed 6 legacy API routes that imported deleted `@/server/jobs/*`:
+  - `/api/cron` — delegates to backend `/api/v1/cron/trigger`
+  - `/api/cron/status` — delegates to backend `/api/v1/cron/status`
+  - `/api/cron/schedules` — delegates to backend `/api/v1/cron/schedules`
+  - `/api/cron/telegram` — delegates to backend `/api/v1/telegram/cron/*`
+  - `/api/sessions/sync` — delegates to backend `/api/v1/cron/trigger`
+  - `/api/invoices/send-reminders-bulk` — delegates to backend
+  - `/api/admin/isolate-user` — delegates to backend
+  - `/api/pppoe/users/status` — removed `sendIsolationNotification` import (now backend cron)
+
+---
+
+## [3.1.0] — 2026-08-12 — RADIUS Enhancements
+
+### New Features — Adopted from home.pmynet.id-main (FreeRADIUS 3.2.8)
+
+#### IP Pool Management (`cff6473`)
+- New Prisma model: `radippool` (FreeRADIUS ippool module)
+- New NestJS module: `IppoolModule` at `/api/v1/ippool`
+- 9 API endpoints: list, stats, create, expand, delete, pool-group mappings
+- Dynamic IP allocation per speed tier — no more static IP per user
+- Pool utilization statistics (total, allocated, free, %)
+
+#### Data Usage Reporting (`cff6473`)
+- New Prisma model: `data_usage_by_period`
+- New NestJS module: `DataUsageModule` at `/api/v1/data-usage`
+- 4 API endpoints: per-user usage, monthly summary, top consumers, manual aggregate
+- Cron job `data_usage_aggregate` — daily at 00:05, aggregates `radacct` → `data_usage_by_period`
+- Bandwidth reporting in GB (upload, download, total) per user per period
+
+#### Multi-NAS Isolation (`29d835d`)
+- Added `nas_identifier` column to `radcheck`, `radreply`, `radusergroup`
+- Auto-sync from `pppoeUser.routerId` → `nas_identifier` on RADIUS sync
+- Updated sync logic in `extras.service.ts` and `admin-extras.service.ts`
+- Enables same username on different routers without conflict
+
+#### CUI — Chargeable User Identity (`29d835d`)
+- New Prisma model: `cui` (FreeRADIUS cui module)
+- Persistent user tracking across sessions/NAS for billing & audit
+
+#### NAS Reload Tracking (`29d835d`)
+- New Prisma model: `nasreload` (FreeRADIUS lightweight accounting-on/off)
+
+#### IP Pool Speed Tier Seed (`29d835d`)
+- New seed script: `frontend/prisma/seeds/ippool-speed-tiers.ts`
+- Creates 4 pools: 10Mbps, 20Mbps, 30Mbps, 50Mbps (1022 IPs each, /22 subnet)
+- Auto-maps Pool-Name to RADIUS groups via `radgroupreply`
+
+#### Migration SQL Script (`29d835d`)
+- `frontend/prisma/migrate-radius-enhancements.sql` — all schema changes in one file
+- Includes: nas_identifier columns, radippool, cui, data_usage_by_period, nasreload
+- Backfill: populates nas_identifier from pppoe_users for existing data
+
+### Post-Migration Cleanup
+- Removed legacy cron runner + 13 job files (`d65ab2a`, `2934fb0`)
+- Removed `frontend/bin/server.exe` (17MB binary), `package-lock.json`, `baileys_whatsapp_patch/`
+- Fixed `wa-service.js` path in ecosystem config
+- Updated `.gitignore` for package-lock.json, frontend/bin/
+
+### Documentation
+- Updated `docs/MIGRATION_ROADMAP.md` — VPS verification details, cleanup status, accurate file counts
+- Updated `README.md` — new features, PM2 processes (3 not 4), RADIUS enhancements section
+
+---
+
+## [3.0.0] — 2026-08-12 — NestJS Migration
+
+### Architecture Migration — Next.js → Next.js + NestJS Monorepo
+
+Full migration from single Next.js monolith to pnpm monorepo with
+Next.js frontend + NestJS backend. All 8 phases complete.
+
+#### Phase 1: Setup Monorepo (`8eaab66`)
+- Created pnpm workspace structure: `frontend/`, `backend/`, `packages/`, `deploy/`
+- Shared types package: `@salfanet/shared-types`
+- Prisma schema shared from `frontend/prisma/`
+
+#### Phase 2: Backend Auth Module (`92a81e5`)
+- NestJS 11 with JWT auth, guards, decorators
+- AdminGuard, AgentGuard, CustomerGuard, TechnicianGuard
+- PermissionsService with 53 permissions
+- Global ResponseTransformInterceptor + GlobalExceptionFilter
+
+#### Phase 3: Port API Modules — 13 Batches (`0a98b07` → `529a1f1`)
+- 46 NestJS modules covering 399 API routes
+- All endpoints under `/api/v1/*`
+- Modules: auth, users, pppoe, hotspot, invoices, sessions, network,
+  mikrotik, freeradius, genieacs, olt, vpn, whatsapp, email, push,
+  telegram, cron, payment-gateway, dashboard, tickets, export, etc.
+
+#### Phase 4: Port Cron Jobs (`0b3ec1e`)
+- 17 cron jobs ported to `@nestjs/schedule` with `@Cron()` decorator
+- Real implementations: hotspot_sync, invoice_reminder, disconnect_sessions,
+  pppoe_session_sync, freeradius_health, olt_poll
+- WhatsApp + Email wired into invoice reminders
+- MikroTik API wired into session disconnect + PPPoE sync
+- runWithLock() prevents concurrent execution
+
+#### Phase 5: Frontend Cleanup (`a981dbc`)
+- 5 layout files decoupled from Prisma (use `getCompanyInfo()` API call)
+- Centralized API client: `frontend/src/lib/api-client.ts`
+- `NEXT_PUBLIC_API_URL` env var for backend URL
+- Legacy routes kept as fallback (safe strategy)
+
+#### Phase 6: Independent Build & Deploy (`d29846b`)
+- PM2 ecosystem.config.js (4 processes: frontend, backend, cron, wa)
+- Nginx reverse proxy: `/api/v1/*` → backend, `/` → frontend
+- deploy.sh script (full / --backend / --frontend)
+- Backend .env.example with all required vars
+
+#### Phase 7: Regression Test (`8757606`)
+- 46 e2e tests (auth + smoke tests), all passing
+- Mock PrismaService for testing without real DB
+- Bug fixes: AuthModule → @Global(), SessionSyncModule exports
+- Manual regression test checklist (18 sections)
+
+#### Phase 8: Cleanup & Documentation
+- Updated README.md for monorepo architecture
+- Created ARCHITECTURE.md — full system architecture diagram
+- Created DEVELOPMENT.md — dev setup, workflow, testing guide
+
+### Key Decisions
+- Backend framework: NestJS 11 (enterprise-grade, DI, decorators)
+- Repo structure: pnpm monorepo (shared types, atomic commits)
+- API versioning: `/api/v1/*` (new) + `/api/*` (legacy, fallback)
+- Cron: `@nestjs/schedule` in backend process
+- Deploy: PM2 4 processes + Nginx reverse proxy
+- Migration strategy: dual-stack (legacy kept until VPS verified)
+
+### Breaking Changes
+- PM2 process names changed: `salfanet-radius` → `salfanet-frontend` + `salfanet-backend`
+- Nginx config: `/api/v1/*` now routes to NestJS backend
+- Frontend env: `NEXT_PUBLIC_API_URL` required for backend calls
+- Backend env: separate `.env` file in `backend/`
+
+---
+
+## [2.34.9] — 2026-08-11
+### Fixed
+- **Admin sidebar "Log Aktivitas" menu returned 404** — The sidebar linked to `/admin/logs/activity` (and the notification dispatcher used the same URL for deep-links), but the page was never created. Clicking the menu or opening a notification link produced `Failed to load resource: 404 (Not Found)` in the browser console. The API `/api/admin/activity-logs` existed and worked; only the UI page was missing.
+- **Root cause**: the page file `src/app/admin/logs/activity/page.tsx` was never written, AND `.gitignore` had an overly-broad `logs/` rule that matched *any* directory named `logs` anywhere in the tree (including `src/app/admin/logs/`), so even if the file had been created it would have been silently excluded from git.
+- **Fix**:
+  - Created `src/app/admin/logs/activity/page.tsx` — a full activity-log viewer (filter by module, search, pagination, status badges, WIB timestamps) backed by the existing `/api/admin/activity-logs` endpoint.
+  - Fixed `.gitignore`: changed `logs/` → `/logs/` so only the root-level runtime logs directory is ignored, not source-tree directories named `logs`.
+### Files
+- `src/app/admin/logs/activity/page.tsx` — new page (280 lines)
+- `.gitignore` — `logs/` → `/logs/` (anchored to repo root)
+
+---
+
+## [2.34.8] — 2026-08-11
+### Fixed
+- **Fresh install: `/api/company/info` returns HTTP 404 ("Company not found")** — The comprehensive seeder `prisma/seeds/seed-all.ts` (run by `vps-install/install-app.sh` as `npm run db:seed`) never created a row in the `Company` table. It only *read* `prisma.company.findFirst()` to derive the isolir rate limit (falling back to a hardcoded default when null). The standalone `prisma/seeds/seed-company.ts` existed but was never invoked by the installer. As a result, on a fresh install the `Company` table was empty and the public `/api/company/info` route (used by login/customer/agent layouts for branding) returned 404 by design.
+- **Fix**: `seed-all.ts` now creates a default `Company` row (id, name `SALFANET RADIUS`, timezone `Asia/Jakarta`, default isolation settings, empty `bankAccounts`) when none exists, before the isolir-group step reads `company.isolationRateLimit`. Existing installs are left untouched (idempotent `findFirst` guard).
+### Files
+- `prisma/seeds/seed-all.ts` — new step 4.5 "Seed Company" between Hotspot Profiles and WhatsApp Templates
+
+---
+
+## [2.34.7] — 2026-08-11
+### Fixed
+- **LXC install: app unreachable from browser even though everything looked healthy** — On a fresh LXC install, `http://VPS_IP/` timed out from any real external client even though Nginx was listening correctly on `0.0.0.0:80`/`:443`, PM2/MySQL/FreeRADIUS were all active, and `/api/health` responded fine when curled *from inside* the VPS. Root cause: the installer's `SKIP_UFW=true` logic for `--env lxc` unconditionally skips ALL UFW rule changes (assuming firewalling is handled at the Proxmox host and that UFW/iptables don't work in unprivileged LXC). But UFW was already **active** on this container (from the base image) with a restrictive default (`deny incoming`, only `22/tcp` allowed) — so port 80/443/1812/1813/3799 were silently blocked for genuine external traffic. Self-curl from the VPS to its own IP appeared to work fine because that traffic hairpins through `lo`, which UFW's default rules exempt — masking the problem during internal testing.
+- **Fix**: `configure_ufw()` (install-security.sh), `configure_firewall_nginx()` (install-nginx.sh), and `configure_firewall()` (install-freeradius.sh) now check `ufw status` even when `SKIP_UFW=true`. If UFW is already active, the required `allow` rules (80/tcp, 443/tcp, 1812/udp, 1813/udp, 3799/udp, 500/udp, 4500/udp, 1701/udp) are still added (best-effort, non-fatal) instead of being skipped outright. UFW is never *enabled* for LXC (that stays skipped, since forcing `ufw enable` in an unsupported container could break networking) — only rules are added to an already-active UFW.
+### Files
+- `vps-install/install-security.sh` — `configure_ufw()`
+- `vps-install/install-nginx.sh` — `configure_firewall_nginx()`
+- `vps-install/install-freeradius.sh` — `configure_firewall()`
+
+---
+
+## [2.34.6] — 2026-08-11
+### Fixed
+- **Fresh install: `salfanet-cron` HTTP 401 loop on every job** — Fresh installs via `vps-installer.sh` deployed `production/ecosystem.config.js` pointing `salfanet-cron` at the deprecated `cron-service.js` (HTTP polling to `/api/cron`). That route requires an `x-cron-secret` header matching `CRON_SECRET`, which `cron-service.js` never sends and which the installer never generates — every job failed with `HTTP 401: Unauthorized`, 3 retries each cycle, forever.
+- **Root cause found by full uninstall/reinstall test on a clean LXC VPS.**
+- **Fix attempt 1 (reverted)**: pointed `salfanet-cron` at `src/cron/runner-wrapper.cjs` (the documented "correct" migration target used by `updater.sh`/`cleanup-refactor.sh`). This crash-looped instead: `require('tsx/cjs')` inside the wrapper does NOT apply `tsconfig.json` `paths` aliases (`@/*`), causing `ERR_MODULE_NOT_FOUND: Cannot find package '@/server'` on every job import.
+- **Fix (final)**: `salfanet-cron` now runs the `tsx` CLI binary directly (`node_modules/.bin/tsx -r ./src/cron/preload.cjs src/cron/runner.ts`) instead of `runner-wrapper.cjs`. The tsx CLI resolves `@/*` aliases correctly; `preload.cjs` still mocks the `server-only` guard so Next.js server modules can be imported outside Next.js. Verified: all 15 scheduled jobs run directly via `src/server/jobs/*` with zero HTTP round-trip, zero 401s, zero crash restarts (`↺ 0`) after the fix.
+### Files
+- `production/ecosystem.config.js` — `salfanet-cron` `script`/`args` changed to tsx CLI + preload; removed unused `API_URL` env var
+- `vps-install/install-pm2.sh` — fallback ecosystem generator + `start_cron_service()` existence check updated to match
+
+---
+
+## [2.34.5] — 2026-08-11
+### Removed
+- **Go backend cleanup — full revert to pure Next.js** — Menghapus seluruh sisa eksperimen migrasi backend ke Go yang sudah tidak terpakai di production. Konfirmasi: `production/ecosystem.config.js` hanya menjalankan 3 proses PM2 (`salfanet-radius`, `salfanet-cron`, `salfanet-wa`) — tidak ada proses Go. `production/nginx-salfanet-radius.conf` mengarahkan seluruh trafik termasuk `/api/*` ke Next.js port 3000. `vps-installer.sh` tidak pernah memanggil `install-go.sh`. Next.js tetap memiliki seluruh 399 API route (`src/app/api/**/route.ts`) sebagai satu-satunya backend aktif.
+### Files
+- Dihapus: `internal/` (69 file Go handler/service), `cmd/server/main.go`
+- Dihapus: `go.mod`, `go.sum`, `Dockerfile`, `Makefile`, `.air.toml`, `docker-compose.yml`
+- Dihapus: `vps-install/install-go.sh`, `nginx-frontend.conf` (config nginx orphan yang mengarah ke Go `:8080`)
+- Dihapus: `docs/GO_MIGRATION_PROMPT.md`
+
+---
+
+## [2.34.4] — 2026-05-13
+### Added
+- **Sidebar: Permintaan Top-Up & Suspend** — tambah `nav.topupRequests` (`/admin/topup-requests`) dan `nav.suspendRequests` (`/admin/suspend-requests`) sebagai child PPPoE
+- **Sidebar: ODC, ODP, Peta Jaringan** — tambah 3 item ke Topology: Network Map, ODC, ODP
+- **Sidebar: Fiber ODC & Fiber ODP** — tambah ke seksi Manajemen Fiber
+- **Sidebar: GenieACS Files** — tambah child `nav.files` ke seksi GenieACS
+- **Sidebar: Kelola Teknisi** — tambah item standalone di catManagement
+- **Sidebar: Log Aktivitas** — tambah item standalone di catManagement
+- **Sidebar: Pengaturan Keamanan** — tambah child `/admin/settings/security` ke settingsMenu
+- **Sidebar: WhatsApp jadi submenu** — ubah dari single link ke children (Settings, Riwayat, Template, Kirim, Notifikasi, Providers)
+- **i18n: tambah nav keys** — `topupRequests`, `suspendRequests`, `activityLogs`, `security`, `fiberOdcs`, `fiberOdps`
+### Files
+- `src/app/admin/AdminClientLayout.tsx` — tambah menu items, WhatsApp jadi submenu, import UserCog
+- `src/locales/id.json` — tambah 6 nav translation keys
+
+---
+
+## [2.32.2] — 2026-05-13
+### Fixed
+- **System Info API: silent git errors** — Semua `execSync` git di `/api/admin/system/info` kini pakai `stdio: 'pipe'` sehingga stderr tidak bocor ke PM2 log; `getAppDir()` kini mencari `/var/www/salfanet-frontend` lebih dulu (direktori dengan `.git`) sebelum fallback ke path lain
+### Files
+- `src/app/api/admin/system/info/route.ts` — tambah `stdio: 'pipe'` pada `execSync`/`execFileSync`, perbarui urutan kandidat `getAppDir()`
+
+---
+
+## [2.32.1] — 2026-05-11
+### Fixed
+- **PPPoE Session Sync error 1264** — `acctsessiontime` di-clamp ke range INT MariaDB (`GREATEST(0, LEAST(..., 2147483647))`) pada semua 4 UPDATE query; sesi dengan `acctstarttime` tidak valid (`0000-00-00` atau sangat lama) tidak lagi menyebabkan cron gagal
+### Files
+- `src/server/jobs/pppoe-session-sync.ts` — clamp TIMESTAMPDIFF ke INT range, tambah filter `acctstarttime > '2000-01-01'` pada update aktif
+
+---
+
+## [2.32.0] — 2026-05-11
+### Added
+- **Centralized Cron Schedule Management** — jadwal semua cron job kini bisa diatur dari satu halaman Admin → Settings → Cron tab "Jadwal Cron"; perubahan disimpan ke DB `cron_schedule_config`, aktif setelah `pm2 restart salfanet-cron`
+- **Schedule Editor modal** — 17 preset waktu (Every minute, Every 5 min, dll.) + custom cron expression; menampilkan default schedule sebagai referensi
+- **3-tab layout cron page** — Tab: Status & Trigger, Jadwal Cron, Riwayat Eksekusi
+- **API `/api/cron/schedules`** — GET/PUT/DELETE untuk manajemen schedule override per job (SUPERADMIN only)
+- **DB table `cron_schedule_config`** — menyimpan override schedule per jobType
+### Changed
+- **`runner.ts`** — load schedule overrides dari DB saat startup; fallback ke default jika tidak ada override atau tabel belum ada; support `preload.cjs` mock untuk `server-only`
+- **`jobs.config.ts`** — hapus `import 'server-only'` guard (redundant; diganti comment penjelasan)
+### Fixed
+- **Duplicate `CronSettingsPage` declaration** — page.tsx memiliki dua `export default function CronSettingsPage()` yang menyebabkan build error Turbopack; baris duplikat dihapus
+- **`server-only` module block tsx cron runner** — `src/cron/preload.cjs` mocking module `server-only` sebelum tsx load file apapun agar standalone cron runner bisa berjalan
+### Files
+- `src/app/admin/settings/cron/page.tsx` — rewrite lengkap dengan 3-tab layout + ScheduleEditor modal
+- `src/app/api/cron/schedules/route.ts` — NEW: CRUD API untuk schedule override
+- `src/cron/runner.ts` — load schedule overrides dari DB via `initSchedules()`
+- `src/cron/preload.cjs` — NEW: mock `server-only` agar tsx bisa load server files
+- `src/cron/runner-wrapper.cjs` — NEW: CJS wrapper entry point (opsional)
+- `src/server/jobs/jobs.config.ts` — hapus `import 'server-only'`
+- `prisma/schema.prisma` — tambah model `cronScheduleConfig`
+
+---
+
+## [2.31.12] — 2026-05-11
+### Fixed
+- **MikroTik timeout empty error message** — `node-routeros` melempar empty string `""` saat timeout (bukan `Error` object); sekarang ada fallback message yang jelas jika error kosong atau `{}`
+- **Library timeout conflict** — `node-routeros` internal timeout diset ke 9999s agar tidak interferensi dengan `Promise.race` timeout kita yang memberikan pesan error yang lebih informatif
+### Files
+- `src/server/services/mikrotik/client.ts` — set library timeout ke 9999s, tambah fallback untuk empty error message
+
+---
+
+## [2.31.11] — 2026-05-11
+### Fixed
+- **MikroTik API error diagnosis** — error message kosong setelah "Failed to connect to MikroTik:" karena `node-routeros` melempar non-Error object; diperbaiki dengan serialisasi yang robust (handle `string`, plain object, `Error`)
+- **MikroTik firewall hint di UI** — saat VPN ping OK tapi API gagal timeout, UI menampilkan perintah `/ip firewall filter add` yang persis harus dijalankan di MikroTik terminal
+- **Port fallback skip jika sama** — jika `port == apiPort`, tidak perlu coba SSL fallback (menghindari koneksi redundan)
+### Files
+- `src/server/services/mikrotik/client.ts` — fix error serialization, update timeout message
+- `src/app/api/network/routers/test/route.ts` — tambah field `diagnosis`, skip SSL fallback jika port sama
+- `src/app/admin/network/routers/page.tsx` — tampilkan perintah MikroTik firewall saat VPN OK tapi API blocked
+
+---
+
+## [2.31.10] — 2026-05-11
+### Fixed
+- **MikroTik API port auto-detect** — koneksi API gagal jika port berbeda dari default; sekarang test connection mencoba `port` (8728, non-SSL) terlebih dahulu, lalu fallback ke `apiPort` (8729, SSL/TLS) jika gagal; jika berhasil di port berbeda, form otomatis di-update ke port yang benar
+- **MikroTik TLS/SSL support** — tambah opsi `tls: true` di `MikroTikConnection` untuk support API-SSL (port 8729) dengan self-signed certificate
+### Files
+- `src/server/services/mikrotik/client.ts` — tambah field `tls` di `MikroTikConfig`, pass `{ rejectUnauthorized: false }` ke RouterOSAPI untuk self-signed cert
+- `src/app/api/network/routers/test/route.ts` — coba primary port dulu, fallback ke SSL port; return `usedPort` dan `usedTls` dalam response
+- `src/app/admin/network/routers/page.tsx` — kirim kedua port (`port` dan `apiPort`) ke test endpoint; auto-update form jika port yang berhasil berbeda
+
+---
+
+## [2.31.9] — 2026-05-11
+### Fixed
+- **Mobile scroll semua halaman admin** — 60+ halaman admin tidak bisa di-scroll di iOS/Android; penyebab: `overflow-hidden` pada root div `bg-background relative overflow-hidden`; dihapus dari semua halaman (background blur effects sudah punya `overflow-hidden` pada `absolute inset-0` child mereka sendiri)
+- **Customer offline page** — halaman offline customer portal tidak bisa di-scroll; `overflow-hidden` pada root dipindah ke background div
+### Files
+- `src/app/admin/**/*.tsx` — hapus `overflow-hidden` dari root div pada 60+ halaman admin
+- `src/app/customer/offline/page.tsx` — hapus `overflow-hidden` dari root, pindah ke background div
+
+---
+
+## [2.31.8] — 2026-05-10
+### Fixed
+- **Mobile scroll blocked** — halaman admin/customer/technician tidak bisa di-scroll di iOS/Android; penyebab: `overflow-hidden` pada root `min-h-screen` div di semua portal layout; dipindah ke background `fixed inset-0` div agar tidak clipping konten
+- **Touch overlay block scroll** — notifikasi bell dropdown admin & customer memblokir touch scroll di halaman; ditambah `touch-none` pada `fixed inset-0 z-40` overlay
+- **PPPoE tambah pelanggan** — form terpotong di viewport mobile karena `h-full max-h-screen`; diganti `min-h-screen`
+- **Halaman publik scroll** — `daftar/page.tsx` dan `pay/[token]/page.tsx` pakai `overflow-hidden` pada root; dihapus agar konten bisa di-scroll
+### Files
+- `src/app/admin/AdminClientLayout.tsx` — hapus `overflow-hidden` dari root div, pindah ke background div
+- `src/app/customer/CustomerClientLayout.tsx` — sama + `touch-none` pada bell overlay
+- `src/app/technician/TechnicianPortalLayout.tsx` — `touch-none` pada notif overlay
+- `src/app/admin/pppoe/users/new/page.tsx` — `h-full max-h-screen` → `min-h-screen`
+- `src/app/daftar/page.tsx` — hapus `overflow-hidden` dari root
+- `src/app/pay/[token]/page.tsx` — hapus `overflow-hidden` dari root
+
+---
+
+## [2.31.7] — 2026-05-10
+### Fixed
+- **HTTPS domain radius.hotspotapp.net** — Install SSL certificate via Let's Encrypt certbot; nginx dikonfigurasi port 443 SSL + redirect HTTP→HTTPS; Cloudflare SSL mode Full sudah support
+### Files
+- `nginx-frontend.conf` — tambah SSL certificate, port 443, HTTP redirect; ganti IP ke domain `radius.hotspotapp.net`
+
+---
+
+## [2.31.6] — 2026-05-10
+### Fixed
+- **Health endpoint version** — `/api/health` selalu return `"unknown"` karena `npm_package_version` tidak tersedia di Next.js standalone; diganti dengan build-time env `APP_VERSION` dari `next.config.ts`
+- **PM2 startup** — `pm2 save` + systemd `pm2-root.service` verified enabled agar services auto-restart setelah reboot VPS
+### Files
+- `next.config.ts` — inject `APP_VERSION = pkg.version` as build-time env
+- `src/app/api/health/route.ts` — fallback `process.env.APP_VERSION`
+
+---
+
+## [2.31.5] — 2026-05-10
+### Fixed
+- **Session expiry** — NextAuth session maxAge diubah dari 2 jam menjadi 30 hari; updateAge dari 15 menit menjadi 1 jam
+### Files
+- `src/server/auth/config.ts` — session maxAge: 30 days, updateAge: 1 hour
+- `package.json` — bump version to 2.31.5
+
+---
+
+## [2.31.4] — 2026-05-11
+### Fixed
+- **nginx routing: `/api/*` ke Next.js** — Root cause 401 errors: nginx salah routing semua `/api/*` ke Go backend (port 8080), padahal admin panel Next.js menggunakan NextAuth session cookies (bukan JWT Bearer). Semua `/api/*` sekarang diarahkan ke Next.js (port 3000). Go backend tetap berjalan di port 8080 untuk akses langsung / WebSocket OLT.
+- **Cron jobs audit** — Tidak ada cron lama dari billing-radius Next.js. Semua cron (vpn-watchdog, wg-peer-watchdog, salfanet-cleanup) adalah script VPS yang valid.
+### Architecture Note
+- Go backend (port 8080): `GET /ws/olt/:id` WebSocket + direct API access
+- Next.js (port 3000): semua `/api/*` routing via NextAuth session
+- Migrasi frontend ke Go JWT adalah pekerjaan berikutnya (bukan dalam scope ini)
+### Files
+- `nginx-frontend.conf` — hapus `location /api/` → Go; WebSocket `/ws/` tetap ke Go, semua `/` ke Next.js
+
+---
+
+## [2.31.3] — 2026-05-10
+### Fixed
+- **Postbuild: copy `.next/static` to standalone** — Static assets (CSS, JS, fonts) were returning 404/wrong MIME type because postbuild script did not copy `.next/static` into `.next/standalone/.next/static`; all browser console errors resolved
+### Files
+- `package.json` — postbuild now copies `.next/static` to `.next/standalone/.next/static`
+- `baileys_whatsapp_patch/package.json` — same fix
+
+---
+
+## [2.31.2] — 2026-05-10
+### Added
+- **Next.js frontend deployed on VPS** — Full stack running at `http://103.151.140.110`: Go API backend (port 8080) + Next.js frontend (port 3000) behind nginx reverse proxy
+- **Database schema migrated** — `prisma db push` applied all 100+ tables to MariaDB `salfanet_radius`; custom SQL migrations confirmed already included in schema
+- **PM2 process management** — `salfanet-frontend` and `wa-service` managed by PM2, auto-start on boot via `pm2-root.service` systemd unit
+- **nginx proxy updated** — `/api/*` → `:8080` (Go), `/ws/*` → `:8080` (Go), `/*` → `:3000` (Next.js)
+- **Company seed data** — Initial company record seeded via `npm run db:seed:company`
+### Files
+- `nginx-frontend.conf` — nginx config template with frontend proxy
+### Notes
+- Admin login: `http://103.151.140.110/admin/login`
+- Customer portal: `http://103.151.140.110/customer/login`
+- API health: `http://103.151.140.110/api/system/health`
+
+---
+
+## [2.31.1] — 2026-05-10
+### Fixed
+- **CustomerAuthMiddleware** — Replace placeholder with real DB-backed session validation (`customer_sessions` table, token lookup, expiry check)
+- **Customer OTP send** — Plug in `notify.SendOTP` in `CustomerLogin` handler (was TODO)
+### Files
+- `internal/api/middleware/auth.go` — `NewCustomerAuthMiddleware(db)` factory, real session DB lookup
+- `internal/api/handlers/auth.go` — Import `notify` package, call `SendOTP` on customer login
+- `internal/api/router.go` — Pass DB to `NewCustomerAuthMiddleware`
+- `vps-install/wa-package.json` — Valid package.json for wa-service npm install on VPS
+
+---
+
+## [2.31.0] — 2026-05-10
+### Added
+- **Go backend Phase 2+ — Full API migration** — Complete Go backend covering all major feature domains. Zero Next.js dependency for API layer.
+  - `internal/db/models/extra.go` — Extra GORM models: HotspotProfile, HotspotVoucher, Agent, AgentSale, AgentDeposit, TransactionCategory, Transaction, NetworkODC/ODP/OTB, PaymentGateway, RegistrationRequest, SuspendRequest, PushSubscription, WhatsappHistory, WhatsappReminderSetting, TicketReply
+  - `internal/radius/radius.go` — FreeRADIUS service: direct MySQL manipulation (radcheck/radreply/radusergroup), isolate/unisolate, rate-limit upsert, session query
+  - `internal/notify/whatsapp.go` — WA sidecar HTTP client (POST to wa-service.js :3001/send), phone normalization, invoice/payment/isolation/activation templates
+  - `internal/cron/scheduler.go` — robfig/cron v3 scheduler (Asia/Jakarta TZ): generate invoices (00:01), send reminders (hourly), auto-isolate unpaid (00:05), sync voucher expiry (5min); manual trigger API; CronHistory tracking
+  - `internal/api/handlers/pppoe.go` — PPPoE areas, profiles, customers, users CRUD + suspend/activate/isolate/unisolate + radius sync + registrations approve/reject
+  - `internal/api/handlers/billing.go` — Invoices CRUD + pay (ManualPayment + WA notify) + monthly generation + transactions + payment gateway webhooks (Midtrans/Xendit/Duitku/Tripay)
+  - `internal/api/handlers/radius.go` — RADIUS user management, active sessions, stats, soft disconnect
+  - `internal/api/handlers/hotspot.go` — Hotspot profiles + voucher batch generation/management
+  - `internal/api/handlers/agent.go` — Agent CRUD + sales/deposits + balance topup + voucher assignment
+  - `internal/api/handlers/network.go` — Network map: OLT list + ODC/ODP/OTB/Router CRUD
+  - `internal/api/handlers/whatsapp.go` — WhatsApp providers + templates + manual send + history + reminder settings
+  - `internal/api/handlers/ticket.go` — Support tickets: list/create/get/update/reply/close
+  - `internal/api/handlers/company.go` — Company settings get/update
+  - `internal/api/handlers/cronhandler.go` — Cron history + manual job trigger API
+  - `internal/api/handlers/customer_portal.go` — Customer self-service: profile, invoices, pay, push-subscribe
+  - `internal/api/middleware/auth.go` — Added `CustomerAuthMiddleware` for customer portal
+  - `internal/api/handlers/auth.go` — Added `AgentLogin` endpoint (phone + PIN → JWT)
+  - `internal/api/router.go` — Full route wiring for all domains (PPPoE, Billing, Radius, Hotspot, Agent, Network, WhatsApp, Tickets, Company, Cron, Customer)
+  - `cmd/server/main.go` — Wire FreeRADIUS service + cron scheduler into startup/shutdown lifecycle
+  - `vps-install/install-go.sh` — Full VPS clean install script (Go 1.23, Node.js 20, PM2, Nginx, UFW, FreeRADIUS, systemd)
+### Fixed
+- `internal/api/handlers/helpers.go` — `pageParams` now accepts `fiber.Ctx` directly instead of a custom interface (Fiber v3 variadic `Query` signature)
+- `internal/api/handlers/billing.go` — Removed redundant `strconv` import and workaround stub
+### Files
+- `internal/db/models/extra.go` — new
+- `internal/radius/radius.go` — new
+- `internal/notify/whatsapp.go` — new
+- `internal/cron/scheduler.go` — new
+- `internal/api/handlers/helpers.go` — updated
+- `internal/api/handlers/pppoe.go` — new
+- `internal/api/handlers/billing.go` — new (fixed)
+- `internal/api/handlers/radius.go` — new
+- `internal/api/handlers/hotspot.go` — new
+- `internal/api/handlers/agent.go` — new
+- `internal/api/handlers/network.go` — new
+- `internal/api/handlers/whatsapp.go` — new
+- `internal/api/handlers/ticket.go` — new
+- `internal/api/handlers/company.go` — new
+- `internal/api/handlers/cronhandler.go` — new
+- `internal/api/handlers/customer_portal.go` — new
+- `internal/api/middleware/auth.go` — updated
+- `internal/api/handlers/auth.go` — updated (AgentLogin)
+- `internal/api/router.go` — updated (full route wiring)
+- `cmd/server/main.go` — updated (wire radius + cron)
+- `vps-install/install-go.sh` — new
+
+### Added
+- **Go backend Phase 1 — OLT Monitoring** — Full Go backend scaffolded alongside the existing Next.js frontend. Compiles to a single binary (`bin/server.exe`), Fiber v3 HTTP framework, GORM (MySQL, shares existing DB), zerolog structured logging.
+  - `cmd/server/main.go` — entrypoint with graceful SIGTERM/SIGINT shutdown
+  - `internal/config/config.go` — godotenv-based config (all env vars from `.env`)
+  - `internal/db/db.go` — GORM connection pool (25 max open, 10 idle, 5min lifetime)
+  - `internal/db/models/` — GORM models mirroring Prisma schema (OLT, ONU, alerts, metrics, customers, invoices, …)
+  - `internal/olt/snmp/` — gosnmp walk/get thin wrapper (thread-safe, per-call session)
+  - `internal/olt/telnet/` — persistent Telnet pool (max 3 sessions/OLT, 30s keepalive)
+  - `internal/olt/vendors/zte/` — ZTE C320 V2.1: concurrent SNMP walk + Telnet authoritative ONU discovery, register/deregister, ONU types, T-CONT profiles
+  - `internal/olt/poller/` — per-OLT polling goroutines, DB upsert, alert detection, WebSocket broadcast
+  - `internal/ws/hub.go` — WebSocket broadcast hub (fasthttp upgrader, OLT-scoped subscriptions)
+  - `internal/api/` — Fiber v3 router, JWT Bearer middleware, auth/admin/OLT handlers
+  - `Makefile`, `Dockerfile`, `docker-compose.yml`, `.air.toml` — build/deploy tooling
+### Files
+- `cmd/server/main.go` — new
+- `internal/**/*.go` — new (24 files)
+- `Makefile`, `Dockerfile`, `docker-compose.yml`, `.air.toml` — new
+
+## [2.29.63] — 2026-05-09
+### Fixed
+- **Ghost ONU "N/A" unregistered dari SNMP stale seen-table** — Root cause: `ZTE_V21_SEEN_ONU_TABLE` SNMP walk mengembalikan ONU ID yang stale/pernah tersambung sebelumnya (bukan ONU fisik aktif). Code lama menambah SNMP IDs yang tidak ada di `uncfgSerials` Telnet sebagai entri kosong → tampil di UI sebagai ONU Unregistered ke-3 dengan serial "N/A". Fix: track `hadTelnetData` — jika globalUncfgMap sudah dibangun (Telnet global berhasil), jangan tambahkan ID dari SNMP seen-table. Telnet dipercaya sebagai sumber otoritatif. SNMP fallback hanya digunakan saat Telnet benar-benar tidak tersedia.
+- **Per-port Telnet extra call saat globalUncfgMap tersedia** — `else if (globalUncfgMap?.has(portKey))` salah: jika port tidak ada di map (0 ONU uncfg), jatuh ke per-port Telnet call. Fix: cek `globalUncfgMap !== null` dulu.
+### Files
+- `src/lib/olt/vendors/zte.ts` — `discoverPonV21`: tambah `hadTelnetData` flag, fix kondisi globalUncfgMap check
+
+## [2.29.62] — 2026-05-09
+### Fixed
+- **Register ONU 422 — false positive dari MOTD login OLT** — Root cause: error detection di POST register menggunakan `errorKeywords = ['failure', ...]` dengan `lowerOutput.includes('failure')`. OLT ZTE C320 selalu menampilkan MOTD setelah login: `"0 authentication failures happened"` → keyword `failure` match → handler return 422 meski registrasi berhasil. Fix: ganti broad keyword matching dengan deteksi yang spesifik terhadap pola CLI error: (1) baris diawali `%` (ZTE/Huawei CLI error prefix), (2) `invalid input`, (3) `invalid command`, (4) `already exist`, (5) `command not found`. MOTD/banner teks tidak akan ter-trigger.
+### Files
+- `src/app/api/olt/[id]/onus/register/route.ts` — POST: replace broad `errorKeywords.includes()` dengan line-by-line CLI error pattern matching
+
+## [2.29.61] — 2026-05-09
+### Fixed
+- **ONU Type dropdown salah isi (Telnet artifacts)** — Root cause dua masalah: (1) Command yang dipakai `show gpon onu-type` tidak valid di ZTE C320 V2.1 — command yang benar adalah `show onu-type`. (2) Parser `parseZteOnuTypes` punya catch-all regex `^([A-Za-z0-9_][A-Za-z0-9_.-]*)` yang memungut kata apa saja dari awal baris, termasuk artefak sesi Telnet seperti `Connected`, `Trying`, `Welcome`, `Last`, `spawn`, `ince`, `ZXAN#show`. Fix: (1) Ubah command ke `show onu-type`. (2) Tambah parser untuk format `ONU type name:  <name>` (output `show onu-type`). (3) Hapus catch-all regex, ganti dengan filter eksplisit untuk header/attribute lines.
+### Files
+- `src/app/api/olt/[id]/onus/register/route.ts` — command: `show gpon onu-type` → `show onu-type`; parser: tambah `ONU type name:` pattern, hapus catch-all
+
+## [2.29.60] — 2026-05-09
+### Fixed
+- **OLT Import Template 404** — `GET /api/network/olts/template` dan `POST /api/network/olts/import` tidak ada (route files belum dibuat). Tombol "Download Template Excel" dan upload import Excel di halaman `/admin/network/olts` selalu 404/error. Fix: buat kedua route. Template menghasilkan file `.xlsx` dengan contoh 2 baris (kolom: name, ipAddress, latitude, longitude, vendor, model, snmpCommunity, snmpPort, telnetPort, username, password, pollingInterval). Import route mem-parse Excel, validasi IP + vendor, skip duplicate IP, dan insert via Prisma.
+### Files
+- `src/app/api/network/olts/template/route.ts` — baru: GET → download OLT_Import_Template.xlsx
+- `src/app/api/network/olts/import/route.ts` — baru: POST → import OLT dari Excel
+
+## [2.29.59] — 2026-05-09
+### Fixed
+- **OLT Delete 500 — FK constraint `network_otbs.oltId`** — Root cause: `network_otbs` tabel punya kolom `oltId` dengan foreign key ke `networkOLT` tanpa `onDelete: SetNull`. Saat OLT dihapus, MySQL raise FK constraint violation → handler return 500. Fix: (1) Di DELETE handler `/api/network/olts` tambah `prisma.network_otbs.updateMany({ ... data: { oltId: null } })` sebelum `networkOLT.delete`. (2) Schema Prisma diperbarui: tambah `onDelete: SetNull` ke `network_otbs.olt` relation.
+- **TSC — `ZteServiceTemplate` & `RegisterMetadata` tidak terdefinisi** — Kedua tipe digunakan di `ONURegisterModal` component di `src/app/admin/olt/[id]/page.tsx` tapi tidak pernah dideklarasikan. Fix: tambah `type ZteServiceTemplate = 'basic' | 'zte_full' | 'huawei_full' | 'fiberhome_veip'` dan `interface RegisterMetadata { onuTypes, tcontProfiles, trafficProfiles, suggestedOnuId, detectedOnuType }` sebelum component. Efek domino: ini juga memperbaiki 4 error "Parameter 'type'/'profile' implicitly has an 'any' type" di map callbacks (karena sebelumnya `metadata` bertipe `any`).
+- **TSC — `assign/route.ts` customer.customerId type mismatch** — `serializeOnuAssignment` function mendeclare `customer.customerId: string` tapi Prisma query include menghasilkan `customerId: string | null`. Fix: ubah ke `customerId: string | null`.
+- **TSC — `detail/route.ts` type predicate state mismatch** — `.filter()` predicate mendeclare `state: string | null` tapi TypeScript meng-infer `state: string` dari `parts[3] ?? null` (tanpa `noUncheckedIndexedAccess`, `string[]` index akses menghasilkan `string`, bukan `string | undefined`). Fix: ubah predicate ke `state: string`. Ini sekaligus memperbaiki error "candidate is possibly null" di `.find()` callbacks (karena sebelumnya TS tidak bisa narrow array type akibat predicate yang broken).
+### Files
+- `src/app/api/network/olts/route.ts` — DELETE handler: unlink `network_otbs` sebelum delete OLT
+- `prisma/schema.prisma` — `network_otbs.olt`: tambah `onDelete: SetNull`
+- `src/app/admin/olt/[id]/page.tsx` — tambah `ZteServiceTemplate` type dan `RegisterMetadata` interface
+- `src/app/api/olt/[id]/onus/[onuId]/assign/route.ts` — `serializeOnuAssignment`: `customerId: string | null`
+- `src/app/api/olt/[id]/onus/[onuId]/detail/route.ts` — filter predicate: `state: string`
+
+## [2.29.58] — 2026-05-09
+### Fixed
+- **Poller fully SNMP — hapus per-ONU Telnet serial fallback dari `discoverPonV21`** — Root cause: `discoverPonV21` menampung ONU yang gagal di-parse serial-nya dari SNMP hex ke dalam array `needsTelnetSerial`, lalu memanggil `show gpon onu detail-info gpon-onu_1/B/P:ID` via Telnet secara paralel (N `Promise.all` sessions) untuk setiap ONU dengan serial null. Jika ada banyak ONU dengan format serial non-standar (misalnya byte non-ASCII), ini bisa spawn banyak Telnet sessions secara serentak, yang saturates OLT concurrent session limit. Fix: hapus `needsTelnetSerial` array dan `Promise.all` Telnet block. Jika SNMP hex tidak bisa di-parse, `serialNumber` tetap `null` di DB — ONU masih ter-track via `onuId`. Serial bisa diisi on-demand saat user buka detail ONU (endpoint individual yang masih boleh Telnet). Polling cycle sekarang pure SNMP untuk registered ONUs.
+### Files
+- `src/lib/olt/vendors/zte.ts` — `discoverPonV21`: hapus `needsTelnetSerial` array + `Promise.all` Telnet serial lookup block
+
+## [2.29.57] — 2026-05-09
+### Fixed
+- **Poller lambat — per-ONU Telnet optical info calls dihapus** — Root cause: `upsertONU` di poller memanggil `vendor.getOnuOpticalInfo(telnetConfig, ...)` untuk setiap ONU satu-per-satu, meski `discoverPonV21` sudah mengambil `rxPower` dan `distance` via 7 SNMP walks paralel. Dengan 400+ ONU aktif, ini berarti 400+ sesi Telnet sequential per polling cycle (~8–35s masing-masing = potensi ratusan detik). Fix: skip Telnet optical info call jika `onu.rxPower !== null` (artinya SNMP sudah menyediakan data). Telnet optical info tetap digunakan sebagai fallback hanya jika SNMP tidak menghasilkan rxPower.
+- **SSH path dihapus dari optical info fallback** — ZTE C320 V2.1 hanya mendukung Telnet CLI; SSH tidak dikonfigurasi. Path `sshConfig` untuk `getOnuOpticalInfoSSH` dihapus dari `upsertONU` agar tidak terjadi double-attempt.
+### Files
+- `src/lib/olt/poller.ts` — `upsertONU`: skip Telnet/SSH optical info if `onu.rxPower !== null` (SNMP-sourced)
+
+## [2.29.56] — 2026-05-09
+### Fixed
+- **Port Map sync lambat setelah hapus VLAN gagal** — Root cause: uplink POST menggunakan `timeout: 20` untuk sesi Telnet konfigurasi. Dengan 2 attempt (`removeVlan`) yang keduanya gagal, total waktu zombie sessions bisa mencapai 2 × 35 detik = 70 detik. ZTE C320 membatasi concurrent Telnet sessions; chassis sync yang menyusul tidak bisa langsung konek. Fix:
+  1. Timeout Telnet untuk POST action dikurangi ke **8 detik** (perintah config di LAN lokal selesai <3s; 8s cukup buffer).
+  2. Loop `commandAttempts` sekarang **break** jika terjadi connection-level failure (`!result.success`) — tidak ada gunanya mencoba command berbeda jika OLT tidak bisa dikoneksi. Retry (continue) hanya terjadi pada **CLI error** (command ditolak OLT, bukan koneksi gagal).
+### Files
+- `src/app/api/olt/[id]/uplink/route.ts` — POST action: `timeout: 8`, break on connection failure
+
+## [2.29.55] — 2026-05-09
+### Fixed
+- **removeVlan di uplink tag → 500** — Root cause: satu sesi Telnet mengirim `no switchport vlan X tag`, `no switchport default vlan`, `no switchport vlan X` sekaligus; perintah fallback yang tidak berlaku di ZTE C320 mengembalikan `%Error`, `firstError` menjadi true → 500. Fix: pisahkan menjadi dua `commandAttempts` terpisah — percobaan pertama hanya `no switchport vlan ${vid} tag`, fallback percobaan kedua `no switchport default vlan`. Setiap percobaan adalah sesi Telnet independen sehingga error dari satu tidak mengontaminasi yang lain.
+- **ONU Type tidak terbaca di Register ONU** — Root cause: `show run | include onu-type` pada ZTE C320 V2.1 tidak mendukung pipe filter sehingga menghasilkan seluruh running-config atau timeout, menyebabkan sesi `executeMultipleCommands` 5-command gagal dan semua data (onuTypes, tcontProfiles, trafficProfiles, suggestedOnuId, detectedOnuType) kembali kosong. Fix: ganti ke 5 panggilan `executeCommand` paralel (`Promise.allSettled`) — satu command per sesi Telnet, kegagalan satu tidak mempengaruhi lainnya. Command ONU types diganti ke `show gpon onu-type`.
+- **parseZteOnuTypes** — Diperbarui untuk menangani output format tabel dari `show gpon onu-type` (`ZTEG-F670L  F670L GPON ONT`) selain format running-config lama (`onu-type ZTEG-F670L gpon ...`). Header line (`Onu-type`, `---`) dan kata kunci umum di-skip.
+### Files
+- `src/app/api/olt/[id]/uplink/route.ts` — removeVlan: pisah jadi 2 commandAttempts terpisah
+- `src/app/api/olt/[id]/onus/register/route.ts` — ONU type GET: `Promise.allSettled(5x executeCommand)` + `show gpon onu-type` + parser update
+
+## [2.29.54] — 2026-05-09
+### Fixed
+- **VLAN tab masih kosong (Mode/TLS/Tagged VLANs —)** — Root cause: `executeMultipleCommands(['show vlan port …', 'show running-config interface …'])` kadang gagal/hang karena `show vlan port xgei_1/3/2` tidak valid atau menyebabkan sesi Telnet terganggu. Fix: VLAN tab sekarang hanya menggunakan satu `executeCommand('show running-config interface …')` yang sudah terbukti bekerja. `parseRunningConfigInterface` mengekstrak `Mode`, `TLS`, `Tagged Vlan` (dari `switchport vlan 1,30,69,100,151 tag` — comma-separated), `Description`, `Speed`, `Duplex`, `Flow Control`, `Physical Type`.
+### Changed
+- **Chassis stats row dihapus dari Port Map** — Baris stat (UPTIME, AVG CPU, AVG MEMORY, ACTIVE CARDS, FAN STATUS) di dalam panel "ZTE C320 Rack Diagram" dihapus. AVG CPU (11%) dan AVG MEMORY (32%) adalah static placeholder yang menyesatkan; FAN STATUS dan ACTIVE CARDS belum real-time. Tampilan chassis sekarang langsung ke rack diagram.
+- **Tab Metrics dihapus** — Tab "Metrics" dihapus dari halaman OLT detail (ONU List | Port Map | Alerts | Settings | Logs). State `metrics`, `metricsHours`, `metricsLoading`, callback `fetchMetrics`, dan `useEffect`-nya juga dibersihkan.
+### Files
+- `src/app/api/olt/[id]/uplink/route.ts` — VLAN tab: ganti multi-command ke single `executeCommand('show running-config interface')`
+- `src/app/admin/olt/[id]/page.tsx` — hapus chassis stats row; hapus Metrics TabsTrigger + TabsContent + state vars
+
+## [2.29.53] — 2026-05-10
+### Fixed
+- **Temperature card dihapus dari top stat** — Kartu "Temperature" di baris 4 stat card atas selalu "Not available (C320)" karena ZTE C320 tidak melaporkan suhu via SNMP. Dihapus → layout sekarang 3 kolom (Status, Uptime, ONUs). Grid berubah dari `md:grid-cols-4` → `md:grid-cols-3`.
+- **CHASSIS TEMP dihapus dari chassis stats row** — Kolom "CHASSIS TEMP" di stats row chassis diagram juga dihapus (selalu "Unknown"). Grid chassis stats: dari `xl:grid-cols-6` → `xl:grid-cols-5`, border logic diperbarui.
+- **VLAN tab kosong (Mode/TLS/PVID semua —)** — `parseVlanPort` hanya menangani format key:value, tapi ZTE C320 bisa mengembalikan format tabular (`VLAN Port Mode Pvid TLS`). Ditambahkan tabular fallback parser. `parseRunningConfigInterface` juga diperluas untuk menangani ZTE non-switchport style (`vlan N tag`, `pvid N`, `mode hybrid` tanpa prefix `switchport`). VLAN tab sekarang selalu return raw output untuk diagnosis bahkan jika parsing gagal.
+- **CONFIG tab kosong (No configuration data)** — Config tab tidak menampilkan apa pun jika `hasCliError` triggered pada output. Diubah: raw output selalu dikembalikan ke UI, user bisa melihat output asli OLT meski ada error-string di output.
+- **`parseVlanPort` "Tagged vlan(s)" tidak dikenali** — Normalisasi key sebelumnya hanya mencocokkan `'tagged vlan'` (exact). Sekarang menggunakan `startsWith('tagged vlan')` sehingga varian `tagged vlan(s)` juga ditangkap.
+### Files
+- `src/app/admin/olt/[id]/page.tsx` — hapus Temperature card top stats; hapus CHASSIS TEMP dari chassis stats row
+- `src/app/api/olt/[id]/uplink/route.ts` — tabular fallback di `parseVlanPort`; ZTE non-switchport variants di `parseRunningConfigInterface`; VLAN tab & CONFIG tab selalu return raw
+
+## [2.29.52] — 2026-05-10
+### Fixed
+- **Uplink tab lambat (status/vlan/optical)** — Setiap tab dulu membuka 2 sesi Telnet terpisah (primary + fallback) masing-masing ~5 detik → total ~10 detik per tab. Sekarang: satu `executeMultipleCommands` session mengirim primary + fallback command sekaligus. Total: ~5 detik → **2× lebih cepat**.
+- **SNMP fallback getInterfaceStatusSNMP lambat** — Dulu: `snmpWalk(ifDescr)` sequential, lalu baru `Promise.all([4 snmpGet])`. Sekarang: 5 `snmpWalk` berjalan **paralel** (ifDescr, ifAdmin, ifOper, ifHighSpeed, ifAlias) + O(1) Map lookup per index.
+- **removeVlan 3 sesi Telnet** — `removeVlan` POST dulu loop 3 `commandAttempts` masing-masing sesi Telnet terpisah (~15 detik worst-case). Sekarang: satu sesi tunggal dengan ketiga `no switchport` command dikirim sekaligus — OLT mengabaikan command yang tidak berlaku.
+- **OLT sync lambat (`discoverPonV21`)** — Dulu: per-ONU `Promise.all([5 snmpGet])` secara sequential antar ONU = N × 5 subprocess spawns. Sekarang: **7 `snmpWalk` paralel** untuk seluruh PON port sekaligus (regStatus, operState, serial, rxPower, description, distance, seenTable), lalu build Map + lookup O(1) per ONU. Telnet serial lookup yang gagal SNMP di-batch via `Promise.all` tanpa blokir ONU lain.
+### Added
+- **PVID Management di VLAN tab** — Sebelumnya PVID hanya tampil read-only. Sekarang: tombol **Remove** di samping PVID aktif, dropdown berubah antara "Tagged (Trunk)" dan "Set as PVID", tombol berubah label antara "Add VLAN" dan "Set PVID". Backend: actions `setPvid` dan `removePvid` baru di POST `/api/olt/[id]/uplink`.
+- **Remove VLAN button lebih jelas** — Badge VLAN tagged kini punya tombol `×` yang lebih terlihat dengan hover merah dan border animasi.
+
+### Files
+- `src/app/api/olt/[id]/uplink/route.ts` — `executeMultipleCommands` per tab; 5 parallel walks SNMP; `removeVlan` single session; `setPvid`/`removePvid` actions baru
+- `src/lib/olt/vendors/zte.ts` — `discoverPonV21` rewrite: 7 parallel bulk walks → O(1) Map lookup; batch Telnet serial fallback
+- `src/app/admin/olt/[id]/page.tsx` — PVID remove button; "Set as PVID" dropdown; improved VLAN remove UX
+
+## [2.29.51] — 2026-05-09
+### Fixed
+- **Port Map masih lambat (chassis API)** — Root cause: dua sesi Telnet terpisah (`show card` + `show interface port-status`) masing-masing ~5 detik, ditambah SNMP fallback sequential. Sekarang: satu sesi Telnet tunggal via `executeMultipleCommands` menjalankan kedua command sekaligus, dan seluruh SNMP walk (PON table + 5 IF-MIB walk) dijalankan **paralel** bersama Telnet. Total waktu: dari ~10-15 detik → ~5 detik (50%+ lebih cepat).
+- **SNMP uplink fallback N×4 GET calls** — Sebelumnya, per-interface SNMP fallback melakukan 4 `snmpGet` shell spawn terpisah per interface. Diganti dengan 5 `snmpWalk` paralel (ifDescr, ifAdminStatus, ifOperStatus, ifHighSpeed, ifAlias) + O(1) lookup dari Map.
+- **Triple retry Telnet** — Pola lama: Telnet1 → (gagal) SNMP → (gagal) Telnet2 lagi. Sekarang: satu Telnet multi-cmd + SNMP paralel, tidak ada retry berlebihan.
+
+### Files
+- `src/app/api/olt/[id]/chassis/route.ts` — `executeMultipleCommands` single session; `fetchSNMPChassisData` bulk walks paralel; `buildUplinkStatesFromSNMP` O(1) lookup; hapus `loadUplinkPortStatesSNMP` + `loadUplinkPortStates` lama.
+
+## [2.29.50] — 2026-05-09
+### Changed
+- **OLT Monitoring — redesign terbaik** — Monitoring page dirancang ulang dengan: ONU progress bar per OLT dengan persentase warna adaptif (hijau/kuning/merah), countdown auto-refresh 30d dengan indikator visual, tombol "Poll Semua" parallel, sort by status/name/alerts/offline-ONU, timestamp relative ("2m lalu"), animasi ping pada OLT online, badge alert mengarah ke halaman alerts, suhu color-coded (hijau < 50°C, kuning 50–65°C, merah ≥ 65°C), styling card berlapis dengan border aksen sesuai kondisi.
+- **OLT Alerts — redesign terbaik** — Alerts page dirancang ulang dengan: border-left accent berwarna per severity (merah/amber/biru/abu), tombol "Selesaikan Semua" batch resolve, relative timestamp dengan tooltip tanggal penuh, back-button ke monitoring, stat card adaptif warna jika ada critical/warning, link OLT name menuju halaman detail OLT, resolved alerts tampil transparan (opacity-60).
+
+### Files
+- `src/app/admin/olt/monitoring/page.tsx` — Redesign monitoring: progress bar, countdown, poll-all, sort, relative time
+- `src/app/admin/olt/alerts/page.tsx` — Redesign alerts: border accent, resolve-all, relative time, back nav
+
+## [2.29.49] — 2026-05-09
+### Fixed
+- **ONU unconfigured tetap hanya 1 setelah sync** — Discovery ZTE C320 sekarang menjadikan output CLI `show gpon onu uncfg` sebagai sumber utama untuk ONU unconfigured. Data CLI global tidak lagi diproses hanya jika SNMP seen-table punya entry; port yang hanya muncul dari CLI global juga ditambahkan ke daftar PON yang dipoll.
+- **Port Map lambat saat membaca uplink** — Status uplink GE/XGE di chassis sekarang memakai satu command cepat `show interface port-status`, lalu SNMP IF-MIB hanya sebagai fallback. Ini menghindari multi-command/per-interface Telnet untuk port map.
+- **Komposisi warna OLT Monitoring dan Alerts** — Card, filter, dan action surface di halaman OLT Monitoring/Alerts diperhalus memakai slate surface yang konsisten untuk light/dark mode.
+
+### Files
+- `package.json` — bump versi aplikasi ke `2.29.49`.
+- `src/lib/olt/vendors/zte.ts` — CLI global uncfg authoritative; merge port PON dari CLI uncfg ke discovery; unregistered IDs tidak lagi bergantung pada seen-table SNMP.
+- `src/app/api/olt/[id]/chassis/route.ts` — port map uplink memakai parser `show interface port-status` satu kali, SNMP status jadi fallback.
+- `src/app/admin/olt/monitoring/page.tsx` — perbaikan palette light/dark pada card/filter/control.
+- `src/app/admin/olt/alerts/page.tsx` — perbaikan palette light/dark pada card/filter/control.
+
+## [2.29.48] — 2026-05-09
+### Fixed
+- **ONU unconfigured kedua masih hilang meski versi 2.29.47 sudah terpasang** — Parser ZTE sebelumnya masih bisa membuang serial fallback jika satu ONU unconfigured sudah lebih dulu terpetakan ke `onuId` nyata. Sekarang serial fallback selalu digabung ke hasil akhir dengan virtual ID stabil, sehingga kombinasi `1 ONU ada ID + 1 ONU hanya serial` tidak lagi berakhir jadi satu baris.
+
+### Files
+- `package.json` — bump versi aplikasi ke `2.29.48`.
+- `src/lib/olt/vendors/zte.ts` — merge fallback serial list ke `uncfgSerials` meski sebagian ONU unconfigured sudah punya ID nyata.
+
+## [2.29.47] — 2026-05-09
+### Fixed
+- **ONU unconfigured masih hanya tampil 1 padahal CLI ada 2** — Pembacaan ZTE `show gpon onu uncfg` tidak lagi memetakan serial CLI secara posisi ke `onuId` dari SNMP seen-table. Sekarang parser memakai entri CLI aktual per port; jika CLI tidak memberi `onuId`, sistem membuat virtual ID yang stabil dari serial ONU agar semua ONU unconfigured tetap muncul di DB/UI.
+- **Tab Uplink VLAN / Config / Optical belum sesuai output ZTE C320** — VLAN sekarang fallback ke `show running-config interface`, sehingga `switchport mode`, `switchport tls`, `description`, dan daftar `switchport vlan ... tag` terbaca langsung dari config nyata seperti output `xgei_1/3/2`. Tab Optical juga fallback ke `show interface optical-module-info` agar data SFP C320 bisa dibaca selain `show ddmi interface`.
+- **Halaman OLT detail kurang responsif dan hardcoded gelap** — Modal uplink dan rack panel dirapikan untuk mobile/desktop (`max-height`, scroll, grid responsif), dan komponen yang disentuh sekarang memakai warna light/dark yang lebih konsisten.
+
+### Files
+- `package.json` — bump versi aplikasi ke `2.29.47`.
+- `src/lib/olt/vendors/zte.ts` — parser ONU unconfigured ZTE sekarang memakai CLI entries aktual dan virtual ID stabil berbasis serial.
+- `src/app/api/olt/[id]/uplink/route.ts` — tambah parser `show running-config interface` dan `show interface optical-module-info`; VLAN/optical fallback diperbaiki.
+- `src/app/admin/olt/[id]/page.tsx` — modal uplink dan rack panel dibuat lebih responsif serta theme-aware.
+
+## [2.29.46] — 2026-05-09
+### Fixed
+- **GE uplink port tidak muncul / selalu 400 Invalid port name** — Validasi regex sebelumnya hanya menerima format 3-level (`gei_1/3/1`) padahal ZTE C320 SMXA card gunakan format 2-level untuk GE port: `gei_1/3`. Regex diperbarui ke `(?:gei|xgei)_\d+\/\d+(?:\/\d+)?` yang menerima keduanya. Fix pada GET dan POST endpoint.
+- **Chassis diagram tampilkan 3 port GE palsu per SMXA slot** — SMXA (plain) hanya punya 1 GE port per slot, bukan 3. Port names dikoreksi: `gei_1/{slot}` (2-level, satu GE) + `xgei_1/{slot}/1`, `xgei_1/{slot}/2` (dua XGE). Sesuai output `show interface ?` pada ZTE C320.
+
+### Files
+- `src/app/api/olt/[id]/uplink/route.ts` — Regex validasi port name diperbarui di GET dan POST handler.
+- `src/app/api/olt/[id]/chassis/route.ts` — `smxaUplinkPorts`: SMXA plain → `gei_1/{slot}` + `xgei_1/{slot}/1-2`; fallback default juga diperbarui.
+
+## [2.29.45] — 2026-05-09
+### Fixed
+- **Uplink STATUS tab data tidak tampil** — Command sebelumnya `show interface gei_1/x/x` menghasilkan output key-value yang tidak konsisten di ZTE C320. Diganti ke `show interface port-status gei_1/x/x` yang menghasilkan output tabular dengan kolom eksplisit: hybrid Status, Native VLAN, Negotiation, Speed (Mbps), Duplex, Flow-Ctrl, Admin Status, Link. Fallback ke `show interface` (key-value) + SNMP IF-MIB tetap dipertahankan jika tabular gagal.
+- **Uplink CONFIG tab menampilkan config sintetis** — Sebelumnya config dibuat dari hasil parse `show interface` + `show vlan port` secara manual. Sekarang menggunakan `show running-config interface gei_1/x/x` yang menghasilkan config asli dari OLT (termasuk switchport mode, VLAN list, phy-attribute, dll).
+
+### Files
+- `src/app/api/olt/[id]/uplink/route.ts` — Tambah `parseInterfacePortStatus` (parser tabular); STATUS tab pakai `show interface port-status` dulu lalu fallback; CONFIG tab pakai `show running-config interface` langsung.
+
+## [2.29.44] — 2026-05-09
+### Fixed
+- **Uplink port STATUS "Admin: Unknown · Port: Unknown"** — `show interface gei_1/x/x` via Telnet kadang gagal (ZTE session limit, SMXA card OFFLINE, atau output format berbeda). Sekarang API menambahkan fallback ke SNMP IF-MIB (ifAdminStatus + ifOperStatus + ifHighSpeed + ifAlias) sehingga status port tetap terbaca meski Telnet tidak responsif.
+- **Uplink STATUS tidak lagi mengembalikan 503 jika Telnet tidak dikonfigurasi** — STATUS tab sekarang bisa jalan via SNMP saja; hanya VLAN/config/optical tab yang membutuhkan Telnet.
+
+### Files
+- `src/app/api/olt/[id]/uplink/route.ts` — Import `snmpWalk/snmpGet/SNMPConfig`; tambah `getSnmpConfig` + `getInterfaceStatusSNMP`; STATUS tab try Telnet dulu, fallback ke SNMP IF-MIB jika gagal.
+
+## [2.29.43] — 2026-05-09
+### Fixed
+- **ONU unregistered serial tidak terbaca / hanya 1 ONU muncul** — Tiga bug sekaligus di `discoverONUsSNMP` dan `discoverPonV21`:
+  1. **Command salah**: kode menggunakan `show pon onu uncfg` tapi ZTE C320 V2.1 hanya mengenali `show gpon onu uncfg`. Karena command gagal, global uncfg map selalu kosong.
+  2. **Regex port tidak cocok**: regex `gpon[_-]olt[_-]` tidak mencocokkan format output asli `gpon-onu_1/1/1:1`. Akibatnya tidak ada entri yang dimasukkan ke map meskipun command benar.
+  3. **Kolom serial salah**: output `show gpon onu uncfg` punya 3 kolom (`OnuIndex Sn State`), serial ada di `parts[1]`. Kode lama membaca `parts[2]` yang isinya `State` ("unknown"), bukan serial number.
+- **Per-port fallback** — command `show pon onu uncfg gpon-olt_...` juga diubah ke `show gpon onu uncfg gpon-olt_...`; Format A (3-col `gpon-onu_` output) sekarang membaca serial dari `parts[1]`, format 4-col tetap dari `parts[2]`.
+
+### Files
+- `src/lib/olt/vendors/zte.ts` — Perbaikan global uncfg command, regex port, dan indeks kolom serial.
+
+## [2.29.42] — 2026-05-09
+### Fixed
+- **Sync OLT tidak lagi timeout 524** — `pollOLTWithOptions` sekarang dijalankan fire-and-forget (tanpa `await`). API langsung return 202 dengan `background: true`; frontend sudah punya path untuk ini: auto-refresh setelah 30 detik. ZTE C320 SNMP+Telnet discovery bisa memakan waktu >100 detik, sebelumnya menyebabkan Cloudflare/reverse-proxy memutus koneksi dengan status 524, lalu frontend menerima HTML error page dan melempar `SyntaxError: Unexpected token '<'`.
+
+### Files
+- `src/app/api/olt/[id]/sync/route.ts` — Ganti `await pollOLTWithOptions(...)` menjadi fire-and-forget dengan `.catch()` error logging; return 202 `{ success, background: true, message }`.
+
+## [2.29.41] — 2026-05-09
+### Fixed
+- **ONU yang dihapus/unregistered tidak lagi hilang setelah sync** — Akar masalah pertama: `pruneMissingOnus` menghapus baris `auth_failed` (unregistered) saat SNMP discovery tidak mengembalikannya dalam satu siklus (timing ZTE SEEN_ONU_TABLE). Sekarang baris `auth_failed` tidak pernah dipruning oleh poller; baris tersebut tetap terlihat di daftar Unregistered sampai operator mendaftar ulang ONU atau menghapus entri secara manual.
+- **Delete ONU tidak lagi memicu poll langsung** — Akar masalah kedua: setelah ONU dihapus dari OLT, ZTE membutuhkan ~10–30 detik sebelum ONU muncul kembali di `SEEN_ONU_TABLE` sebagai unregistered. Poll yang dijalankan segera setelah delete tidak menemukan ONU itu, dan pruner (2.29.40) menghapus baris `auth_failed` yang baru dibuat. Sekarang delete route hanya menandai row sebagai `auth_failed` lalu langsung return — scheduled poller yang akan memperbarui statusnya pada siklus berikutnya.
+- **Pengurangan tekanan koneksi Telnet** — Menghilangkan `pollOLTWithOptions` dari delete route mengurangi concurrent Telnet session. Sebelumnya delete + sync + chassis API bisa membuka 3+ sesi bersamaan dan menghabiskan session pool ZTE C320, menyebabkan `show card` gagal dan rack diagram menampilkan fallback SNMP tanpa kartu SMXA.
+
+### Files
+- `src/lib/olt/poller.ts` — `pruneMissingOnus` sekarang membaca kolom `status` dan melewati baris `auth_failed`.
+- `src/app/api/olt/[id]/onus/[onuId]/delete/route.ts` — Hapus `pollOLTWithOptions` dari delete flow; hanya update DB dan return success.
+
+## [2.29.40] — 2026-05-09
+### Fixed
+- **Sync OLT kembali benar-benar menjalankan poller** — Endpoint sync tidak lagi melepas `pollOLTWithOptions` secara fire-and-forget. Sekarang request menunggu poll selesai, tetapi memakai mode ringan `skipOpticalInfo` supaya tetap cukup cepat untuk manual refresh dan delete follow-up.
+- **ONU yang dihapus tetap muncul di daftar register/unconfigured** — Delete ONU tidak lagi langsung menghapus row `oltOnuStatus` dari database sebelum refresh selesai. Row kini sementara diubah ke status `auth_failed` dan `customerId` dibersihkan, sehingga ONU tetap terlihat sebagai unregistered sampai hasil poll berikutnya mengonfirmasi state live dari OLT.
+- **Manual sync/delete lebih ringan** — Poller manual kini bisa melewati query optical-info per ONU agar sync tidak terasa macet dan lebih andal dipakai untuk refresh setelah aksi operasional.
+
+### Files
+- `src/lib/olt/poller.ts` — Tambah opsi `skipOpticalInfo` untuk poll ringan pada manual sync/delete.
+- `src/app/api/olt/[id]/sync/route.ts` — Kembalikan sync ke mode awaited dengan poll ringan, bukan background fire-and-forget.
+- `src/app/api/olt/[id]/onus/[onuId]/delete/route.ts` — Ubah delete flow agar status ONU dipertahankan sebagai unregistered sampai sync selesai.
+
+## [2.29.39] — 2026-05-09
+### Fixed
+- **Sync OLT tidak lagi error 524 (Cloudflare timeout)** — `pollOLTWithOptions` sebelumnya berjalan sinkron di dalam API handler; untuk OLT dengan banyak ONU, proses bisa >100 detik sehingga Cloudflare membalas HTML error (524) bukan JSON. Sekarang sync dijalankan di background (fire-and-forget), endpoint langsung merespon `202` JSON. Frontend otomatis refresh setelah 30 detik.
+
+### Files
+- `src/app/api/olt/[id]/sync/route.ts` — Background sync, return 202 langsung tanpa tunggu poll selesai.
+- `src/app/admin/olt/[id]/page.tsx` — Handle response `background:true`, auto-refresh setelah 30 detik.
+
+## [2.29.38] — 2026-05-09
+### Fixed
+- **Status uplink tidak lagi semua DIS** — Root cause: `smxaUplinkPorts(slot, 'SMXA')` sebelumnya menghasilkan 6 interface per slot (slot+1), sehingga dua SMXA card berbeda (slot 3 dan 4) menghasilkan interface `gei_1/5/X` yang tidak ada. Semua `show interface` gagal → semua port DIS. Sekarang tiap SMXA card menghasilkan 3 port sesuai slotnya sendiri; dua card = 6 port total dari dua row terpisah.
+- **SNMP IF-MIB sebagai primary source status uplink** — Ditambahkan `loadUplinkPortStatesSNMP` yang memakai `ifDescr`/`ifAdminStatus`/`ifOperStatus`/`ifHighSpeed`/`ifAlias` dari IF-MIB standard. SNMP dipakai duluan jika OLT `snmpEnabled`; Telnet multi-command hanya sebagai fallback.
+- **SMXA OFFLINE tidak lagi disembunyikan** — `isOperationalCard` kini tidak memfilter status `OFFLINE`. Pada ZTE C320, SMXA dengan status OFFLINE di `show card` tetap memiliki port fisik aktif yang harus ditampilkan di rack diagram.
+
+### Files
+- `src/app/api/olt/[id]/chassis/route.ts` — Fix `smxaUplinkPorts` SMXA→3 port/slot, tambah `loadUplinkPortStatesSNMP` (IF-MIB), SNMP primary + Telnet fallback, fix `isOperationalCard` biarkan OFFLINE.
+
+## [2.29.37] — 2026-05-09
+### Fixed
+- **Command uplink ZTE dibetulkan** — Tab `Configuration` tidak lagi memakai `show running-config interface gei_1/...` yang invalid untuk uplink GE/XGE ZTE C320. Data konfigurasi sekarang dibentuk dari command yang valid: `show interface` + `show vlan port`.
+- **Aksi VLAN/enable/disable uplink kini benar-benar jalan** — Endpoint POST uplink sebelumnya menjalankan `configure terminal`, `interface`, dan `switchport/shutdown` di sesi Telnet terpisah, sehingga state konfigurasi hilang di tiap langkah. Sekarang satu aksi dijalankan dalam satu sesi Telnet via `executeMultipleCommands`.
+- **Parser VLAN uplink lebih konsisten** — Variasi key ZTE seperti `Tagged VLAN` dan `Tagged Vlan` sekarang dinormalisasi supaya mode, PVID, TLS, dan daftar tagged VLAN tampil stabil di UI.
+
+### Files
+- `src/app/api/olt/[id]/uplink/route.ts` — Deteksi error CLI ZTE, config uplink sintetis dari command valid, dan eksekusi action uplink dalam satu sesi Telnet.
+
+## [2.29.36] — 2026-05-09
+### Fixed
+- **SMXA uplink menampilkan 6 port (bukan 3)** — `smxaUplinkPorts` untuk card type `SMXA` plain kini mengembalikan 6 interface: `gei_1/{slot}/1..3` + `gei_1/{slot+1}/1..3`, sesuai hardware ZTE C320 yang portnya tersebar di dua alamat slot.
+- **Status port uplink (DIS/UP/DOWN) kini akurat** — `loadUplinkPortStates` sebelumnya memanggil `show interface` tiap port secara parallel (masing-masing buka koneksi Telnet baru), menyebabkan OLT menolak koneksi berlebihan sehingga semua port fallback ke `isEnabled: false` (DIS). Sekarang semua command dijalankan dalam satu sesi Telnet via `executeMultipleCommands`.
+
+### Files
+- `src/app/api/olt/[id]/chassis/route.ts` — `smxaUplinkPorts`: SMXA plain → 6 port; `loadUplinkPortStates`: satu sesi Telnet untuk semua `show interface`.
+
+## [2.29.35] — 2026-05-09
+### Fixed
+- **Diagram ZTE C320 dibuat lebih actual** — Rack view di halaman detail OLT sekarang fokus ke slot service/uplink real, mempertahankan nomor slot actual, menampilkan gap slot kosong, dan tidak lagi mencampur layout MCU ke area card operasional.
+- **Status uplink SMXA enable/down dibedakan dengan benar** — Parsing `show interface` kini menangani format real ZTE seperti `is activate, line protocol is up/down`, jadi port admin-up tapi link-down tidak lagi terlihat sebagai disable.
+- **Tooltip dan warna port PON lebih informatif** — Port PON sekarang membedakan online, LOS, dying gasp, dan ONU unconfigured agar kondisi slot lebih mudah dibaca dari diagram.
+
+### Files
+- `src/app/api/olt/[id]/chassis/route.ts` — Tambah parsing state uplink actual per interface dan hanya tandai card operasional yang benar-benar aktif.
+- `src/app/api/olt/[id]/uplink/route.ts` — Perbaiki parser status interface agar membaca format kalimat output ZTE C320.
+- `src/app/admin/olt/[id]/page.tsx` — Redesign diagram rack ZTE C320, refresh chassis, dan tampilkan state uplink/service port yang lebih actual.
+
+## [2.29.34] — 2026-05-09
+### Added
+- **Delete ONU terdaftar + sync OLT** — ONU yang sudah terdaftar sekarang bisa dihapus penuh dari ZTE OLT melalui flow clear config service lalu unregister `no onu`, lalu langsung disinkronkan kembali ke database/frontend.
+- **Manual Sync OLT di halaman detail** — Halaman detail OLT sekarang punya tombol `Sync OLT` untuk memaksa refresh data dari OLT walau monitoring terjadwal tidak aktif.
+
+### Fixed
+- **Assign customer tidak lagi 500** — Response endpoint assign ONU sekarang aman untuk JSON serialization karena field `BigInt` pada status ONU disanitasi sebelum dikirim balik.
+- **Reboot ONU menampilkan error OLT yang lebih nyata** — Route reboot ZTE sekarang mengekstrak output command `reboot` dari transcript Telnet, sehingga kegagalan tidak lagi selalu jatuh ke pesan generik.
+- **Sync OLT membersihkan ONU yang sudah hilang di perangkat** — Poller sekarang menghapus row ONU stale yang tidak lagi ditemukan saat polling, sehingga hasil register/delete lebih konsisten antara OLT dan frontend.
+
+### Files
+- `src/app/api/olt/[id]/onus/[onuId]/assign/route.ts` — Sanitasi response assign ONU agar tidak gagal serialisasi `BigInt`.
+- `src/app/api/olt/[id]/onus/[onuId]/reboot/route.ts` — Perbaiki parsing output reboot Telnet dan error reporting.
+- `src/app/api/olt/[id]/onus/[onuId]/delete/route.ts` — Tambah endpoint delete/unregister ONU penuh untuk ZTE + sync setelah aksi.
+- `src/app/api/olt/[id]/sync/route.ts` — Tambah endpoint manual sync OLT per perangkat.
+- `src/lib/olt/poller.ts` — Tambah mode sync manual dan cleanup ONU stale saat polling.
+- `src/app/admin/olt/[id]/page.tsx` — Tambah tombol Sync OLT, Delete ONU, dan refresh otomatis setelah register/reboot.
+
+---
+
+## [2.29.33] — 2026-05-09
+### Added
+- **Template config di modal register ONU** — Register ONU ZTE sekarang punya pilihan flow `Basic register`, `ZTE Full`, `Huawei Full`, dan `Fiberhome VEIP` langsung di modal, mengikuti struktur wizard referensi `oltc320_v2.1.1_linux`.
+- **Traffic profile live dari OLT** — Modal register kini memuat daftar `traffic profile` dari OLT lewat `show gpon profile traffic`, jadi template full tidak lagi bergantung pada input dummy.
+
+### Changed
+- **Flow register ZTE selaras ke wizard CLI** — Endpoint register sekarang bisa menerapkan rangkaian command template untuk dual VLAN, VEIP, service-port, WAN DHCP, TR-069, dan ACS sesuai template yang dipilih saat register ONU.
+
+### Files
+- `src/app/api/olt/[id]/onus/register/route.ts` — Tambah metadata `trafficProfiles` dan eksekusi template `zte_full`, `huawei_full`, `fiberhome_veip`.
+- `src/app/admin/olt/[id]/page.tsx` — Tambah pilihan template config, field template-specific, dan preview command sesuai flow register.
+
+---
+
+## [2.29.32] — 2026-05-09
+### Fixed
+- **Detail ONU unregistered salah command** — ONU yang belum terdaftar tidak lagi dipaksa memakai `show gpon onu detail-info gpon-onu_...`, karena command itu memang invalid untuk ONU unconfigured. Detail kini memakai `show pon onu uncfg gpon-olt_...` dan menampilkan type/SN/state yang valid dari OLT.
+- **Register ZTE masih hardcode `type All`** — Flow register ZTE kini mengikuti wizard referensi `oltc320_v2.1.1_linux`: type ONU yang dipilih dari daftar live OLT dipakai langsung pada command `onu {id} type {onuType} sn {sn}`.
+
+### Added
+- **Register metadata live dari OLT** — Modal register sekarang mengambil `ONU Type`, `TCONT profile`, dan suggested ONU ID langsung dari OLT via Telnet, bukan dari array dummy di frontend.
+- **Detected ONU type untuk unconfigured ONU** — Modal register/detail menampilkan type ONU hasil baca `show pon onu uncfg`, sehingga admin bisa lihat type aktual sebelum register.
+
+### Files
+- `src/app/api/olt/[id]/onus/[onuId]/detail/route.ts` — Branch detail khusus ONU unregistered pakai `show pon onu uncfg`.
+- `src/app/api/olt/[id]/onus/register/route.ts` — Tambah GET metadata live dari OLT dan ubah register ZTE agar pakai actual ONU type.
+- `src/app/admin/olt/[id]/page.tsx` — Modal register pakai data live OLT untuk ONU type/TCONT/suggested ID.
+
+---
+
+## [2.29.31] — 2026-05-09
+### Fixed
+- **ONU detail loading lebih cepat** — Endpoint detail ONU ZTE tidak lagi membuka 3 sesi Telnet terpisah. Detail dan running-config kini diambil dalam satu sesi multi-command, dan optical command hanya dipanggil bila data power/jarak belum ada di DB.
+- **Pager `--More--` ZTE merusak output detail** — Script Expect sekarang otomatis menekan spasi saat output Telnet dipaginasi, sehingga modal detail tidak lagi menampilkan output terpotong/aneh seperti `ZXAN#xit`.
+
+### Added
+- **Detail vendor ONT & service summary** — Modal detail ONU kini menampilkan vendor ONT dari prefix serial, auth mode, SN bind, admin/channel state, DBA/vport/profile, VLAN service, TCONT profile, dan service-port mapping.
+
+### Files
+- `src/lib/olt/telnet.ts` — Handle pager `--More--` dan opsi multi-command tanpa `end` paksa.
+- `src/app/api/olt/[id]/onus/[onuId]/detail/route.ts` — Multi-command Telnet transcript parser + summary vendor/config ONU.
+- `src/app/admin/olt/[id]/page.tsx` — Tambah kartu technical detail dan service summary di modal ONU.
+
+---
+
+## [2.29.30] — 2026-05-09
+### Fixed
+- **ZTE Telnet login matcher** — Expect script tidak lagi salah menangkap teks `Last login` sebagai prompt `login:`, sehingga command Telnet (`show card`, detail ONU, reboot ONU) benar-benar jalan setelah autentikasi.
+- **SMXA card tidak muncul** — Parser `show card` kini mendukung format real ZTE C320 V2.1: `Rack Shelf Slot CfgType RealType Port HardVer SoftVer Status`, termasuk card `SMXA` dan `GTGHG`.
+- **ONU serial number registered/unregistered** — Mapping port Telnet ZTE C320 diperbaiki: CLI memakai PON 1-based (`gpon-olt_1/1/1`), sementara DB/UI tetap 0-based. Registered ONU yang SNMP-nya kosong kini fallback ke `show gpon onu detail-info` untuk mengambil `Serial number`.
+- **Reboot ONU failed** — Reboot ZTE kini pakai workflow Telnet `configure terminal → pon-onu-mng gpon-onu_... → reboot`, bukan SSH-only command lama.
+- **404 `/admin/network/onus`** — Route redirect ditambahkan agar link statistik ONU dari OLT Management tidak lagi 404.
+
+### Added
+- **ONU Detail Modal** — Tombol Detail pada ONU List menampilkan detail Telnet (`show gpon onu detail-info`, optical power, running-config) dan data customer/ODP terkait.
+- **Assign Customer ONU** — Tombol Assign pada ONU registered untuk menghubungkan ONU ke PPPoE customer (`olt_onu_status.customerId`).
+
+### Files
+- `src/lib/olt/telnet.ts` — Fix matcher login dan multi-command Telnet.
+- `src/lib/olt/vendors/zte.ts` — Fix mapping CLI port, serial fallback dari detail-info, optical command parser.
+- `src/lib/olt/poller.ts` — Simpan serial dari Telnet optical/detail fallback.
+- `src/app/api/olt/[id]/chassis/route.ts` — Parser `show card` format Rack/Shelf/Slot.
+- `src/app/api/olt/[id]/onus/[onuId]/reboot/route.ts` — Reboot ZTE via Telnet `pon-onu-mng`.
+- `src/app/api/olt/[id]/onus/[onuId]/detail/route.ts` — **NEW** detail ONU API.
+- `src/app/api/olt/[id]/onus/[onuId]/assign/route.ts` — **NEW** assign customer API.
+- `src/app/admin/network/onus/page.tsx` — **NEW** redirect route untuk link lama.
+- `src/app/admin/olt/[id]/page.tsx` — Detail/Assign modal dan filter dari query string.
+
+---
+
+## [2.29.29] — 2026-05-13
+### Fixed
+- **Unregistered ONU serial N/A** — Parser kini gunakan global `show pon onu uncfg` (satu Telnet call) yang hasilkan format `gpon_olt-1/1/0  N/A  ZTEGDA5918AC  unknown`; fallback per-port juga handle format `gpon-onu_1/1/0:N` (prefix berbeda + ONU ID setelah titik dua)
+- **Chassis diagram card type** — Sebelumnya hardcoded GTGQ; sekarang baca `show card` via Telnet → card type aktual (GTGHG, SMXA-B, MCUD1)
+- **Uplink slot posisi** — Sebelumnya hardcoded slot 15/16 (GICF); sekarang baca slot aktual SMXA dari `show card` (slot 3 & 4 di ZTE C320 ini)
+
+### Added
+- **Uplink Port Modal** — Klik port dot SMXA di chassis diagram untuk lihat detail dengan 4 tab: Status, VLAN, Config (running-config), Optical (DDM)
+- **Uplink Configuration** — Tambah/hapus tagged VLAN dan enable/disable port lewat modal
+- **`/api/olt/[id]/uplink` endpoint** — GET (4 tab) + POST (addVlan, removeVlan, enable, disable, setDescription) dengan validasi input port dan VLAN ID
+
+### Changed
+- **Chassis API** — `/api/olt/[id]/chassis` kini: Telnet `show card` sebagai sumber utama, SNMP+DB sebagai fallback. Response tambah field `uplinkIfaces`, `hardVer`, `softVer`, `cardStatus`, `source`
+
+### Files
+- `src/lib/olt/vendors/zte.ts` — Fix ONU serial: global uncfg pre-fetch + dual-format parser
+- `src/app/api/olt/[id]/chassis/route.ts` — Rewrite: Telnet show card + SNMP fallback
+- `src/app/api/olt/[id]/uplink/route.ts` — **NEW**: Uplink port detail & config API
+- `src/app/admin/olt/[id]/page.tsx` — UplinkPortModal, ZTEChassisView gunakan data dari chassis API
+
+---
+
+## [2.29.28] — 2026-05-09
+### Fixed
+- **Unregistered ONU serial number** — Serial number ONU yang belum terdaftar (status `auth_failed`) kini tampil di UI. Fix 2 bug di `zte.ts`:
+  1. Port 0-based vs 1-based: command Telnet `show pon onu uncfg gpon-olt_1/{board}/{pon-1}` — sebelumnya salah kirim `pon` (SNMP 1-based), sekarang benar kirim `pon-1` (CLI 0-based)
+  2. Regex parser salah format: sebelumnya cari `gpon-onu_` (format ONU terdaftar), kini parse format aktual ZTE C320 — `gpon_olt-1/1/0  N/A  ZTEGDA5918AC  unknown` (field[2] = serial)
+- **CPU/Memory/Temp display** — Panel ZTE Chassis kini menampilkan `—` (dash) alih-alih `N/A` untuk metrik yang tidak didukung hardware ZTE C320 V2.1, dengan tooltip penjelasan. Status card Temperature juga menampilkan `—` dan sub-label "Not available (C320)"
+
+### Changed
+- **OLT Detail page redesign** — Halaman `/admin/olt/[id]` diperbarui:
+  - Status cards (4 kartu): tambah `border-l-4` dengan warna aksen per tipe (hijau/merah untuk status, amber untuk temp, biru untuk uptime, teal untuk ONU). Setiap kartu kini punya sub-label informatif (waktu polling terakhir, vendor, model, jumlah offline)
+  - Header: tampilkan vendor badge, model, firmware version di subtitle IP address
+  - Tabel ONU: status kini ditampilkan sebagai **pill badge** berwarna (hijau/kuning/merah/abu). Row hover fix dark mode (`dark:hover:bg-gray-800/50`). Header tabel punya `bg-gray-50 dark:bg-gray-900/60`. Padding semua cell konsisten (`py-2.5`). Kolom Actions rapi dengan `rounded-md` dan `transition-colors`
+  - Cancel button di confirm-reboot kini support dark mode: `dark:bg-gray-700 dark:text-gray-300`
+  - Tabel dibungkus `rounded-lg border border-gray-200 dark:border-gray-800`
+- **Command preview block** — Terminal preview di modal Register ONU kini: background `bg-gray-950 dark:bg-black`, border `border-gray-800`, label uppercase tracking, fake blinking block cursor di akhir
+- **Input caret color** — Field ONU ID dan VLAN di modal Register ONU kini explicit `caret-gray-900 dark:caret-white` agar cursor terlihat di semua tema
+
+### Files
+- `src/lib/olt/vendors/zte.ts` — Fix unregistered ONU serial: port 0-based + regex parser format ZTE C320
+- `src/app/admin/olt/[id]/page.tsx` — Redesign status cards, header, ONU table, command preview, cursor color
+- `package.json` — Bump ke 2.29.28
+
+---
+
+## [2.29.27] — 2026-05-08
+### Added
+- **Vendor-aware ONU Registration Modal** — Modal Register ONU di halaman OLT Detail kini otomatis menyesuaikan field dan preview command berdasarkan vendor OLT:
+  - **ZTE C320** — ONU Type (All/ZTE-F6xx) + TCONT Profile (1G/100M/…) + Telnet CLI `configure terminal → interface gpon-olt → onu N type All sn SN → tcont/gemport/service-port → end`
+  - **Huawei MA5608T/MA5800** — Line Profile ID + Service Profile ID + Telnet CLI `enable → config → interface gpon → ont add → service-port → quit`
+  - **FiberHome AN5516/AN6010** — ONU Type (AN5506-04-FA/…) + Service Profile Name + Telnet CLI `enable → config → interface gpon-olt → onu add → onu profile → onu vlan → commit → exit`
+- **Vendor-aware Register API** — `POST /api/olt/[id]/onus/register` kini membangun urutan command yang berbeda per vendor berdasarkan referensi `zte_command.py → register_onu_stepbystep()` dari oltc320_v2.1.1_linux
+- **ZTE Telnet System Metrics (best-effort)** — Tambah `getSystemMetricsTelnet()` di `zte.ts` yang mencoba `show card` dan `show environment` via Telnet untuk parse CPU/Memory/Temp. Pada ZTE C320 V2.1 akan selalu return null (hardware tidak support), tapi tersedia untuk model ZTE lain (C600/C300)
+
+### Notes
+- ZTE C320 V2.1 CPU/Memory/Temp via Telnet tetap tidak tersedia — dikonfirmasi oleh oltc320_v2.1.1_linux CHANGELOG: "Removed unsupported CPU/memory/temperature monitoring". UI menampilkan N/A, perilaku ini sudah benar.
+
+### Files
+- `src/app/admin/olt/[id]/page.tsx` — ONURegisterModal rewritten: vendor-aware fields + preview; prop `vendor` ditambahkan ke render call
+- `src/app/api/olt/[id]/onus/register/route.ts` — Full rewrite: vendor detection + per-vendor CLI command sequence
+- `src/lib/olt/vendors/zte.ts` — Tambah `getSystemMetricsTelnet()` best-effort function
+
+---
+
+## [2.29.26] — 2026-05-08
+### Fixed
+- **OLT Management ONU count** — Halaman OLT Management (network/olts) sebelumnya selalu menampilkan "0 ONUs" karena API `GET /api/network/olts` tidak menyertakan `_count.onuStatuses`. Kini field `olt_onu_status` (jumlah ONU) dan `onu_stats` (online/offline) disertakan dari field `totalOnu` & `onlineOnu` yang sudah tersimpan di DB setelah polling
+- **Password OLT tidak muncul** — Halaman Settings di OLT Detail (`/admin/olt/[id]`) selalu me-reset field password ke kosong saat halaman di-refresh. Kini password diambil dari API response dan ditampilkan. PUT handler juga diubah agar tidak menghapus password yang tersimpan jika field dikirim kosong (hanya update jika ada isi)
+- **updater.sh clean build** — Tambah `rm -rf .next` sebelum `npm run build` di updater agar tidak ada artifact build lama yang menyebabkan update tidak efektif / lock file conflict
+- **package.json version sync** — Versi di `package.json` kini diselaraskan dengan versi CHANGELOG (sebelumnya masih `2.29.20`)
+
+### Files
+- `vps-install/updater.sh` — Tambah `rm -rf .next` sebelum build
+- `package.json` — Bump version ke `2.29.26`
+- `src/app/api/network/olts/route.ts` — Tambah `_count.onuStatuses` + mapping `olt_onu_status` + `onu_stats`
+- `src/app/admin/olt/[id]/page.tsx` — Load `password` dari API response di `fetchOLT`
+- `src/app/api/olt/[id]/route.ts` — PUT: skip update password jika kosong
+
+---
+
+## [2.29.25] — 2026-05-08
+### Fixed
+- **ZTE C320 unregistered ONU discovery** — ONU yang belum diregister (tampak di seen-ONU table SNMP tapi tidak di reg table) kini berhasil di-discover dan disimpan ke DB dengan status `auth_failed`. Serial number diambil via **Telnet** (`show pon onu uncfg gpon-olt_1/{board}/{pon}`) karena SNMP cfg table tidak memiliki entry untuk ONU yang belum register. Parsing mendukung dua format output ZTE C320: `gpon-onu_1/1/1:2  ZTEGDA5918AC` dan `  2  ZTEGDA5918AC`
+- **upsertONU serial update** — Kolom `serialNumber` kini ikut di-update ketika polling berikutnya berhasil mendapat serial (sebelumnya hanya disimpan saat create, tidak di-update)
+- **discoverONUsSNMP telnet passthrough** — Fungsi `discoverONUsSNMP` kini menerima parameter `telnetConfig` opsional dan meneruskannya ke `discoverPonV21`, memungkinkan fetch serial via Telnet ketika OLT memiliki Telnet enabled
+- **Poller telnet passthrough** — `pollOLT` kini meneruskan `telnetConfig` ke `discoverONUsSNMP` agar unregistered ONU dapat memiliki serial
+
+### Files
+- `src/lib/olt/vendors/zte.ts` — `discoverPonV21` + Telnet serial fetch untuk unregistered ONU; `discoverONUsSNMP` signature + telnetConfig passthrough
+- `src/lib/olt/poller.ts` — Pass `telnetConfig` ke `discoverONUsSNMP`; update `serialNumber` di block update upsert
+
+---
+
+## [2.29.24] — 2026-05-07
+### Changed
+- **ZTE C320 chassis diagram redesign** — Ganti tampilan horizontal strip (slot chip berjejer) ke layout **vertical rack blade** ala NMS profesional: setiap slot ditampilkan sebagai baris horizontal (card label | port grid | slot number), FAN column di kiri dengan animasi, 6 stats card di header (Uptime, Chassis Temp, Avg CPU, Avg Memory, Active Cards, Fan Status), legend di bawah (Online/Disabled/Admin UP Port DOWN/LOS ONU/Unregistered), dan indikator LED PWR/SYS/ALM di header. Port squares 6×24px berwarna dengan dot di dalam (hijau=online, merah=LOS, oranye=partial, biru=uplink, kosong=slate). Badge kuning kecil muncul di atas port yang punya unregistered ONU.
+
+### Files
+- `src/app/admin/olt/[id]/page.tsx` — Rewrite `ZTEChassisView` dari horizontal chip → vertical rack blade NMS-style
+
+---
+
+## [2.29.23] — 2026-05-10
+### Added
+- **Realistic ZTE C320 chassis diagram** — Halaman detail OLT kini menampilkan diagram front-panel chassis ZTE C320 dengan semua 18 slot: MCU-A (slot 0), 14 service card slots (1–14), 2 uplink slots (15–16, GICF), MCU-B (slot 17), plus FAN dan PWR di kiri/kanan. Setiap slot menampilkan card type label (GTGQ/GTGH/GTGO/GICF/MCUD1), grid port berwarna (hijau=online, oranye=partial, merah=offline, hitam=kosong), dan slot kosong ditampilkan gelap. Chassis disertai panel detail per-port (persentase online, avg RX power) di bawahnya
+- **ONU registration modal** — Tombol "Register" muncul di kolom aksi tabel ONU untuk ONU yang berstatus `auth_failed` (unregistered). Tombol membuka modal yang menampilkan: form ONU ID, ONU type (ZTE-F609, F660, F673, F600W, CZTE, All, dll), VLAN, TCONT profile (1G/100M/50M/20M/10M), deskripsi, serta preview command Telnet yang akan dikirim ke OLT
+- **ONU register API** (`POST /api/olt/[id]/onus/register`) — Endpoint baru yang membangun dan mengirim command registrasi ZTE via Telnet (`configure terminal → interface gpon-olt → onu … type All sn … → tcont → gemport → service-port → exit/end`) menggunakan `executeMultipleCommands()`
+- **Telnet multi-command** (`executeMultipleCommands()` di `telnet.ts`) — Fungsi baru yang membuat expect script untuk mengirim banyak command sekaligus ke OLT via sesi Telnet, menunggu prompt `[>#]` setelah setiap command
+- **Chassis API** (`GET /api/olt/[id]/chassis`) — Endpoint baru yang mengembalikan layout slot chassis ZTE C320 beserta data per-port dari DB dan SNMP
+
+### Changed
+- **ONU action column** — Untuk ONU unregistered (`auth_failed`), kolom aksi menampilkan tombol "Register" (hijau) alih-alih tombol "Reboot"
+- **Port diagram tab** — Diganti dari layout grup horizontal lama (`OLTPortDiagram`) ke komponen `ZTEChassisView` baru yang realistis
+
+### Files
+- `src/app/admin/olt/[id]/page.tsx` — Ganti `OLTPortDiagram`/`getOLTTemplate` dengan `ZTEChassisView`; tambah `ONURegisterModal`; tambah state `registeringOnu`; tombol Register di tabel ONU
+- `src/app/api/olt/[id]/onus/register/route.ts` — **NEW** POST endpoint registrasi ONU via Telnet
+- `src/app/api/olt/[id]/chassis/route.ts` — **NEW** GET endpoint layout chassis
+- `src/lib/olt/telnet.ts` — Tambah `executeMultipleCommands()`
+
+---
+
+## [2.29.22] — 2026-05-09
+### Added
+- **ONU description/name (ZTE V2.1)** — `discoverPonV21()` kini fetch nama ONU dari `zxAnGponOnuCfgTable` col 2 (`.3.28.1.1.2.{ponIndex}.{onuId}`) secara paralel, disimpan ke kolom `description` di DB, dan ditampilkan sebagai kolom "Name" di tabel ONU pada halaman detail OLT
+- **ONU distance (ZTE V2.1)** — Jarak ONU ke OLT diambil dari `zxAnGponOnuRegTable` col 21 (`.3.50.12.1.1.21.{ponIndex}.{slot}.{onuId}`) dalam satuan meter, disimpan ke DB, dan ditampilkan sebagai kolom "Distance" di tabel ONU
+- **Unregistered ONU discovery (ZTE V2.1)** — Setelah menemukan ONU terdaftar, `discoverPonV21()` kini juga walk tabel `zxAnGponOnuDiscoveredInfoTable` (`.3.27.4.1.1.{ponIndex}`) untuk menemukan semua ONU yang terdeteksi OLT tetapi belum diregistrasi, ditambahkan dengan status `unregistered` (→ DB: `auth_failed`)
+- **Parallel SNMP fetches (ZTE V2.1)** — Pengambilan oper-state, serial, RX power, description, dan distance dilakukan secara paralel menggunakan `Promise.all()` per ONU untuk mempercepat polling
+
+### Changed
+- **ONU table columns** — Halaman detail OLT kini menampilkan kolom "Name" (deskripsi ONU) dan "Distance" di tabel ONU list; status `auth_failed` kini ditampilkan sebagai "Unregistered" (bukan "Auth failed")
+- **`poller.ts` upsertONU** — Kini menyimpan field `description` dari SNMP; `distance` dan `txPower` menggunakan `onu.distance`/`onu.txPower` sebagai fallback jika data optik tidak tersedia
+
+### Files
+- `src/lib/olt/vendors/zte.ts` — Update V21 constants (tambah `onuDescription`, `onuDistance`, `ZTE_V21_SEEN_ONU_TABLE`); rewrite `discoverPonV21()` dengan parallel fetch + unregistered ONU discovery
+- `src/lib/olt/poller.ts` — `upsertONU()` simpan `description`, gunakan `onu.distance`/`onu.txPower` sebagai fallback
+- `src/app/admin/olt/[id]/page.tsx` — Tambah field `description` di interface ONU; tambah kolom Name + Distance di tabel; fix label "Unregistered" untuk status `auth_failed`
+
+---
+
+## [2.29.21] — 2026-05-09
+### Fixed
+- **ONU discovery ZTE C320 V2.1.0 (CRITICAL)** — `discoverPonV21()` sebelumnya walk OID `.3.50.11.2.1.1` yang tidak ada di firmware V2.1.0, menyebabkan 0 ONU terdiskover. Kini menggunakan tabel registrasi yang telah diverifikasi live via SNMP: walk `zxAnGponOnuRegTable` col 1 (`.3.50.12.1.1.1.{ponIndex}`) untuk menemukan ONU terdaftar, lalu GET serial dari `zxAnGponOnuCfgTable` col 5 (`.3.28.1.1.5`), oper-state dari col 6 registrasi tabel (nilai 5=online), dan RX power dari col 10 (formula: `-(raw/1000)` dBm)
+- **ONU RX power ZTE V2.1** — Kini membaca dari kolom 10 tabel registrasi (`3.50.12.1.1.10.{ponIndex}.{slot}.{onuId}`), disimpan sebagai integer positif dalam satuan 0.001 dBm, dikonversi dengan `-(raw/1000)`. Contoh: nilai 9501 → −9.501 dBm (valid GPON)
+- **ZTE C320 template port count** — Template diagram ZTE C320 slot 1 diubah dari 8 menjadi 16 port agar sesuai dengan data SNMP aktual (16 PON port pada board 1). `getEffectivePortCount` tetap mengexpand lebih jauh jika ada ONU di port >15
+- **Temperature/CPU/memory OIDs V2.1** — OID `C320_TEMP_V21/CPU/MEM` yang menunjuk ke tabel ONU yang salah kini diganti dengan alamat yang lebih tepat; jika tidak accessible, semua metrik return null dan UI menampilkan N/A dengan benar
+
+### Files
+- `src/lib/olt/vendors/zte.ts` — Update V21 OID constants; rewrite `discoverPonV21()` dengan OIDs terverifikasi dari SNMP live
+- `src/app/admin/olt/[id]/page.tsx` — ZTE C320 template slot 1 portCount: 8 → 16
+
+---
+
+## [2.29.20] — 2026-05-09
+### Fixed
+- **VPN route persistence (WireGuard)** — `addPeerToConf()` now writes `PostUp`/`PostDown` lines to `wg.conf [Interface]` so local-network routes (e.g. OLT IPs) survive WG interface restarts and VPS reboots
+- **VPN route persistence (watchdog WG)** — `vpn-watchdog.sh` (CHECK D) now parses `wg0.conf` every 2 min and re-adds any missing kernel routes for WG peer local networks
+- **VPN route persistence (watchdog L2TP)** — `vpn-watchdog.sh` (CHECK E) reads `/etc/salfanet/l2tp/peer-routes.conf` and restores missing L2TP peer local-network routes when ppp0 is up
+- **L2TP localNetworks persistence** — `vps-l2tp-peer` API now accepts `localNetworks`, appends idempotent `ip route replace` lines to `/etc/ppp/ip-up.d/99-vpn-routes`, and saves routes to `/etc/salfanet/l2tp/peer-routes.conf`
+- **L2TP UI localNetworks** — VPN client page now sends `localNetworks` field when adding an L2TP VPS peer
+
+### Files
+- `vpn-watchdog.sh` — Added CHECK D (WireGuard route restoration) and CHECK E (L2TP route restoration)
+- `src/app/api/network/vps-wg-peer/route.ts` — PostUp/PostDown persistence in wg.conf
+- `src/app/api/network/vps-l2tp-peer/route.ts` — Handle localNetworks: ip-up.d append + peer-routes.conf
+- `src/app/admin/network/vpn-client/page.tsx` — Pass localNetworks for L2TP VPS peer creation
+
+---
+
+## [2.29.19] — 2026-05-08
+
+### Fixed
+- **Port OLT terbaca hanya 8 dari 16** — `discoverONUsSNMP` sebelumnya hardcode 2 boards × 8 pon. Kini untuk V2.1, fungsi `discoverPONPortsV21()` walk PON port table (`1.3.6.1.4.1.3902.1012.3.11.3.1.1`) secara dinamis, ekstrak semua ponIndex, konversi ke pasangan (board, pon). ZTE C320 dengan 16 port di board 1 kini terdiskover semuanya. Fallback ke 2×8 jika walk gagal.
+- **Diagram OLT menampilkan jumlah port yang tidak sesuai** — Port diagram sebelumnya pakai `portCount` dari template hardcode. Kini `getEffectivePortCount()` mengambil `max(templatePortCount, maxPortDariData + 1)` berdasarkan data `onuStatuses` aktual, sehingga diagram otomatis scale ke 16 port jika SNMP menemukan ONU di port 8–15.
+
+### Files
+- `src/lib/olt/vendors/zte.ts` — Tambah `ZTE_V21_PON_TABLE` OID, fungsi `discoverPONPortsV21()`, update `discoverONUsSNMP` ke dynamic loop
+- `src/app/admin/olt/[id]/page.tsx` — Tambah `maxPortPerSlot` tracking, `getEffectivePortCount()`, gunakan di render port diagram
+
+---
+
+## [2.29.18] — 2026-05-07
+
+### Fixed
+- **HTTP 500 pada `/api/olt/[id]`** — BigInt fields (`bandwidthUp`, `bandwidthDown` di `onuStatuses`, serta `uptime`, `rxBytes`, `txBytes`, `rxErrors`, `txErrors` di `performanceMetrics`) tidak dikonversi sebelum JSON serialization. Diperbaiki dengan map eksplisit `Number()` di response.
+- **HTTP 500 pada `/api/olt/metrics`** — Sama, BigInt fields di `oltPerformanceMetric` tidak dikonversi. Diperbaiki.
+- **Telnet tidak tampilkan username/password** — Saat hanya Telnet enabled (SSH disabled), field username/password tidak muncul di Settings tab OLT detail. Kini username/password tampil di bagian Telnet jika SSH dinonaktifkan.
+
+### Files
+- `src/app/api/olt/[id]/route.ts` — Konversi BigInt di `performanceMetrics` dan `onuStatuses` sebelum JSON response
+- `src/app/api/olt/metrics/route.ts` — Konversi BigInt di metrics response
+- `src/app/admin/olt/[id]/page.tsx` — Tampilkan username/password di Telnet section saat SSH disabled
+
+---
+
+## [2.29.17] — 2026-05-08
+
+### Fixed
+- **ONU List selalu kosong (0/0)** — Root cause 3 bug sekaligus:
+  1. **SNMP parser gagal parse OID** — NET-SNMP mengembalikan format `iso.3.6.1...` (dengan prefix `iso.`) tapi regex hanya cocok `^[\d.]+`. Diperbaiki: tambah flag `-On` ke `snmpget`/`snmpwalk` agar output selalu numeric (`1.3.6.1...`), dan update regex untuk handle leading dot.
+  2. **OID status salah (V2.1)** — OID `.3.31.4.1.100` mengembalikan INTEGER: 1 untuk SEMUA 8 slot per PON (bukan status ONU individual). Diperbaiki ke tabel `3.50.11.2` yang terbukti via live SNMP test.
+  3. **Hex-STRING serial gagal parse** — Type prefix `Hex-STRING:` (dengan tanda hubung) tidak cocok dengan regex `\w+:`. Diperbaiki regex ke `[\w-]+:`.
+- **Status ONU terbalik** — OID `3.50.11.2.1.6`: nilai `2=online` (bukan `1=online`). Terbukti dari ONU dengan uptime 83 hari yang return status=2.
+- **Port numbering salah** — SNMP V2.1 `pon=1` harus disimpan sebagai `port=0` (ZTE CLI pakai 0-based port). Diperbaiki dengan offset `pon - 1`.
+- **Serial number salah format** — ZTE GPON serial 8 bytes: 4 bytes ASCII vendor prefix + 4 bytes hex suffix. Misal `5A 54 45 47 DA 59 18 AC` → `ZTEGDA5918AC`. Konversi sebelumnya tidak benar.
+- **Temperature menampilkan nilai tidak valid** — OID `3.50.12.1.1.4` mengembalikan `1` (bukan suhu). Ditambah validasi range 10–85°C agar nilai tidak masuk akal ditolak.
+- **Poll Now tidak ada feedback** — Tambah loading state (`polling` state + spinner) dan alert jika gagal.
+
+### Changed
+- **OID profile ZTE C320 V2.1** diupdate ke tabel `3.50.11.2` yang sudah diverifikasi live:
+  - `onuName`: `.3.50.11.2.1.1` (vendor prefix string, dipakai untuk walk discovery)
+  - `onuSerial`: `.3.50.11.2.1.3` (Hex-STRING 8 bytes)
+  - `onuStatus`: `.3.50.11.2.1.6` (INTEGER: 2=online, 1=init, 3=fault)
+  - `onuModel`: `.3.50.11.2.1.9` (STRING model name)
+
+### Files
+- `src/lib/olt/snmp.ts` — Tambah `-On` flag, fix regex parser untuk `iso.` prefix dan `Hex-STRING:` type
+- `src/lib/olt/vendors/zte.ts` — Update V21 OID profile, fix serial conversion, fix status mapping, fix port offset, fix temperature validation
+- `src/app/admin/olt/[id]/page.tsx` — Tambah `polling` state + spinner + error feedback pada Poll Now
+
+---
+
+
+### Fixed
+- **WireGuard peer hilang setelah reboot/re-install** — Root cause: `install-wg-server.sh` membuat ulang `wg0.conf` tanpa peer saat dijalankan ulang. Dibuat `wg-peer-watchdog.sh` yang berjalan tiap 5 menit via cron — otomatis restore peer dari database jika hilang dari `wg0.conf`.
+- **LocalNetworks tidak tersimpan di DB** — API `POST /api/network/vps-wg-peer` kini menyimpan `localNetworks` ke kolom `description` (`localNets=x.x.x.x/yy,...`) agar watchdog bisa restore AllowedIPs dengan benar.
+
+### Added
+- **`/usr/local/bin/wg-peer-watchdog.sh`** — Script watchdog WireGuard di VPS: cek semua peer aktif dari DB, restore ke `wg0.conf` + `wg syncconf` jika hilang. Crontab: `*/5 * * * *`.
+- **`scripts/wg-peer-watchdog.sh`** — Source script tersimpan di repo untuk referensi.
+
+### Files
+- `src/app/api/network/vps-wg-peer/route.ts` — Simpan localNetworks ke `description` saat create/update vpnClient
+- `scripts/wg-peer-watchdog.sh` — Script watchdog WireGuard peer
+
+---
+
+## [2.29.15] — 2026-05-07
+
+### Fixed
+- **Router selalu "No router"** — Field name mismatch: API mengembalikan `routers[].router` tapi UI membaca `network_olt_routers[].nas`. Diperbaiki agar konsisten menggunakan `routers[].router`.
+- **Router tidak ter-load saat Edit OLT** — `handleEdit` menggunakan `olt.network_olt_routers?.map(r => r.nas?.id)` yang selalu undefined. Diperbaiki ke `olt.routers?.map(r => r.router?.id)`.
+- **Kolom "Model Profile" selalu "No profile"** — Model profile API adalah stub (selalu return `[]`). Diganti tampilkan `vendor + model` langsung dari data OLT.
+
+### Files
+- `src/app/admin/network/olts/page.tsx` — Fix OLT interface, handleEdit, display table, mobile card
+
+---
+
+## [2.29.14] — 2026-05-07
+
+### Added
+- **Firmware Version di modal Add/Edit OLT** — Field Firmware Version (e.g. `V2.1.0`, `V2.2.0`) ditambahkan ke form Add OLT dan Edit OLT di halaman `/admin/network/olts`. Kritis untuk ZTE C320 agar OID yang digunakan sesuai versi firmware.
+
+### Files
+- `src/app/admin/network/olts/page.tsx` — Tambah `firmwareVersion` ke formData, OLT interface, handleEdit, dan form UI
+- `src/app/api/network/olts/route.ts` — Tambah `firmwareVersion` ke POST (create) dan PUT (update) handler
+
+---
+
+## [2.29.13] — 2026-05-07
+
+### Fixed
+- **ZTE C320 suhu/CPU/memori selalu N/A** — OID `1.3.6.1.4.1.3902.1015.1015.*` adalah untuk C300/C600, bukan C320. Diganti dengan walk-based approach yang mencoba C320 V2.1 OIDs (`1.3.6.1.4.1.3902.1012.3.50.12.*`), V2.2 OIDs (`1.3.6.1.4.1.3902.1082.500.20.2.1.2.*`), lalu fallback ke C300/C600.
+- **ONU unregistered tidak terdeteksi (ZTE)** — Ditambahkan discovery `show gpon onu uncfg gpon-olt_1/{slot}/{port}` via Telnet/SSH. ONU belum terdaftar akan muncul dengan status `auth_failed` (unregistered).
+- **ZTE port numbering** — Telnet/SSH discovery diperbaiki dari port 1–8 menjadi 0–7 sesuai notasi ZTE (`gpon-olt_1/1/0` bukan `gpon-olt_1/1/1`).
+- **Router/NAS tidak bisa disimpan** — Halaman Settings OLT tidak memiliki field router sama sekali. Ditambahkan router selector (multi-checkbox) + simpan ke `networkOLTRouter` junction table via API PUT.
+- **Firmware version tidak ada di Settings** — Ditambahkan field Firmware Version di Settings OLT. Ini kritis untuk memilih OID yang benar (V2.1 vs V2.2).
+
+### Changed
+- **Port diagram** — Redesign visual menjadi front-panel style (seperti NetMument): dark metallic chassis, SFP slot hole, fiber dot indicator, badge ONU count per port, CON/MGT port dummy, LED PWR/SYS/ALM glow effect.
+- **API GET `/api/olt/[id]`** — Sekarang include `routers` (dengan data router name + IP) di response.
+- **API PUT `/api/olt/[id]`** — Support `routerIds[]` untuk update router assignments.
+- **package.json** — Version synced ke `2.29.12`
+
+### Files
+- `src/lib/olt/vendors/zte.ts` — Fix temperature/CPU/memory OIDs, add unregistered ONU discovery, fix port 0-based numbering
+- `src/lib/olt/poller.ts` — Map `unregistered` status ke `auth_failed`
+- `src/app/api/olt/[id]/route.ts` — Add routers include in GET, add routerIds handling in PUT
+- `src/app/admin/olt/[id]/page.tsx` — Add firmware field, router selector, unregistered filter, redesign port diagram
+
+
+
+### Fixed
+- **ZTE C320 ONU list menampilkan 0 ONU** — Root cause: OID yang digunakan salah (dari C300/C600 MIB bukan C320). Rewrite `zte.ts` dengan OID yang benar dari referensi go-api-c320:
+  - V2.1 firmware: base `1.3.6.1.4.1.3902.1012`, PON index = `board_base + pon × 256`
+  - V2.2 firmware: base `1.3.6.1.4.1.3902.1082`, ID suffix & type suffix per board/PON
+- **ONU discovery via SNMP untuk ZTE C320** — `poller.ts` sekarang mencoba SNMP dulu (`discoverONUsSNMP`) sebelum fallback ke SSH/Telnet. Ini lebih reliable untuk C320.
+- **RxPower dari SNMP V2.2** — RX power diambil langsung saat SNMP discovery (V2.2 supports it × 0.01 dBm). Digunakan sebagai fallback jika opticalInfo Telnet/SSH tidak tersedia.
+- **Port diagram slot count** — Telnet/SSH discovery di `zte.ts` sebelumnya iterasi slot 1–4; C320 hanya punya 2 GCOB cards, diperbaiki menjadi slot 1–2.
+- **Port diagram index mismatch** — Port Map tab menampilkan semua port kosong karena lookup menggunakan 0-based index (`port 0`) sementara DB menyimpan port 1-based (`port 1–8`). Fix: `getPortStyle` dan `getPortTitle` sekarang menggunakan `portIndex + 1` untuk key lookup `portStats`.
+
+### Changed
+- **ZTE C320 Port Diagram — LED indicators** — Header chassis sekarang menampilkan LED PWR/SYS/ALM sesuai kondisi OLT dan alerts, memberi tampilan lebih mirip hardware asli.
+
+### Files
+- `src/lib/olt/vendors/zte.ts` — Complete rewrite dengan V2.1 + V2.2 OID profiles, `discoverONUsSNMP()`, fix slot count 1-2
+- `src/lib/olt/poller.ts` — SNMP discovery diprioritaskan, `rxPower` dari SNMP digunakan sebagai fallback
+- `src/app/admin/olt/[id]/page.tsx` — Fix port index bug (0-based→1-based), LED indicators di chassis header
+
+---
+
+## [2.29.11] — 2026-05-07
+
+### Fixed
+- **Telnet Test Connection selalu timeout (30s)** — Script expect sebelumnya menunggu prompt `#`/`>` lalu menjalankan `display version` yang bisa hang. Diganti dengan script yang lebih robust: TCP port check 3s dulu, kemudian expect yang menunggu pola prompt manapun (`#`, `>`, `$`, atau username/password prompt) dan langsung exit. Total timeout 15s, tidak perlu menjalankan perintah CLI apapun.
+
+### Added
+- **Dropdown Model OLT per Vendor** — Field "Model" di form tambah/edit OLT sekarang menjadi dropdown dinamis yang berubah sesuai vendor yang dipilih:
+  - **ZTE**: C320, C300, C350, C600, C610, C650
+  - **Huawei**: MA5608T, MA5680T, MA5683T, MA5800-X15, MA5800-X7, MA5800-X2
+  - **FiberHome**: AN5516-01, AN5516-06, AN5516-04, AN5506-04-B, AN5516-06B
+  - **Hioso / C-Data**: HA7304V, HA7304VX, HA7304C, HA8080G, HA8040G (dengan profil SNMP yang sesuai)
+  - **BDCOM**: P3310C, P3310D, GP3600, GP3000, P3320C
+  - **Raisecom**: ISCOM5508, ISCOM5504, ISCOM5516
+  - Masing-masing model menampilkan tipe PON (GPON/EPON/XGS-PON)
+- **Vendor Hioso ditambahkan** di dropdown vendor OLT (form OLT Management dan Settings detail OLT)
+- **Port Diagram untuk Hioso, BDCOM, Raisecom** — Diagram fisik port OLT di tab "Port Map" sekarang mendukung semua vendor tersebut
+
+### Files
+- `src/lib/olt/telnet.ts` — `testTelnet()` diganti dengan robust expect script
+- `src/app/admin/network/olts/page.tsx` — `VENDOR_MODELS` constant + dropdown model dinamis + tambah Hioso di vendor list
+- `src/app/admin/olt/[id]/page.tsx` — tambah Hioso di vendor select settings, tambah template port diagram Hioso/BDCOM/Raisecom
+
+---
+
+## [2.29.10] — 2026-05-07
+
+### Fixed
+- **SSH gagal dengan "Unsupported algorithm: blowfish-cbc"** — OpenSSL 3.x (Ubuntu 22+) menghapus cipher `blowfish-cbc`. Dihapus dari semua algorithm lists di `ssh.ts` (`executeCommand`, `executeCommandsInShell`, `testSSH`).
+- **OLT status tetap "Offline" setelah Test Connection berhasil** — `test-connection` API tidak mengupdate kolom `isOnline` di DB. Fix: setelah semua test selesai dan `oltId` diketahui, `prisma.networkOLT.update({ isOnline: anySuccess })` dijalankan.
+
+### Added
+- **OLT Port Diagram** — Tab baru "Port Map" di halaman detail OLT (`/admin/olt/[id]`). Menampilkan diagram visual front-panel OLT sesuai merk dan model:
+  - ZTE C320: 1U chassis, 2x 10GE uplink, 2x GPON card masing-masing 8 port
+  - ZTE C300: 7U chassis, 4x 10GE uplink, 4x GPON slot masing-masing 16 port
+  - ZTE C350: 14U chassis, 8x 100GE uplink, 8x GPON slot masing-masing 16 port
+  - Huawei MA5608T: 2U compact, 2x GE/10GE uplink, 8x GPON
+  - Huawei MA5683T/MA5680T: 7U chassis, 4x 10GE uplink, 4x GPON slot
+  - FiberHome AN5516-series: chassis, 4x uplink, 4x GPON slot
+  - Generic: tampilan fallback 2 uplink + 8 PON
+- Setiap port PON diwarnai sesuai status ONU: hijau (semua online), oranye (sebagian offline), merah (semua offline), abu-abu (kosong)
+- Hover tooltip per port menampilkan ID port, jumlah ONU, avg RX power
+- Tabel detail per port PON: progress bar online/total, avg RX power
+
+### Files
+- `src/lib/olt/ssh.ts` — hapus `blowfish-cbc` dari 3 algorithm list
+- `src/app/api/olt/test-connection/route.ts` — update `isOnline` di DB saat test selesai
+- `src/app/admin/olt/[id]/page.tsx` — tambah tab "Port Map" + komponen `OLTPortDiagram` + helper `getOLTTemplate`
+
+---
+
+## [2.29.9] — 2026-05-07
+
+### Fixed
+- **OLT Test Connection selalu gagal (SNMP/SSH/Telnet)** — Root cause dua masalah:
+  1. `snmpget` dan `expect` tidak terinstall di VPS → diinstall manual via `apt-get install snmp expect`
+  2. `ssh.ts` tidak ada legacy algorithms → ZTE/Huawei OLT lama hanya support `aes128-cbc`, `3des-cbc`, `diffie-hellman-group1-sha1` yang tidak ada di default ssh2
+- `testSSH()` diubah menjadi test handshake only (bukan jalankan `display version`) agar lebih reliable lintas vendor
+- `testTelnet()` sekarang cek TCP port open dulu sebelum jalankan full expect auth
+
+### Files
+- `src/lib/olt/ssh.ts` — tambah legacy cipher/kex/hmac algorithms, fix `testSSH()` to handshake-only
+- `src/lib/olt/telnet.ts` — `testTelnet()` cek port open sebelum full auth
+
+---
+
+## [2.29.8] — 2026-05-07
+
+### Fixed
+- **POST /api/network/olts/status 404** — Endpoint untuk mengecek status konektivitas OLT belum ada. Halaman `/admin/network/olts` melakukan polling status setiap 30 detik ke endpoint ini. Fix: buat route baru yang membaca `isOnline`, `sshEnabled`, `telnetEnabled` dari DB dan kembalikan `statusMap`.
+- **GET /admin/network/olt/[id] 404** — Link "View detail" di halaman daftar OLT mengarah ke `/admin/network/olt/[id]` tapi halaman detail sebenarnya ada di `/admin/olt/[id]`. Fix: perbaiki dua link di halaman daftar OLT (tabel desktop + kartu mobile).
+
+### Files
+- `src/app/api/network/olts/status/route.ts` — **BARU**: POST handler batch OLT status check
+- `src/app/admin/network/olts/page.tsx` — Perbaiki 2 link ke `/admin/olt/${olt.id}`
+
+---
+
+## [2.29.7] — 2026-05-07
+
+### Fixed
+- **GET /api/network/olts 500 — BigInt tidak bisa di-serialize** — `networkOLT.uptime` bertipe `BigInt` di Prisma schema (MySQL BIGINT). `JSON.stringify` tidak bisa handle BigInt secara native. Fix: convert `uptime` ke `Number()` di semua OLT endpoint responses.
+
+### Files
+- `src/app/api/network/olts/route.ts` — GET/POST/PUT: `uptime: Number(olt.uptime)`
+- `src/app/api/olt/[id]/route.ts` — GET/PUT: convert uptime + ONU statuses uptime
+- `src/app/api/olt/monitoring/route.ts` — GET: convert uptime in map
+
+---
+
+## [2.29.6] — 2026-05-07
+
+### Fixed
+- **Update terhenti setelah GenieACS restore** — `apply_sql_migrations()` memanggil `mysql --force` yang tetap exit code non-zero meski ada SQL error (1060 duplicate column, 1061 duplicate index). Karena `updater.sh` pakai `set -e` + `set -o pipefail`, script langsung abort tepat setelah GenieACS restore, sebelum sempat build. Fix: tambah `|| true` setelah pemanggilan `mysql --force` (error dari mysql diabaikan — kita selalu mark file sebagai applied dan cek error real secara manual), dan `|| true` di kedua call site `apply_sql_migrations` sebagai defense-in-depth.
+
+### Files
+- `vps-install/updater.sh` — `mysql --force ... || true` + `apply_sql_migrations || true` di kedua call site (incremental + fresh install path)
+
+---
+
+## [2.29.5] — 2026-05-07
+
+### Fixed
+- **Telegram backup dikirim 2x ke bot** — `autoBackupToTelegram()` bisa dipanggil dari dua proses/trigger berbeda (misal `runner.ts` + proses lain) pada waktu yang sama. Ditambahkan deduplication guard: sebelum mulai, cek apakah ada `cronHistory` dengan `jobType=telegram_backup` dan status `running` atau `success` dalam 5 menit terakhir. Jika ada, langsung skip (return success tanpa kirim backup). Ini menghilangkan double-send tanpa perlu koordinasi antar proses.
+
+### Files
+- `src/server/jobs/telegram-cron.ts` — `autoBackupToTelegram()`: tambah deduplication guard (cek recent run dalam 5 menit terakhir sebelum proceed)
+
+---
+
+## [2.29.4] — 2026-05-08
+
+### Fixed
+- **SQL migration: `ADD COLUMN IF NOT EXISTS` tidak didukung MySQL (hanya MariaDB)** — Semua file migration yang pakai syntax MariaDB-only ini sekarang dipecah menjadi satu `ALTER TABLE ADD COLUMN` per statement dan syntax `IF NOT EXISTS` dihapus. `CREATE TABLE IF NOT EXISTS` tetap digunakan (MySQL sudah support). File yang diperbaiki: `20251223_add_billing_fields.sql`, `20260228_add_registration_fields.sql`, `20260320_add_pppoe_profile_hpp_ppn.sql`, `20260421_add_vpn_pool_config.sql`, `20260506_add_olt_monitoring_tables.sql`, `add_wireguard_fields.sql`.
+- **`apply_sql_migrations()` di `updater.sh`: migration gagal tidak dicatat, muncul ulang tiap update** — Sebelumnya file hanya dicatat ke APPLIED_LOG jika exit code 0; jika ada error (termasuk yang benign seperti ERROR 1060 duplicate column), file akan dijalankan ulang di setiap update. Sekarang: (1) `mysql --force` digunakan agar error di satu statement tidak menghentikan statement lainnya; (2) semua file selalu dicatat sebagai applied setelah dijalankan (prisma db push adalah source of truth untuk schema); (3) hanya error real (bukan 1060 duplicate column / 1061 duplicate index) yang ditampilkan ke user.
+- **`CREATE INDEX IF NOT EXISTS` di migration billing** — Diganti dengan `CREATE INDEX` biasa (MySQL tidak support IF NOT EXISTS untuk INDEX; --force handle duplikasi).
+
+### Files
+- `vps-install/updater.sh` — `apply_sql_migrations()`: `mysql --force`, selalu mark applied, filter error 1060/1061
+- `prisma/migrations/20251223_add_billing_fields.sql` — split ADD COLUMN, hapus IF NOT EXISTS
+- `prisma/migrations/20260228_add_registration_fields.sql` — split ADD COLUMN, hapus IF NOT EXISTS
+- `prisma/migrations/20260320_add_pppoe_profile_hpp_ppn.sql` — split ADD COLUMN, hapus IF NOT EXISTS
+- `prisma/migrations/20260421_add_vpn_pool_config.sql` — hapus IF NOT EXISTS dari ADD COLUMN
+- `prisma/migrations/20260506_add_olt_monitoring_tables.sql` — split 21 ADD COLUMN, hapus IF NOT EXISTS
+- `prisma/migrations/add_wireguard_fields.sql` — hapus IF NOT EXISTS dari ADD COLUMN
+
+---
+
+## [2.29.3] — 2026-05-06
+
+### Fixed
+- **Invoice number: format seragam `INV-YYYYMMDD-XXXXXX` di semua tempat** — Sebelumnya ada 3 format berbeda yang dipakai secara tidak konsisten: `INV-YYYYMM-0001` (sequential counter — di cron generate & extend API), `INV-YYYYMM-A3F9B2C1` (8 char UUID prefix — di registrasi user baru & manual generate UI), dan `INV-YYYYMM-0001` (sequential counter dengan DB count — di import CSV). Sekarang semua tempat menggunakan format tunggal: **`INV-YYYYMMDD-XXXXXX`** (tanggal 8 digit + 6 karakter random uppercase hex). Tidak ada lagi DB query untuk hitung urutan; tidak ada lagi race condition pada concurrent invoice generation.
+
+### Changed
+- `generateInvoiceNumber()` di `invoice.service.ts` sekarang fungsi **sync** (tidak async), tidak lagi butuh Prisma DB count.
+
+### Files
+- `src/server/services/billing/invoice.service.ts` — `generateInvoiceNumber()`: format baru, sync, tidak perlu DB
+- `src/server/services/pppoe.service.ts` — pakai `generateInvoiceNumber()` dari billing service
+- `src/server/jobs/voucher-sync.ts` — pakai `generateInvoiceNumber()`; hapus `invoiceCount` DB query
+- `src/app/api/invoices/generate/route.ts` — pakai `generateInvoiceNumber()`; hapus inline format
+- `src/app/api/admin/invoices/import/route.ts` — hapus local `generateInvoiceNumber()`, pakai dari billing service
+- `src/app/api/pppoe/users/[id]/extend/route.ts` — hapus `await` (fungsi sudah sync)
+
+---
+
+## [2.29.2] — 2026-05-06
+
+### Fixed
+- **Invoice PREPAID: window mulai dari hari ini (H+0), bukan H+invoiceGenerateDays** — Sebelumnya `prepaidStartDate = today + 7`, sehingga user yang jatuh tempo besok (misal May 7 saat today=May 6) tidak termasuk dalam query dan invoice tidak di-generate — bahkan saat manual trigger (force=true). Sekarang window dimulai dari H+0 sehingga semua user yang expire hari ini hingga 30 hari ke depan tercakup. Duplikasi dicegah oleh check `existingInvoice` yang sudah ada.
+- **Invoice PREPAID force mode: window diperlebar 90 hari ke belakang** — Saat admin trigger manual (force=true), query PREPAID sekarang mencakup `H-90` hingga `H+30` sehingga semua user yang missed bisa di-catch-up sekaligus.
+- **Invoice first-period check: gunakan validitas paket, bukan hardcode 31 hari** — Check `firstPeriodEnd = createdAt + 31 hari` memblokir semua user paket 30-hari (karena `expiredAt ≈ createdAt + 30` selalu ≤ `createdAt + 31`). Sekarang `firstPeriodEnd = createdAt + validityDays + invoiceGenerateDays`, di mana `validityDays` diambil dari profil user. Invoice baru di-skip jika user belum pernah renew (masih periode pertama); setelah renew, `expiredAt > firstPeriodEnd` dan invoice di-generate normal.
+- **Invoice catch-up: juga include user ACTIVE yang expiredAt sudah lewat** — Sebelumnya catch-up hanya untuk status `isolated/blocked/suspended`. User ACTIVE yang statusnya belum terupdate tapi `expiredAt` sudah lewat tidak tercakup. Sekarang menggunakan `eligibleStatuses` (termasuk `active`) untuk catch-up query.
+
+### Files
+- `src/server/jobs/voucher-sync.ts` — `generateInvoices()`: fix PREPAID window start, force mode wide window, first-period check berbasis validitas paket, catch-up include active users
+
+---
+
+## [2.29.1] — 2026-05-06
+
+### Fixed
+- **GenieACS WiFi: task pending/fault tidak lagi menumpuk** — Sebelumnya `POST /api/genieacs/devices/[id]/wifi` mengirim 3 task terpisah (SSID, security mode, password). Hanya task pertama yang manfaatkan `connection_request`; task berikutnya masuk antrean dan bisa fault jika device offline di antara task. Sekarang semua parameter (SSID, mode, password) digabung dalam **1 task `setParameterValues`** → 1 connection request → device menerapkan semua sekaligus.
+- **GenieACS WAN: vendor VLAN params tidak lagi memblokir koneksi** — Parameter vendor-specific (`X_HW_VLAN`, `X_ZTE-COM_VLANIDMark`, `X_CMCC_VLANIDMark`) berada dalam task yang sama dengan PPPoE username/password. Jika device tidak support salah satu path, seluruh task fault termasuk koneksi. Sekarang dipisah jadi task tersendiri (best-effort) — koneksi PPPoE tetap diterapkan meski VLAN vendor gagal.
+- **GenieACS: stale task accumulation** — Setiap kali user ubah setting, task baru ditumpuk di atas task pending lama. Ditambah helper `clearPendingTasks()` yang membersihkan semua pending/fault task milik device sebelum task baru dikirim.
+- **GenieACS: 202 response ditangani benar** — Status 200 = task langsung dieksekusi di device; 202 = task diantrekan (device akan terapkan pada sesi TR-069 berikutnya). Keduanya dianggap sukses dengan pesan berbeda. Tidak ada lagi error palsu saat device lambat merespons.
+- **GenieACS WiFi: hapus `refreshObject` task yang redundan** — Setelah update, sebelumnya ada task `refreshObject` tambahan yang kirim connection request lagi tanpa manfaat nyata.
+
+### Files
+- `src/app/api/genieacs/devices/[deviceId]/wifi/route.ts` — POST: gabung 3 task → 1 task; tambah `clearPendingTasks()`; hapus `refreshObject`; handle 202
+- `src/app/api/genieacs/devices/[deviceId]/wan/route.ts` — POST/PUT/DELETE: tambah `clearPendingTasks()`; pisah vendor VLAN ke task best-effort; handle 202; tambah field `executed` di response
+
+---
+
+## [2.29.0] — 2026-05-10
+
+### Fixed
+- **TSC errors in `poller.ts`** — 3 TypeScript errors (TS2352/TS2322) saat Prisma `JsonValue` di-cast ke custom types. Fixed dengan double-cast `as unknown as Type` dan `as unknown as Prisma.InputJsonValue`.
+- **OLT Add/Edit form missing SSH/Telnet port fields** — Form OLT hanya punya checkbox `sshEnabled`/`telnetEnabled` tanpa input port. Ditambah input field "SSH Port" (22) dan "Telnet Port" (23) yang muncul kondisional saat enabled. Juga tambah SNMP Port (161).
+- **OLT API tidak menyimpan field credentials** — `POST` dan `PUT` `/api/network/olts` hanya menyimpan `name, ipAddress, latitude, longitude, status, followRoad`. Sekarang juga menyimpan: `vendor, model, username, password, snmpCommunity, sshEnabled, telnetEnabled, sshPort, telnetPort, snmpPort`.
+- **OLT Test Connection gagal untuk OLT baru** — Backend hanya menerima `oltId` (DB lookup). Sekarang juga menerima direct params (`ipAddress, username, password, snmpCommunity, sshPort, telnetPort, snmpPort`) sebagai fallback saat `oltId` tidak ada. Semua protocol (SNMP/SSH/Telnet) bisa ditest sekaligus tanpa harus simpan OLT dulu.
+- **Telegram Health double-send race condition** — `startHealthCron()` dan `startBackupCron()` bisa dipanggil dua kali bersamaan (concurrent requests) karena `healthCronJob === null` diperiksa sebelum async DB await selesai. Fixed dengan mutex flag `healthCronStarting` / `backupCronStarting`.
+- **GenieACS task timeout terlalu singkat** — WiFi route menggunakan `timeout=3000ms`, WAN route `timeout=5000ms`. Kedua dinaikan ke `timeout=30000ms` agar device yang lambat merespons tidak langsung fault.
+
+### Files
+- `src/lib/olt/poller.ts` — Fix TSC2352: `as unknown as RuleCondition[]`, `as unknown as RuleAction[]`, `as unknown as Prisma.InputJsonValue`
+- `src/app/api/network/olts/route.ts` — POST/PUT: simpan semua field OLT termasuk credentials dan port
+- `src/app/admin/network/olts/page.tsx` — Tambah `sshPort`, `telnetPort`, `snmpPort` ke state; tambah input fields SSH/Telnet port kondisional; pass port ke test-connection
+- `src/app/api/olt/test-connection/route.ts` — Rewrite: terima direct params ATAU oltId; test semua protocol jika tidak ada protocol tertentu
+- `src/server/jobs/telegram-cron.ts` — Tambah mutex flag `healthCronStarting`/`backupCronStarting` untuk cegah race condition double-send
+- `src/app/api/genieacs/devices/[deviceId]/wifi/route.ts` — Timeout: 3000ms/5000ms → 30000ms
+- `src/app/api/genieacs/devices/[deviceId]/wan/route.ts` — Timeout: 5000ms → 30000ms (semua 3 handler: POST/PUT/DELETE)
+
+---
+
+## [2.28.0] — 2026-05-06
+
+### Added
+- **OLT Detail: tab Metrics dengan recharts** — Halaman `/admin/olt/[id]` kini memiliki tab "Metrics" berisi 4 chart interaktif: CPU & Memory (LineChart), Temperature (AreaChart), ONU Status online/offline (AreaChart), Network Traffic TX/RX (AreaChart). Range waktu bisa dipilih: 6h, 12h, 24h, 48h.
+- **OLT Detail: batch reboot ONU** — Di tab ONU List, setiap baris kini memiliki checkbox. Pilih beberapa ONU lalu klik "Reboot N ONUs" untuk reboot massal (maks 50 sekaligus). Progress bar real-time menampilkan status per-ONU.
+- **OLT Detail: single ONU reboot** — Tombol "Reboot" per baris ONU dengan confirm step sebelum eksekusi.
+- **OLT Detail: CSV export** — Tombol "Export CSV" di header halaman untuk mengunduh daftar ONU lengkap dengan data customer.
+- **OLT Detail: kolom Signal Quality** — Kolom baru "Signal" di tabel ONU menampilkan kualitas sinyal (Excellent/Good/Fair/Poor) berdasarkan nilai RX Power.
+- **API: POST `/api/olt/[id]/onus/[onuId]/reboot`** — Endpoint baru untuk reboot satu ONU via SSH ke OLT. Mendukung command vendor spesifik: Huawei, ZTE, FiberHome, BDCOM, Raisecom.
+- **API: POST `/api/olt/[id]/onus/batch-reboot`** — Endpoint baru untuk batch reboot ONUs, mengembalikan hasil per-ONU.
+
+### Fixed
+- **OLT Test Connection 404** — Halaman `/admin/network/olts` memanggil `/api/admin/olt/test-connection` yang tidak ada. URL dikoreksi ke `/api/olt/test-connection`.
+
+### Files
+- `src/app/admin/olt/[id]/page.tsx` — Tambah tab Metrics (recharts), batch/single ONU reboot, CSV export, Signal Quality column, layout kompak
+- `src/app/api/olt/[id]/onus/[onuId]/reboot/route.ts` — **BARU** — Single ONU reboot via SSH
+- `src/app/api/olt/[id]/onus/batch-reboot/route.ts` — **BARU** — Batch ONU reboot via SSH
+- `src/app/admin/network/olts/page.tsx` — Fix URL test-connection `/api/admin/olt/...` → `/api/olt/...`
+
+---
+
+## [2.27.0] — 2026-05-06
+
+### Added
+- **OLT Monitoring: field "IP Lokal / Subnet di Balik NAS" saat tambah VPN WireGuard peer** — Form tambah VPN client (WireGuard VPS) kini memiliki input opsional untuk memasukkan IP/subnet lokal di balik NAS Mikrotik (contoh: `192.168.75.0/24,136.1.1.100/32`). Network lokal yang diisikan otomatis:
+  - Ditambahkan ke `AllowedIPs` peer block di `wg.conf` VPS sehingga WireGuard tahu harus meneruskan traffic ke peer tersebut.
+  - Ditambahkan route kernel di VPS (`ip route add`) sehingga VPS bisa menjangkau jaringan lokal dan IP OLT di balik Mikrotik tanpa konfigurasi manual.
+- **OLT Monitoring UI: tampilan halaman `/admin/olt/monitoring` diperbarui** — Seluruh halaman diubah mengikuti gaya admin kompak (bukan `container mx-auto p-6`): heading kecil `text-lg font-semibold` + ikon teal, stat card native Tailwind tanpa shadcn, filter menggunakan `<select>/<input>` native, card OLT grid ringkas dengan dark mode support.
+- **OLT Alerts UI: tampilan halaman `/admin/olt/alerts` diperbarui** — Konsisten dengan gaya admin: stat summary 4 kolom, filter native select, alert card compact dengan badge severity inline.
+
+### Fixed
+- **OLT Monitoring: link mati ke `/admin/olt/model-profiles-new/new`** — Tiga link yang mengarah ke halaman yang tidak ada dihapus dari halaman daftar OLT.
+- **OLT Monitoring: dropdown vendor/model kosong** — Vendor diganti ke static dropdown (Huawei, ZTE, FiberHome, BDCOM, Raisecom, Other) dan model diubah ke input teks bebas, karena tabel `oltProfiles` belum ada di database.
+- **Build error `ssh2` bundling** — Paket `ssh2`, `cpu-features`, dan `sshcrypto` ditambahkan ke `serverExternalPackages` di `next.config.ts` untuk mencegah Next.js mencoba bundling modul native crypto.
+
+### Files
+- `src/app/admin/network/vpn-client/page.tsx` — Tambah field `localNetworks` di form + UI input subnet lokal
+- `src/app/api/network/vps-wg-peer/route.ts` — Terima `localNetworks`, tambahkan ke `AllowedIPs` wg.conf + `ip route` di VPS
+- `src/app/admin/olt/monitoring/page.tsx` — Rewrite UI ke gaya admin kompak
+- `src/app/admin/olt/alerts/page.tsx` — Rewrite UI ke gaya admin kompak
+- `src/app/admin/network/olts/page.tsx` — Hapus link mati; vendor static dropdown; model free-text input
+- `next.config.ts` — Tambah `ssh2`, `cpu-features`, `sshcrypto` ke `serverExternalPackages`
+
+---
+
+## [2.25.17] — 2026-05-03
+
+### Fixed
+- **Generate tagihan manual hanya untuk POSTPAID** — Endpoint `POST /api/invoices/generate` sebelumnya memfilter `subscriptionType: 'POSTPAID'` sehingga pelanggan PREPAID tidak pernah mendapat tagihan dari fitur generate manual. Filter dihapus sehingga semua pelanggan aktif (POSTPAID dan PREPAID) diproses.
+- **Generate tagihan menggunakan tanggal jatuh tempo yang salah** — Due date sebelumnya selalu diset ke hari terakhir `targetMonth` untuk semua user. Diperbaiki dengan logika per-user:
+  - **POSTPAID**: `dueDate = billingDay user di targetMonth` (diclamped ke hari terakhir bulan jika billingDay > jumlah hari di bulan tersebut)
+  - **PREPAID**: `dueDate = user.expiredAt` (tanggal kedaluwarsa aktual yang sudah tersimpan di profil user)
+- **PREPAID tanpa expiredAt dilewati** — PREPAID user yang belum memiliki `expiredAt` tidak akan di-generate invoice (di-skip) karena tidak ada tanggal jatuh tempo yang bisa dipakai.
+- **Cek duplikat invoice sekarang mencakup tipe RENEWAL** — Batch check existing invoices sebelumnya hanya mengecek `invoiceType: 'MONTHLY'`. Sekarang mengecek keduanya (`MONTHLY` dan `RENEWAL`) agar PREPAID tidak ter-generate ulang.
+- **Invoice PREPAID menggunakan `invoiceType: 'RENEWAL'`** — Sebelumnya semua invoice di-create dengan `invoiceType: 'MONTHLY'`. Invoice untuk PREPAID sekarang menggunakan `RENEWAL` sesuai konvensi sistem.
+- **UI: deskripsi dialog generate tagihan diperbarui** — Teks "Buat tagihan bulanan untuk pelanggan POSTPAID" diganti menjadi "Buat tagihan untuk pelanggan POSTPAID dan PREPAID". Info teks scope "all" juga diperbarui.
+
+### Files
+- `src/app/api/invoices/generate/route.ts` — Hapus filter POSTPAID-only; per-user dueDate (billingDay / expiredAt); invoiceType MONTHLY/RENEWAL; cek duplikat RENEWAL
+- `src/app/admin/invoices/page.tsx` — Update deskripsi dialog generate tagihan
+
+---
+
+## [2.25.16] — 2026-05-02
+
+### Added
+- **Notifikasi WhatsApp ke admin saat pembayaran manual baru masuk** — Saat pelanggan submit bukti pembayaran manual, sistem sekarang mengirim notifikasi WA instan ke semua admin. Pesan berisi nama pelanggan, username, nomor invoice, jumlah bayar, info bank pengirim, dan link langsung ke halaman approval. Sebelumnya hanya membuat record notifikasi di database.
+- **Notifikasi WhatsApp ke semua SUPER_ADMIN** — Notifikasi WA untuk pendaftaran baru dan pembayaran manual kini dikirim ke semua admin (bukan hanya `company.adminPhone`). Nomor dikumpulkan dari dua sumber: `companies.adminPhone` + semua `admin_users` dengan role SUPER_ADMIN yang aktif dan punya nomor HP. Nomor duplikat di-deduplikasi otomatis. Pengiriman paralel (fire-and-forget) sehingga tidak memperlambat response API.
+- **Helper `getAdminPhones()`** — Fungsi di `whatsapp-templates.service.ts` yang mengumpulkan dan mendeduplikasi semua nomor HP admin dari database. Memfilter nomor invalid (< 10 digit).
+- **Helper `notifyAdminsViaWhatsApp(message)`** — Fungsi reusable untuk mengirim pesan WA ke semua admin. Dapat digunakan di endpoint lain yang butuh notifikasi admin.
+
+### Files
+- `src/server/services/notifications/whatsapp-templates.service.ts` — Tambah `getAdminPhones()` + `notifyAdminsViaWhatsApp()`
+- `src/app/api/manual-payments/route.ts` — Tambah notifikasi WA ke semua admin saat POST (pembayaran manual baru)
+- `src/app/api/registrations/route.ts` — Ubah notifikasi dari `adminPhone` saja ke semua admin via `notifyAdminsViaWhatsApp()`
+
+---
+
+## [2.25.15] — 2026-05-01
+
+### Fixed
+- **Import pelanggan PPPoE: username muncul sebagai `[object Object]`** — ExcelJS mem-parse cell yang berisi `@` (seperti `user@domain.id`) sebagai `CellHyperlinkValue` (`{ text, hyperlink }`). `String(cell.value)` menghasilkan `"[object Object]"` sehingga username salah terbaca. Diperbaiki dengan menangani semua tipe ExcelJS complex cell: hyperlink (ekstrak `.text`), richText (gabungkan `.richText[].text`), formula (ambil `.result`).
+- **Import pelanggan PPPoE: semua baris gagal "Username already exists"** — Import sebelumnya hanya mendukung CREATE baru. File hasil Export berisi user yang sudah ada, sehingga semua baris gagal. Diperbaiki dengan logika **upsert**: jika username sudah ada di DB maka data diperbarui (password, nama, profile, IP, dll) + sync ulang ke RADIUS. Hasil import sekarang menampilkan `X Dibuat · Y Diperbarui`.
+- **Template isolasi gagal disimpan ("data gagal disimpan")** — Endpoint `PUT /api/settings/isolation/templates/[id]` menggunakan pola params lama (`params: { id: string }`) tanpa `await`. Di Next.js 15+ `params` adalah Promise, sehingga `params.id` menjadi `undefined` dan Prisma gagal update. Diperbaiki dengan mengubah semua handler (GET/PUT/DELETE) ke `params: Promise<{ id: string }>` + `const { id } = await params`.
+
+### Files
+- `src/app/api/pppoe/users/bulk/route.ts` — Fix ExcelJS cell parsing + upsert logic untuk existing users
+- `src/app/admin/pppoe/users/page.tsx` — Tampilkan counter "Diperbarui" di hasil import
+- `src/app/api/settings/isolation/templates/[id]/route.ts` — Fix async params Next.js 15
+
+---
+
+## [2.25.14] — 2026-05-01
+
+### Fixed
+- **FreeRADIUS log error "Server returned no data"** — `rlm_rest` mencatat error ini setiap kali API radius mengembalikan `{}` (JSON kosong tanpa attribute RADIUS). Diperbaiki dengan mengubah semua response pass-through menjadi HTTP 204 No Content. `rlm_rest` mengenali 204 sebagai "tidak ada atribut yang di-set" dan tidak mencatat error.
+- **FreeRADIUS error "Connection failed: 7 / Opening connection failed"** — REST module tidak punya timeout, sehingga saat app di-restart (npm build + pm2 restart) FreeRADIUS menunggu indefinitely dan menumpuk duplicate packets. Diperbaiki dengan menambahkan `connect_timeout = 4` detik dan `timeout = 4-5` detik per-seksi di konfigurasi REST module.
+- **FreeRADIUS "Ignoring duplicate packet ... unfinished request in component authorize module rest"** — Akibat tidak adanya timeout di REST module. Setelah timeout ditambahkan, FreeRADIUS cepat fail-over ke SQL module (karena `-rest` non-fatal) tanpa menunggu.
+- **Post-auth: voucher expired mengembalikan HTTP 403 dengan JSON non-RADIUS** — Response `{success: false, error: "Voucher expired"}` tidak dipahami rlm_rest. Diperbaiki menjadi RADIUS attribute format: `{"control:Auth-Type": "Reject", "reply:Reply-Message": "Voucher Kadaluarsa"}`.
+- **FreeRADIUS REST `retry_delay` dikurangi** — Dari 30 detik menjadi 10 detik agar koneksi ke app pulih lebih cepat setelah restart.
+
+### Added
+- **Export PPPoE: filter status pembayaran** — Dropdown filter "Bayar" di halaman Pelanggan PPPoE dengan opsi: Semua, Sudah Bayar, Belum Bayar, Isolir. Filter berlaku untuk export Excel, PDF, dan CSV.
+- **Export PPPoE: kolom Password di Excel dan PDF** — Password PPPoE sekarang disertakan di ekspor Excel dan PDF untuk keperluan backup/recovery (sebelumnya hanya tersedia di ekspor CSV).
+- **Export PPPoE: filter paymentStatus di API** — Endpoint `/api/pppoe/users/export` dan `/api/pppoe/users/bulk?type=export` mendukung query param `paymentStatus=paid|unpaid|isolated` menggunakan join tabel Invoice.
+
+### Files
+- `freeradius-config/mods-available/rest` — Tambah `connect_timeout`, `timeout` per-seksi, kurangi `retry_delay`
+- `src/app/api/radius/authorize/route.ts` — Pass-through responses → HTTP 204
+- `src/app/api/radius/post-auth/route.ts` — Pass-through responses → HTTP 204, fix expired reject format
+- `src/app/api/radius/accounting/route.ts` — Response → HTTP 204
+- `src/app/api/pppoe/users/export/route.ts` — Tambah paymentStatus filter + kolom password
+- `src/app/api/pppoe/users/bulk/route.ts` — Tambah paymentStatus filter pada type=export
+- `src/app/admin/pppoe/users/page.tsx` — Filter UI "Bayar" + pass paymentStatus ke semua export handler
+
+---
+
+## [2.25.13] — 2026-05-01
+
+### Fixed
+- **Password PPPoE tidak berubah saat approval pembayaran manual** — Ditambahkan diagnostic logging di approval handler untuk membuktikan bahwa `pppoe_users.password` tidak berubah saat pembayaran disetujui. Perubahan yang terlihat di `radcheck.value` adalah perilaku yang disengaja (sinkronisasi RADIUS). Ditambahkan `autoComplete="new-password"` di modal edit user untuk mencegah browser autofill mengisi field password secara diam-diam.
+- **Gambar bukti pembayaran manual tidak tampil** — URL gambar yang tersimpan di DB adalah path relatif (`/uploads/...`) sehingga komponen `Image` Next.js tidak bisa merendernya. Diperbaiki dengan membangun URL absolut menggunakan `NEXT_PUBLIC_BASE_URL` sebelum dikirim ke client.
+- **Error approval pembayaran manual (500)** — Prisma update `manualPayment.status` gagal karena field `updatedAt` tidak ada di schema. Diperbaiki dengan menghapus field `updatedAt` dari data update.
+- **Logo APK mobile tidak tampil** — Aset icon APK tidak ter-resolve dengan benar. Diperbaiki path resolusi icon.
+
+### Changed
+- **Diagnostic logging approval manual payment** — Log password sebelum dan sesudah transaksi approval agar dapat diverifikasi via `pm2 logs`.
+
+### Files
+- `src/app/api/manual-payments/[id]/route.ts` — Diagnostic logging + fix `updatedAt` field
+- `src/components/UserDetailModal.tsx` — `autoComplete="new-password"` pada field password
+
+---
+
+## [2.25.12] — 2026-04-30
+
+### Added
+- **Backup & Restore GenieACS Config** — Tombol Backup dan Restore di halaman VP Scripts, Provisions, dan Presets. Format JSON, mendukung export per-tipe maupun backup semua sekaligus via `GET /api/genieacs/backup?type=all|vp|provisions|presets`. Restore via `POST /api/genieacs/backup`.
+
+### Changed
+- **Cache device list GenieACS 5 menit** — TTL cache device list ditingkatkan dari 60 detik ke 5 menit (stale-while-revalidate). Mengurangi load ke GenieACS NBI ~5x, response tetap instan.
+
+### Files
+- `src/app/admin/genieacs/vp-scripts/page.tsx` — Tombol Backup + Restore ditambahkan
+- `src/app/admin/genieacs/provisions/page.tsx` — Tombol Backup + Restore ditambahkan
+- `src/app/admin/genieacs/presets/page.tsx` — Tombol Backup + Restore ditambahkan
+- `src/app/api/genieacs/backup/route.ts` — API endpoint baru (GET + POST)
+- `src/app/api/settings/genieacs/devices/route.ts` — Cache TTL 60s → 300s
+
+---
+
+## [2.25.11] — 2026-05-02
+
+### Added
+- **Generate Tagihan Manual di Halaman Tagihan** — Tombol "Generate Tagihan" baru di header halaman `/admin/invoices`. Membuka dialog dengan opsi:
+  - **Target**: Semua Pelanggan POSTPAID aktif, atau Satu Pelanggan (dengan pencarian nama/username/HP)
+  - **Bulan Tagihan**: Picker bulan (`YYYY-MM`), default bulan berjalan
+  - **Opsi**: Lewati jika tagihan bulan tersebut sudah ada (default aktif), Kirim notifikasi WhatsApp setelah generate
+  - Setelah generate: tampilkan ringkasan (dibuat / dilewati / gagal) + detail error jika ada
+- **API POST `/api/invoices/generate`** — Endpoint baru untuk generate tagihan manual. Mendukung `scope: 'all' | 'single'`, `targetMonth (YYYY-MM)`, `userId`, `skipExisting`, `sendWa`. Menghitung PPN otomatis sesuai profil. Due date = hari terakhir bulan target.
+
+### Files
+- `src/app/admin/invoices/page.tsx` — Dialog + tombol Generate Tagihan ditambahkan
+- `src/app/api/invoices/generate/route.ts` — API endpoint baru
+
+---
+
+## [2.25.10] — 2026-05-01
+
+### Changed
+- **Redesign Form Tambah Pelanggan — 4 Tab Layout** — Form dibagi menjadi 4 tab: 📡 Akun RADIUS, 👤 Data Pelanggan, 🔧 Instalasi, ⚙️ Pengaturan. Navigasi via tombol Sebelumnya/Berikutnya + dot indicator. Tidak perlu scroll panjang. Tab menampilkan tanda hijau jika field wajib sudah terisi.
+- **Support Pelanggan Tanpa Akun PPPoE** — Toggle "Punya Akun PPPoE / Tanpa Akun PPPoE" di tab Akun RADIUS. Jika dimatikan, username & password tidak wajib diisi — sistem auto-generate username `STATIC-{customerId}`. Cocok untuk pelanggan IP statis atau MAC-based. RADIUS sync dilewati kecuali `Framed-IP-Address` jika IP statis diisi.
+
+### Files
+- `src/app/admin/pppoe/users/new/page.tsx` — Rewritten with 4-tab layout
+- `src/app/api/pppoe/users/route.ts` — Validation updated for optional PPPoE credentials
+- `src/server/services/pppoe.service.ts` — Auto-generate username + skip RADIUS sync for static customers
+
+---
+
+## [2.25.9] — 2026-04-30
+
+### Added
+- **Subdomain Routing Frontend UI** — Admin → Settings → Subdomain Routing: halaman panduan interaktif untuk mengatur subdomain per portal (`customer.domain.com`, `agent.domain.com`, `teknisi.domain.com`, `admin.domain.com`). Input domain dinamis (auto-detect dari Base URL), tampilkan DNS records yang perlu ditambahkan, Nginx config siap pakai (bisa di-download .conf), panduan Certbot SSL, dan perintah test curl. Semua script bisa disalin dengan satu klik.
+- **Subdomain Routing di Middleware (`proxy.ts`)** — Next.js middleware membaca header `Host`, parse subdomain, lalu `NextResponse.rewrite()` ke path portal yang sesuai tanpa redirect (URL tetap). Map: `customer`/`pelanggan` → `/customer`, `agent`/`agen` → `/agent`, `teknisi`/`technician` → `/technician`, `admin` → `/admin`.
+- **Prorate Billing di Form Tambah Pelanggan PPPoE** — Untuk tipe POSTPAID: estimasi tagihan prorate dihitung otomatis (live) berdasarkan profil, tanggal jatuh tempo, dan tanggal daftar. Ditampilkan dalam kotak hijau "Estimasi Tagihan Pertama (Prorate)".
+- **Info Alur Pembayaran di Form Tambah Pelanggan** — Kotak biru (POSTPAID) dan ungu (PREPAID) menjelaskan alur pembayaran 4-langkah, muncul otomatis sesuai pilihan tipe langganan.
+- **Field Aksi Jatuh Tempo di Form Tambah Pelanggan** — Dropdown "⚡ Aksi Jatuh Tempo" di section Informasi Tambahan: pilih antara `ISOLIR INTERNET (Suspend)` atau `TETAP TERHUBUNG (No Action)`. Default: ISOLIR. Field ini sebelumnya tidak ada di form tambah pelanggan baru.
+- **Entri nav sidebar: Subdomain Routing** — Menu Settings admin memiliki sub-menu baru "Subdomain Routing" di bawah Cloudflare Tunnel.
+
+### Fixed
+- **Isolasi PPPoE — user tetap online setelah expired** — Sebelumnya, user expired hanya diubah grup RADIUS ke `isolir` tapi session PPP lama tetap jalan. Fix 3-layer:
+  1. **Langsung** (sebelum disconnect): API MikroTik tambahkan IP aktif ke address-list `isolir` → firewall `src-address-list=isolir action=drop` blokir internet saat itu juga.
+  2. **CoA/disconnect**: disconnect PPP paksa re-auth.
+  3. **Reconnect**: RADIUS kirim atribut `Mikrotik-Address-List=isolir` → MikroTik auto-add IP baru ke address-list.
+- **Script MikroTik Setup Page — gunakan address-list bukan subnet** — Firewall filter dan NAT rules di halaman Setup MikroTik diubah dari `src-address=192.168.200.0/24` (subnet) ke `src-address-list=isolir` (address-list dinamis). Lebih presisi dan langsung efektif tanpa menunggu reconnect. PPP profile ditambah `use-mpls=no use-compression=no use-encryption=no`.
+- **Export CSV PPPoE — kolom area, subscriptionType, billingDay hilang** — Export CSV kini menyertakan kolom `area`, `subscriptionType`, dan `billingDay`.
+- **Form Tambah Pelanggan — field area, billingDay, registeredAt tidak ada** — Form tambah pelanggan baru kini menyertakan semua field yang diperlukan API.
+
+### Files
+- `src/proxy.ts` — subdomain routing middleware
+- `src/app/admin/settings/subdomain/page.tsx` *(baru)* — UI panduan subdomain routing
+- `src/app/admin/pppoe/users/new/page.tsx` — prorate billing, payment flow info, Aksi Jatuh Tempo field
+- `src/app/api/pppoe/users/bulk/route.ts` — export CSV + kolom area/subscriptionType/billingDay
+- `src/server/jobs/auto-isolation.ts` — isolasi langsung via address-list sebelum disconnect
+- `src/server/services/radius/coa-handler.service.ts` — fungsi baru `addToMikrotikAddressList()`
+- `src/app/api/settings/isolation/route.ts` — tambah `Mikrotik-Address-List` ke radgroupreply isolir
+- `src/app/admin/settings/isolation/mikrotik/page.tsx` — script firewall/NAT pakai `src-address-list=isolir`
+- `src/app/admin/AdminClientLayout.tsx` — nav entry Subdomain Routing
+- `src/locales/id.json` — translation key `subdomainRouting`
+
+---
+
+## [2.25.8] — 2026-05-02
+
+### Added
+- **WAN Management di GenieACS Device Detail** — Halaman detail perangkat GenieACS kini mendukung manajemen koneksi WAN lengkap:
+  - **Add WAN**: Tombol "Add WAN" di Quick Actions dan di header seksi WAN. Modal add menampilkan pemilihan Connection Type (PPPoE/IP), Nama koneksi, WANDevice index (port binding) 1–2, dan WANConnectionDevice index 1–8 untuk binding ke LAN port spesifik. Implementasi via GenieACS `addObject` diikuti `setParameterValues` pada instance baru.
+  - **Edit WAN**: Edit username/password PPPoE, VLAN ID (0–4094), VLAN Priority (0–7), Service Type, dan toggle Enable/Disable per koneksi WAN. Implementasi via `setParameterValues` multi-parameter.
+  - **Delete WAN**: Tombol hapus per kartu WAN, implementasi via GenieACS `deleteObject`.
+  - **VLAN Configuration**: Set `X_HW_VLAN` (Huawei), `X_ZTE-COM_VLANIDMark`, `X_CMCC_VLANIDMark`, dan `X_HW_VLANPriority` dalam satu request.
+  - **Service Type**: Pilihan INTERNET, TR069, VOIP, IPTV, INTERNET_TR069, OTHER — dikirim ke `X_HW_ServiceList` dan `X_ZTE-COM_ServiceList`.
+  - **Port Binding**: WANDevice.{N} dan WANConnectionDevice.{N} bisa dipilih saat add WAN.
+- **WAN Connection Display dengan Badge** — Kartu WAN menampilkan badge: service type (oranye), VLAN ID (cyan), connection type (abu), status connected/disconnected. Path TR-069 ditampilkan dalam teks monospace kecil.
+- **In-Memory Cache untuk Device List GenieACS** — `GET /api/settings/genieacs/devices` kini menggunakan cache di level modul (PM2 process-persistent):
+  - TTL 60 detik; response langsung dari cache saat masih fresh.
+  - **Stale-while-revalidate**: Jika cache sudah kedaluwarsa, data lama langsung dikembalikan ke client (tanpa blocking) sambil refresh dilakukan di background secara async.
+  - Cache key menggunakan hash `host:username` — otomatis invalid jika kredensial GenieACS berubah.
+  - Response menyertakan field `fromCache: boolean` dan `cacheAge: number` (ms).
+  - Strategi ini membuat halaman Perangkat GenieACS terasa instan setelah load pertama.
+
+### API Files
+- `src/app/api/settings/genieacs/devices/route.ts` — cache ditambahkan (module-level stale-while-revalidate)
+- `src/app/api/genieacs/devices/[deviceId]/wan/route.ts` — API WAN baru (POST update, PUT add, DELETE)
+
+### UI Files
+- `src/app/admin/genieacs/devices/page.tsx` — WAN modal lengkap (add/edit/delete + VLAN/service/port binding)
+
+---
+
+## [2.25.7] — 2026-04-29
+
+### Added
+- **Halaman Cloudflare Tunnel Setup** — Admin → Settings → Cloudflare Tunnel: panduan langkah-langkah interaktif (6 step) install cloudflared di VPS, login, buat tunnel, simpan domain ke database, konfigurasi Nginx, dan verifikasi. Domain tunnel tersimpan ke `company.baseUrl` via API `POST /api/admin/cloudflare-tunnel`. Auto-compress backup >50MB sebelum kirim ke Telegram.
+- **API `GET/POST /api/admin/cloudflare-tunnel`** — Endpoint baru untuk membaca status konfigurasi tunnel (`baseUrl`, `NEXTAUTH_URL`, `NEXT_PUBLIC_APP_URL`) dan menyimpan domain tunnel ke database.
+- **Entry nav sidebar admin: Cloudflare Tunnel** — Menu Settings admin kini memiliki sub-menu "Cloudflare Tunnel" di antara Update Sistem dan Download APK.
+
+### Fixed
+- **Admin sidebar — semua halaman tema terang (light mode) perbaikan massal** — 62 halaman admin masih menggunakan warna neon cyberpunk (`#00f7ff`, `#bc13fe`, `#ff44cc`, dll.) tanpa prefix `dark:` sehingga teks/border/card tidak terbaca di light mode. Seluruh kelas diganti ke pola TailAdmin: title `text-foreground dark:text-transparent dark:bg-clip-text`, spinner `text-brand-500 dark:text-[#00f7ff]`, border `border-border dark:border-[#bc13fe]/30`, card `bg-card dark:bg-[#1a1525]/80`.
+
+### Affected
+- `src/app/admin/AdminClientLayout.tsx`
+- `src/app/admin/settings/cloudflare-tunnel/page.tsx` *(baru)*
+- `src/app/api/admin/cloudflare-tunnel/route.ts` *(baru)*
+- `src/locales/id.json`
+- 62 halaman admin (network, settings, tickets, notifications, dll.)
+
+---
+
+## [2.25.6] — 2026-04-28
+
+### Fixed
+- **Tema terang agent portal — seluruh teks/border neon tidak terbaca** — Halaman `vouchers`, `sessions`, dan `tickets` portal agen masih menggunakan warna hex neon (`#00f7ff`, `#bc13fe`, `#ff44cc`, `#00ff88`, dll.) yang di theme terang menjadi tidak terbaca karena di-override oleh `globals.css`. Seluruh warna tersebut diganti dengan pasangan class Tailwind standar yang aman untuk light dan dark mode.
+
+### Added
+- **Input lokasi GPS di form tiket agen** — Form "Buat Tiket" portal agen kini memiliki field tag lokasi (teks manual) dan tombol GPS yang mengambil koordinat dari browser (`navigator.geolocation`). Lokasi dan link Google Maps otomatis disisipkan ke deskripsi tiket agar teknisi lebih mudah menemukan lokasi pelanggan.
+
+### Changed
+- **Redesign UI agent/vouchers — pure Tailwind dark/light** — Loading spinner, container utama, filter controls, mobile cards, desktop table, pagination, dan dialog WhatsApp semuanya diperbarui ke class Tailwind standar (`bg-white dark:bg-slate-800/60`, `border-slate-200 dark:border-slate-700`, status badge `bg-emerald-100 text-emerald-700`, dll.).
+- **Redesign UI agent/sessions — pure Tailwind dark/light** — Header, tombol refresh, stats cards (cyan/emerald/pink), search bar, daftar sesi (mobile card + desktop table) diperbarui; upload `text-emerald-600 dark:text-emerald-400`, download `text-pink-600 dark:text-pink-400`.
+- **Redesign UI agent/tickets — pure Tailwind dark/light** — Header, tombol "Buat Tiket", form tiket, filter status, daftar tiket, chat bubble, dan reply box diperbarui dari neon gradient ke `from-violet-600 to-cyan-600`; active filter `bg-violet-100 dark:bg-violet-500/20`.
+
+### Affected
+- `src/app/agent/vouchers/page.tsx`
+- `src/app/agent/sessions/page.tsx`
+- `src/app/agent/tickets/page.tsx`
+
+---
+
+## [2.25.5] — 2026-04-28
+
+### Added
+- **APK Android: notifikasi native dengan suara, getaran & floating** — APK WebView kini menyertakan `NotificationChannel` (Android 8+), JavaScript bridge (`Android.showNotificationWithTag`) yang terhubung ke service worker push event (`PUSH_RECEIVED`), serta `NotificationWorker` berbasis WorkManager yang polling `/api/notifications` setiap 15 menit di background. Notifikasi tampil dengan prioritas HIGH, suara default, getaran, dan heads-up notification bahkan saat aplikasi ditutup.
+- **Logo square 1:1 di semua halaman** — Semua container logo (login Admin/Customer/Technician/Agent, sidebar admin, settings company, download APK, halaman isolated) kini menggunakan rasio persegi (1:1) dengan `object-contain` sehingga logo 512×200 ditampilkan dalam kanvas 512×512 dengan letterbox — tidak distretch.
+
+---
+
+## [2.25.4] — 2026-04-28
+
+### Added
+- **Input lokasi GPS di form tiket pelanggan** — Halaman pembuatan tiket pelanggan kini mendukung tag lokasi, pengambilan koordinat GPS dari browser, dan penyisipan link Google Maps otomatis ke deskripsi tiket agar teknisi lebih mudah menemukan rumah pelanggan.
+- **Tanggal Register editable untuk user PPPoE** — Form tambah dan edit user PPPoE kini menyediakan field `Tanggal Register` yang tersimpan ke `createdAt`, sehingga data historis pelanggan bisa dikoreksi tanpa manipulasi database manual.
+- **Logo perusahaan di sidebar admin** — Sidebar admin kini menampilkan logo perusahaan secara langsung dengan fallback ke inisial jika logo belum tersedia.
+
+### Fixed
+- **CSV import/export PPPoE belum mendukung `registeredAt`** — Template CSV/XLSX, normalization map import, dan parsing data bulk kini mendukung `Tanggal Register` / `registeredAt` sehingga tanggal registrasi historis tidak lagi hilang saat impor massal.
+- **Penyimpanan rate limit isolir ke tabel RADIUS tidak pernah update** — Endpoint pengaturan isolasi sebelumnya memakai `ON DUPLICATE KEY UPDATE` pada tabel `radgroupreply` yang tidak memiliki UNIQUE constraint. Diperbaiki ke pola `DELETE + INSERT` untuk atribut `Mikrotik-Rate-Limit`, `Mikrotik-Group`, dan `Framed-Pool`.
+- **Label tanggal isolasi PPPoE masih memakai istilah kedaluwarsa** — Teks UI terkait `expiredAt` di form PPPoE dan detail user kini diseragamkan menjadi `Tanggal Isolir`.
+- **Preview/logo branding belum konsisten di semua halaman** — Login Admin, Customer, Technician, Agent, halaman Isolated, Settings Company, dan Download APK kini memakai pola logo dinamis dengan `object-contain` dan batas layout ideal agar logo horizontal maupun vertikal tetap proporsional.
+
+### Changed
+- **Upload logo kini mendukung lebih banyak format** — Upload logo perusahaan sekarang menerima PNG, JPG, SVG, WebP, AVIF, dan GIF, dengan mapping ekstensi berbasis MIME type agar nama file hasil upload lebih konsisten.
+- **Download APK memakai preview logo full-area** — Kartu logo pada halaman download APK kini memakai container preview lebih besar agar admin bisa melihat hasil branding secara proporsional sebelum build APK.
+- **Versi aplikasi disinkronkan dengan changelog** — Metadata versi project dinaikkan ke `2.25.4` agar badge versi, package metadata, dan changelog tetap selaras.
+
+### Affected
+- `src/app/admin/AdminClientLayout.tsx`
+- `src/app/admin/download-apk/page.tsx`
+- `src/app/admin/login/page.tsx`
+- `src/app/admin/pppoe/users/page.tsx`
+- `src/app/admin/settings/company/page.tsx`
+- `src/app/agent/page.tsx`
+- `src/app/api/pppoe/users/bulk/route.ts`
+- `src/app/api/settings/isolation/route.ts`
+- `src/app/api/upload/logo/route.ts`
+- `src/app/customer/login/page.tsx`
+- `src/app/customer/tickets/create/page.tsx`
+- `src/app/isolated/page.tsx`
+- `src/app/technician/login/page.tsx`
+- `src/components/UserDetailModal.tsx`
+- `src/locales/id.json`
+- `src/server/services/pppoe.service.ts`
+
+## [2.25.3] — 2026-04-27
+
+### Fixed
+- **Nama perusahaan tidak terlihat di tema terang pada semua portal login role** — Beberapa halaman login menampilkan heading brand dengan gaya yang bisa kehilangan kontras di light mode (teks putih/gradient terhadap latar terang), sehingga nama perusahaan nyaris tidak terbaca. Diperbaiki dengan pola heading kontras yang konsisten (`text-slate-900` untuk light mode, `text-white` untuk dark mode) dan fallback nama perusahaan yang aman.
+
+### Changed
+- **Redesign UI login lintas role (Admin, Customer, Agent, Technician)** — Semua halaman login portal diseragamkan tata letaknya agar konsisten antar-role dan tetap responsif desktop/mobile.
+  - Panel form login diseragamkan (`lg:w-[430px]`, background `bg-card`, batas `border-border`) untuk ritme visual yang sama.
+  - Ditambahkan blok branding **"Nama Perusahaan"** di sisi form agar identitas tetap terbaca jelas pada tema terang maupun gelap.
+  - Area hero kanan diperbarui dengan heading tunggal yang tegas + accent bar gradient per role untuk visual yang lebih clean dan kontras.
+  - Gradien latar hero desktop dirapikan ke palet yang lebih lembut di light mode agar elemen teks tidak tenggelam.
+
+### Affected
+- `src/app/admin/login/page.tsx`
+- `src/app/customer/login/page.tsx`
+- `src/app/agent/page.tsx`
+- `src/app/technician/login/page.tsx`
+
+---
+
+## [2.25.2] — 2026-04-26
+
+### Added
+- **WhatsApp Baileys — Native WhatsApp gateway built-in di VPS** — Provider baru `baileys` menggunakan library `@whiskeysockets/baileys` yang berjalan sebagai proses PM2 terpisah (`salfanet-wa`) di `127.0.0.1:4000`. Tidak perlu layanan pihak ketiga (Fonnte, WAHA, MPWA, dll).
+  - `GET /api/whatsapp/providers/:id/qr` — Ambil QR code untuk scan WhatsApp Web
+  - `GET /api/whatsapp/providers/:id/status` — Cek status koneksi (connected/disconnected)
+  - `POST /api/whatsapp/providers/:id/restart` — Logout session & generate QR baru
+  - `wa-service.js` — Express server standalone yang mengelola koneksi Baileys + generate QR (base64 PNG)
+  - PM2 process `salfanet-wa` ditambahkan ke `production/ecosystem.config.js`
+  - Auth session tersimpan di `/var/data/salfanet/baileys_auth` (persist across restart)
+  - `vps-install/updater.sh` otomatis setup direktori auth + start `salfanet-wa`
+- **QR Modal: success state + auto-refresh** — Setelah scan berhasil, modal WhatsApp QR menampilkan animasi centang hijau "WhatsApp Berhasil Terhubung!" beserta tombol tutup. Status provider card di-refresh otomatis tanpa reload halaman.
+
+### Fixed
+- **HTTP 400 saat QR belum siap (WAITING state)** — Saat Baileys masih inisialisasi (belum generate QR), `/qr` endpoint sebelumnya mengembalikan 400 → frontend tampil error dan tutup modal. Sekarang server balas 202 dengan `{ waiting: true }`, dan frontend otomatis retry setiap 2,5 detik dengan spinner loading tetap tampil.
+- **Spinner menghilang saat WAITING** — Bug `finally { setQrLoading(false) }` selalu dieksekusi meskipun ada `return` di `try` block. Diperbaiki dengan flag `retrying` yang dideklarasi di luar `try` — `finally` hanya stop spinner jika `!retrying`.
+- **Status tetap "terhubung" setelah device disconnect** — Saat perangkat melepas Linked Device dari HP, Baileys set status `logged_out` tapi tidak ada auto-reconnect. Klik tombol QR hanya mengembalikan WAITING tanpa pernah generate QR baru. Diperbaiki: endpoint `/qr` kini otomatis memanggil `connectToWhatsApp()` jika status `logged_out` atau `error`, sehingga QR baru muncul otomatis.
+- **"Tidak dapat menautkan" saat scan QR** — WhatsApp menolak koneksi karena fingerprint browser `macOS Desktop` memicu deteksi bot. Diperbaiki dengan mengubah ke `Browsers.ubuntu('Chrome')` + `markOnlineOnConnect: false` + `connectTimeoutMs: 60000`.
+- **`wa-service.js` crash: MODULE_NOT_FOUND `express`** — Modul `express` tidak ada di `node_modules` karena bukan dependency sebelumnya. Diperbaiki dengan menambahkan `"express": "^4.21.2"` ke `package.json` root.
+
+### Changed
+- **`whatsapp.service.ts`** — Menambahkan `'baileys'` ke union type provider dan method `sendViaBaileys()` yang memanggil `http://127.0.0.1:${WA_SERVICE_PORT}/send`
+- **Dependencies tambahan di `package.json`** — `@whiskeysockets/baileys ^7.0.0-rc.9`, `pino ^10.3.1`, `express ^4.21.2`
+
+---
+
+## [2.25.1] — 2026-04-26
+
+### Added
+- **`vps-install/install-security.sh` — Modul keamanan server otomatis** — Script baru yang dipanggil di Step 8 installer dan setiap `updater.sh`. Memasang tiga lapisan perlindungan secara otomatis:
+  - **fail2ban**: ban IP brute-force SSH setelah 5x gagal dalam 10 menit (ban 2 jam). Jail aktif: `sshd`, `nginx-http-auth`, `nginx-limit-req`. IP jaringan lokal (`192.168.x.x`, `10.x.x.x`) tidak pernah di-ban.
+  - **UFW Firewall**: default deny semua incoming, allow hanya port yang dibutuhkan: 22/TCP (SSH), 80/TCP (HTTP), 443/TCP (HTTPS), 1812-1813/UDP (RADIUS), 3799/UDP (RADIUS CoA). Di-skip otomatis untuk LXC container (pakai Proxmox host firewall).
+  - **Disk cleanup cronjob**: script `/usr/local/bin/salfanet-cleanup.sh` berjalan otomatis setiap hari jam 02:00. Membersihkan: journal systemd (max 200MB/7 hari), syslog lama, btmp (truncate jika >50MB), APT cache, tmp files, PM2 logs besar, Gradle cache >30 hari, APK build temp.
+  - Bisa dijalankan manual: `bash vps-install/install-security.sh`
+  - Log cleanup: `/var/log/salfanet-cleanup.log` (auto-trim jika >5MB)
+
+### Fixed
+- **Disk penuh 100% menyebabkan MySQL deadlock & API 500** — Disk VPS publik penuh akibat log systemd journal (~2.9GB) dan syslog (~2.2GB) menumpuk. MySQL tidak bisa commit karena disk penuh → semua query FreeRADIUS (`radpostauth`, `radacct`) stuck "waiting for handler commit" → Prisma connection pool exhausted (P2024) → semua API endpoint 500. Diatasi dengan cleanup log + install cronjob harian.
+- **Build APK customer/technician/agent: connection pool exhausted saat 3 build serentak** — Menjalankan Gradle build untuk 3 role sekaligus menyebabkan VPS overload. Prisma connection pool (limit 10) habis karena server tidak bisa melayani request DB selama build berjalan. Build sebenarnya tetap berjalan di background; yang "berhenti" hanya tampilan UI karena polling API gagal 500.
+
+### Changed
+- **`vps-install/vps-installer.sh`: tambah Step 8 (Security)** — Installer utama kini memanggil `install-security.sh` secara otomatis setelah Step 7 (PM2 & Build). Instalasi baru langsung terlindungi fail2ban + UFW + cleanup cron tanpa langkah manual.
+- **`vps-install/updater.sh`: security check saat setiap update** — Setiap kali `bash updater.sh` dijalankan, script memastikan: (1) cleanup cronjob terpasang, (2) fail2ban dalam keadaan running. Idempotent — aman dijalankan berulang kali.
+
+### Fixed
+- **Self-heal login pasca update GitHub (legacy install)** — `updater.sh` kini menjalankan `vps-install/fix-auth-after-update.sh` setelah `prisma db push` untuk mencegah kasus gagal login setelah update pada instalasi lama. Perbaikan otomatis meliputi:
+  - Migrasi akun dari tabel legacy `admin_user` ke `admin_users` jika `admin_users` kosong
+  - Menjamin minimal ada 1 akun `SUPER_ADMIN` aktif
+  - Membuat fallback `superadmin` hanya jika database benar-benar kosong
+- **Self-heal PM2 app mode** — `updater.sh` kini mendeteksi proses PM2 legacy yang masih jalan via `next start`/`npm start`, lalu migrasi otomatis ke `.next/standalone/server.js` dari `ecosystem.config.js`.
+
+---
+
+## [2.25.0] — 2026-04-26
+
+### Added
+- **Build APK Android langsung di server VPS** ([`91a45d5`]) — Fitur baru di halaman `/admin/download-apk`: build APK Android Kotlin (WebView wrapper) langsung di server menggunakan Gradle, tanpa perlu upload ke GitHub atau install Android Studio. APK tersimpan di server dan bisa didownload kapan saja.
+  - `GET /api/admin/apk/trigger` — cek ketersediaan Java JDK dan Android SDK di server
+  - `POST /api/admin/apk/trigger?role=admin|customer|technician|agent` — mulai build di background (detached process, tidak timeout)
+  - `GET /api/admin/apk/status?role=...` — polling status build: `idle` / `building` / `done` / `failed` / `stale`
+  - `GET /api/admin/apk/file?role=...` — download APK hasil build
+  - UI polling otomatis setiap 3 detik selama build berjalan
+  - Deteksi stale build: jika status masih `building` setelah 15 menit, otomatis ditandai `stale`
+  - Panduan install Android SDK ditampilkan di UI jika environment belum siap (copy-able bash command)
+  - Fallback ZIP download tetap tersedia via collapsible section
+- **Setup Android SDK di VPS** (manual, satu kali) — Jalankan command berikut via SSH sebelum menggunakan fitur build:
+  ```bash
+  apt-get update && apt-get install -y openjdk-17-jdk wget unzip && \
+  mkdir -p /opt/android/cmdline-tools && \
+  wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O /tmp/cmdtools.zip && \
+  unzip -q /tmp/cmdtools.zip -d /opt/android/cmdline-tools && \
+  mv /opt/android/cmdline-tools/cmdline-tools /opt/android/cmdline-tools/latest && \
+  yes | /opt/android/cmdline-tools/latest/bin/sdkmanager --licenses && \
+  /opt/android/cmdline-tools/latest/bin/sdkmanager "platforms;android-34" "build-tools;34.0.0" && \
+  echo 'export ANDROID_HOME=/opt/android' >> /etc/environment && \
+  echo 'Selesai!'
+  ```
+  Build pertama ±3–5 menit (download Gradle dependencies). Build berikutnya ±1 menit (Gradle cache di `/var/data/salfanet/gradle-cache`).
+
+---
+
+## [2.24.0] — 2026-04-26
+
+### Removed
+- **Update otomatis via web panel dihapus** ([`4692059`]) — Fitur update via browser (SSE live log, tombol Apply Update / Force Rebuild) dihapus karena tidak reliable: bash script `update.sh` selalu mati saat `pm2 stop` dipanggil dari dalam Next.js process group, menyebabkan `.next` terhapus dan server 502 yang harus dipulihkan manual. File yang dihapus:
+  - `scripts/update.sh` — script update yang dipanggil via API
+  - `src/app/api/admin/system/update/route.ts` — SSE API endpoint (GET stream + POST trigger)
+  - Halaman `/admin/system` diganti menjadi halaman **Informasi Sistem** statis: versi, commit, Node.js, uptime, banner update tersedia, dan panduan SSH siap-copy untuk update manual
+
+### Fixed
+- **`vps-install/updater.sh`: default ke `--branch master`** ([`5aa05b7`]) — Menjalankan `bash updater.sh` tanpa flag sebelumnya masuk ke Mode B (GitHub Releases) yang langsung error 404 karena repo tidak menggunakan GitHub Releases. Sekarang jika tidak ada `--branch` maupun `--version`, script otomatis pakai `--branch master`.
+
+---
+
+## [2.23.0] — 2026-04-26
+
+### Removed
+- **Coordinator role dihapus sepenuhnya** ([`e0cd701`]) — Role coordinator adalah fitur yang tidak pernah selesai diimplementasi. Semua endpoint API tidak pernah dibuat, sehingga halaman-halamannya selalu error. File yang dihapus:
+  - `src/app/coordinator/` — seluruh direktori portal coordinator (dashboard, tasks)
+  - `src/app/admin/coordinators/` — halaman manajemen coordinator di admin panel
+  - `src/locales/id.json` — key `coordinator`, `coordinatorLogin`, `manageCoordinators`, namespace `"coordinator"` (~40 key), dan `"senderType_COORDINATOR"` dihapus
+  - `src/app/admin/tickets/[id]/page.tsx` — `COORDINATOR` dihapus dari `SenderType` union type dan dari objek styling `getSenderBadgeColor()`
+- **Firebase Admin SDK & FCM dihapus** ([`fdc730b`]) — Seluruh integrasi Firebase Cloud Messaging dihapus. Push notification kini menggunakan VAPID Web Push murni (tidak ada dependency firebase-admin). File yang dihapus: `src/server/push.service.ts`, `firebase-service-account.json`. Stub `firebase-admin` di `src/lib/` digantikan dengan implementasi VAPID native.
+
+### Added
+- **`src/cron/runner.ts` — Cron runner baru berbasis tsx** ([`fdc730b`]) — Menggantikan `cron-service.js` (Node.js CJS) dengan TypeScript runner yang dijalankan via `npx tsx`. 16 cron jobs diload dari satu entry point, distributed locking tetap aktif. FreeRADIUS Health Check berjalan 5 detik setelah startup.
+- **`production/ecosystem.config.js` — Template konfigurasi PM2** ([`fdc730b`]) — File baru sebagai source of truth untuk konfigurasi PM2. `salfanet-cron` kini berjalan sebagai proses fork (`npx tsx src/cron/runner.ts`) dengan `NODE_OPTIONS: '--conditions=react-server'` (wajib agar `server-only` package tidak throw di luar Next.js).
+- **`vps-install/cleanup-refactor.sh` — Script cleanup instalasi lama** ([`f71256c`], [`c41f44f`]) — Script idempotent untuk membersihkan file-file stale dari instalasi sebelum refactor. Fitur:
+  - Support `--dry-run` (preview tanpa hapus)
+  - Phase 1: cleanup Firebase/FCM push service, firebase-service-account.json
+  - Phase 3: sync `ecosystem.config.js` dari `production/` (migrasi cron-service.js → tsx runner)
+  - Phase 8: hapus `src/app/coordinator/`, `src/app/admin/coordinators/`
+  - Auto-deteksi jika `salfanet-cron` masih pakai `cron-service.js` → migrate ke tsx runner otomatis
+  - Usage: `bash vps-install/cleanup-refactor.sh [--dry-run] [--app-dir=/path]`
+
+### Changed
+- **`scripts/update.sh`: refactor-aware** ([`f71256c`]) — Update script (dipanggil via admin panel → `/api/admin/system/update`) ditingkatkan:
+  - Setelah `git reset --hard`, otomatis copy `production/ecosystem.config.js` → root (file ini untracked, tidak tereset oleh git)
+  - Cleanup stale files dari Phase 1-8 refactor (push.service.ts, coordinator, firebase, dll.) di setiap update
+  - PM2 cron restart: jika `ecosystem.config.js` berubah → `pm2 delete` + `pm2 start` ulang (bukan sekedar `pm2 restart`)
+  - `pm2 save` otomatis setelah restart
+- **`vps-install/updater.sh`: refactor-aware** ([`f71256c`]) — CLI update script ditingkatkan:
+  - `npm ci` dengan fallback ke `npm install --production=false` jika lock file tidak sinkron (umum terjadi setelah refactor)
+  - Copy `production/ecosystem.config.js` setelah `git clean -fd`
+  - Cleanup stale files refactor (list sama dengan update.sh)
+  - Copy static assets ke `.next/standalone` setelah build
+  - PM2 cron: deteksi perubahan script → `pm2 delete` + `pm2 start` jika perlu
+
+### Fixed
+- **`cleanup-refactor.sh`: `set -e` safe** ([`c41f44f`]) — Fungsi `remove_path()` sebelumnya `return 1` saat file tidak ditemukan → script keluar prematur karena `set -e`. Diperbaiki ke `return 0`. Kondisi `diff` juga diperbaiki (inversi `!` yang salah menyebabkan ecosystem.config.js tidak pernah disync).
+
+---
+
+## [2.22.0] — 2026-04-26
+
+### Added
+- **Script `scripts/backup-freeradius-local.sh`** ([`8652ea4`]) — Script bash untuk membuat arsip `.tar.gz` seluruh direktori `/etc/freeradius/3.0/` ke `backups/freeradius/` dengan nama file bertimestamp (`freeradius-config-YYYYMMDD-HHMMSS.tar.gz`). Otomatis cleanup backup lama (simpan 10 terbaru). Output baris `BACKUP_FILE: <nama>` di akhir agar UI polling bisa deteksi selesai. Script sebelumnya tidak ada sehingga tombol "Buat Backup" selalu gagal dengan error `Script not found`.
+
+### Fixed
+- **Restore FreeRADIUS: error "same file" saat restore `mods-enabled/`** ([`c268123`]) — File `mods-enabled/sql` dan `mods-enabled/rest` di FreeRADIUS adalah **symlink** ke `../mods-available/sql`. Saat tar mengekstrak backup, symlink tetap sebagai symlink. Perintah `cp symlink dest` gagal karena keduanya resolve ke file fisik yang sama (`cp: ... are the same file`). Fix: cek tipe file via `stat -c '%F'` sebelum restore — jika `symbolic link`, gunakan `ln -sf <target> <dest>` alih-alih `cp`.
+- **Build VPS: OOM (Out of Memory) saat fase TypeScript check** ([`0aee02f`]) — Build `npm run build` menjalankan TypeScript type-checker (`tsc`) setelah compile selesai. Pada VPS 4GB dengan PM2 berjalan, proses `tsc` membutuhkan heap hingga 1.6GB dan di-kill oleh OOM killer (`FATAL ERROR: Ineffective mark-compacts near heap limit`). Fix: set `typescript.ignoreBuildErrors: true` di `next.config.ts` untuk skip fase `tsc` saat build produksi (type error tetap terdeteksi di development/editor).
+- **Build VPS: OOM saat build karena PM2 mengonsumsi RAM** ([`08eba82`]) — PM2 process salfanet-radius mengonsumsi ~500MB RAM saat berjalan. Dengan heap build 1536MB (bawaan `npm run build`), total RAM yang dibutuhkan melebihi 4GB. Fix: `update.sh` kini stop PM2 sebelum build dan gunakan `npm run build:low-mem` (heap 1024MB). PM2 distart kembali setelah build selesai (atau gagal).
+- **Build VPS: script baru tidak executable setelah `git reset --hard`** ([`8ce6421`]) — Script yang ditambahkan via commit baru tidak otomatis dapat izin execute di VPS setelah `git reset --hard`. Fix: tambah `chmod +x scripts/*.sh` di `update.sh` setelah git reset.
+- **VPN Client: list tidak refresh setelah tambah client** ([`b55d3e6`]) — Setelah berhasil tambah WireGuard atau L2TP client, list VPN tidak diperbarui otomatis. Fix: panggil `loadClients()` di success path WireGuard dan L2TP.
+- **VPN Client: modal tidak menutup / formData tidak ter-reset setelah submit** ([`b55d3e6`]) — Form WireGuard menggunakan `formData.name` setelah `formData` di-clear sehingga nama yang dikirim ke credentials dialog kosong. Fix: simpan nama ke variabel lokal `peerName` sebelum clear, gunakan `peerName` di credentials dialog.
+- **VPN Client: IP pool tidak bisa dipakai ulang (orphan WG peers)** ([`288a094`]) — Peer WireGuard yang dihapus dari DB tetap tersisa di `wg.conf`. Saat tambah client baru, `nextAvailableIp` membaca `wg.conf` dan skip IP yang sebenarnya sudah bebas. Fix: tambah langkah cleanup orphan peers di `wg.conf` (compare dengan DB) sebelum alokasi IP baru.
+- **VPN Client delete: peer tidak dihapus dari `wg.conf` di VPS** ([`db9ae7a`]) — Handler DELETE untuk `vpnServerId === '__vps_wg_server__'` hanya menghapus record DB tanpa menghapus `[Peer]` di `wg0.conf`. Fix: tambah call ke `POST /api/network/vps-wg-peer` dengan `action: 'remove'` sebelum delete DB.
+- **Auto-create NAS/router saat tambah VPN client WireGuard** ([`701bfb7`]) — Endpoint `vps-wg-peer` secara otomatis membuat NAS record dan router saat tambah peer. Fix: hapus blok auto-create — NAS dikelola terpisah.
+- **Auto-create NAS/router saat tambah VPN client L2TP** ([`8303308`]) — Sama seperti WireGuard, endpoint `vps-l2tp-peer` juga membuat NAS otomatis. Fix: hapus blok auto-create.
+- **Panel redundansi di halaman VPN Client & VPN Server masih tampil** ([`8303308`], [`096d446`]) — Panel "Setup RADIUS Redundancy" yang sudah diputuskan untuk dihapus masih ter-render karena ada sisa JSX dan komponen stub. Fix: komponen `VpnServerRedundancyPanel` dijadikan stub `return null`, semua JSX orphan dibersihkan.
+
+### Changed
+- **`update.sh`: safe zero-downtime update** ([`08eba82`], [`8ce6421`], sesi ini) — Perbaikan menyeluruh pada script update:
+  - `.env` di-backup ke `/tmp/salfanet-env-backup-<timestamp>` sebelum `git reset --hard` (extra safety meski `.env` ada di `.gitignore`)
+  - Jika `.env` hilang setelah git reset, otomatis restore dari backup terakhir
+  - Cleanup direktori orphan dari deployment lama (`srcappadmin`, `srclocales`, dll.) otomatis tiap update
+  - PM2 `reload` (rolling zero-downtime) tetap digunakan saat restart — sesi PPPoE/Hotspot aktif tidak terputus oleh update kode
+  - PM2 direstart (safety net) bahkan jika build gagal — server tidak dibiarkan mati
+  - Tmp env backup lama (>7 hari) dibersihkan otomatis
+  - Komentar safety guarantee ditambahkan di header script
+
+---
+
+## [2.21.0] — 2026-04-22
+
+### Added
+- **Panel "Konfigurasi VPS Built-in VPN" di halaman VPN Client** ([`1903085`]) — Panel baru (collapsible) untuk mengatur pool IP & gateway WireGuard dan L2TP yang terinstall langsung di VPS (bukan MikroTik CHR). Menampilkan IP Mulai, IP Akhir, Gateway VPS beserta tombol Edit inline. Konfigurasi ini terpisah sepenuhnya dari menu VPN Server yang khusus untuk MikroTik CHR.
+- **PATCH endpoint `vps-wg-peer`** ([`1903085`]) — Endpoint baru `PATCH /api/network/vps-wg-peer` untuk update `poolStart`, `poolEnd`, `gatewayIp` di `wg-server-info.json`. Saat `gatewayIp` disimpan, endpoint juga otomatis memperbarui baris `Address =` di `wg0.conf` dan field `subnet` di info file, lalu reload WireGuard interface via `wg syncconf` (zero-downtime).
+- **PATCH endpoint `vps-l2tp-peer`** ([`1903085`]) — Endpoint baru `PATCH /api/network/vps-l2tp-peer` untuk update `poolStart`, `poolEnd`, `gateway` di `l2tp-server-info.json`.
+- **Pool IP menerima full IP address** ([`17d83da`]) — Input poolStart/poolEnd sebelumnya hanya menerima angka oktet terakhir (mis. `2`, `254`). Sekarang menerima full IP lengkap (mis. `172.16.212.2`) sehingga pool bisa dikonfigurasi ke subnet manapun, tidak terbatas pada subnet WireGuard interface default.
+
+### Fixed
+- **VPN Client page: redirect paksa jika tidak ada MikroTik CHR** ([`1903085`]) — Halaman VPN Client sebelumnya memaksa redirect ke menu VPN Server jika belum ada VPN Server (CHR) terdaftar, sehingga user tidak bisa pakai VPS built-in VPN (WG/L2TP) tanpa setup CHR dulu. Redirect dihapus sepenuhnya.
+- **`loadWgServerInfo`: semua field undefined** ([`17d83da`]) — Fungsi membaca `data.info?.publicIp`, `data.info?.publicKey`, dst., padahal API `GET /api/network/vps-wg-peer` mengembalikan fields di top level (`data.publicIp`, bukan `data.info.publicIp`). Mapping diperbaiki ke `data.X` langsung.
+- **`nextAvailableIp` (WG) & `getNextAvailableIp` (L2TP): selalu gunakan prefix `info.subnet`** ([`8636800`]) — Meskipun poolStart dikonfigurasi ke subnet lain (mis. `172.16.212.2`), IP yang dialokasikan tetap menggunakan prefix interface WireGuard default (`10.200.0.x`). Sekarang jika poolStart adalah full IP string, prefixnya digunakan sebagai base. Scan "IP yang sudah terpakai" juga dibatasi ke prefix yang sama untuk menghindari false conflict lintas subnet.
+- **WG ADD response: `vpnSubnet` dan `gatewayIp` tidak mencerminkan pool prefix** ([`8636800`]) — Response POST add peer sekarang menghitung `effectiveVpnSubnet` dan `effectiveGatewayIp` dari prefix poolStart, bukan dari `info.subnet`. Script MikroTik yang di-generate (allowed-address, route, RADIUS address) otomatis menggunakan subnet yang benar.
+- **Display subnet footer: selalu tampilkan subnet interface WG, bukan pool subnet** ([`6a8bd04`]) — Footer di panel kini menampilkan "Pool subnet" yang diturunkan dari prefix poolStart. Edit button prefill juga diperbaiki untuk menggunakan prefix dari poolStart yang sudah tersimpan (bukan selalu prefix `info.subnet`).
+- **`wg0.conf Address` dan `info.subnet` tidak diupdate saat gatewayIp berubah** ([`62b0c88`]) — PATCH endpoint sekarang juga memperbarui baris `Address =` di `wg0.conf` dan `info.subnet` di JSON sehingga subnet yang ditampilkan di UI dan digunakan untuk alokasi IP selalu konsisten dengan konfigurasi pool.
+- **Pool config dipindah ke halaman yang salah (VPN Server)** ([`1903085`]) — Konfigurasi pool IP built-in VPS sebelumnya salah ditempatkan di halaman VPN Server (khusus MikroTik CHR). Sekarang ada di halaman VPN Client yang tepat.
+
+### Changed
+- **VPN Server page dibersihkan dari state/handler/UI pool VPS** ([`1903085`]) — Semua state `wgPoolEdit`, `wgPoolForm`, `l2tpPoolEdit`, `l2tpPoolForm` beserta handler dan UI-nya dihapus dari `vpn-server/page.tsx`. Halaman VPN Server sekarang murni untuk manajemen MikroTik CHR.
+
+---
+
+## [2.20.0] — 2026-04-20
+
+### Fixed
+- **Script RADIUS: hapus perintah `rate-limit=""` di hotspot user profile** ([`9d5688d`]) — Command `/ip hotspot user profile add ... rate-limit=""` menyebabkan error `expected end of command` di RouterOS karena `rate-limit` bukan parameter valid di context tersebut. Block tersebut dihapus; RADIUS yang mengatur bandwidth via `Mikrotik-Rate-Limit` reply attribute.
+- **Script RADIUS: `keepalive-timeout` dan `lcp-echo` tidak valid di `/ppp profile`** ([`fd3a1a0`], [`d0a9d82`]) — RouterOS tidak mengenal `keepalive-timeout` maupun `lcp-echo-interval`/`lcp-echo-failure` pada `/ppp profile set`. Kedua perintah dihapus dari generated script.
+- **Script RADIUS: `address` selalu `127.0.0.1` saat `RADIUS_SERVER_IP` tidak di-set** ([`b511b88`]) — Fallback chain diperbarui: `RADIUS_SERVER_IP` → `VPS_IP` → **hostname dari `NEXTAUTH_URL`** → `127.0.0.1`. Instalasi tanpa env var eksplisit (VPS lokal/LXC) kini otomatis menggunakan IP yang benar dari `NEXTAUTH_URL`.
+- **Script RADIUS: router non-VPN tidak menyertakan `src-address`** ([`34f953e`]) — Tanpa `src-address`, MikroTik memilih source IP dari routing table yang bisa berbeda dari `nasname` terdaftar di FreeRADIUS → request ditolak sebagai "unknown client". Sekarang `src-address` selalu di-set untuk semua router (VPN maupun direct/public IP).
+
+### Added
+- **Script RADIUS: Netwatch monitor RADIUS server** ([`9d5688d`]) — Generated script kini menyertakan `/tool netwatch add host=<RADIUS_IP> interval=30s` dengan `down-script` log warning dan `up-script` log info. MikroTik otomatis mencatat jika RADIUS tidak reachable.
+- **`vpn-watchdog.sh`: RADIUS health check** ([`c2aa096`]) — Watchdog kini memeriksa apakah service `freeradius` sedang berjalan (Check A) dan apakah port UDP 1812 listening (Check B), serta auto-restart jika service mati. Ditambahkan log rotation otomatis (max 5000 baris).
+
+### Changed
+- **`Acct-Interim-Interval` FreeRADIUS: 60 → 300 detik** ([`c2aa096`]) — Interval akuntansi diperpanjang dari 1 menit ke 5 menit untuk mengurangi beban DB dan selaras dengan setting PPP interim-update MikroTik (`interim-update=5m`).
+- **Stale session threshold `pppoe-session-sync.ts`: 1 HOUR → 30 MINUTE** ([`c2aa096`]) — Sesi tanpa `Accounting-Interim` lebih dari 30 menit (= 6× interval 5 menit) dianggap stale dan ditutup. Memberi window cukup bagi VPN untuk reconnect tanpa menutup sesi aktif secara prematur.
+
+---
+
+## [2.19.0] — 2026-04-11
+
+### Added
+- **Tab "📷 Foto" di `UserDetailModal`** ([`817887a`]) — Tab baru di sebelah kanan Invoice untuk melihat foto KTP dan foto instalasi pelanggan secara read-only. Fitur:
+  - Foto KTP ditampilkan full-width dengan NIK di pojok kanan
+  - Foto Instalasi ditampilkan grid 2×kolom dengan label "Foto 1/2/3…"
+  - **Lightbox**: klik foto manapun → full screen overlay, klik luar atau tombol × untuk tutup
+  - Placeholder kosong dengan ikon jika belum ada foto
+
+### Improved
+- **Kompresi foto otomatis sebelum upload** ([`8ff86c1`]) — Semua foto yang diambil via kamera maupun dipilih dari galeri dikompresi otomatis sebelum dikirim ke server:
+  - Util baru `compressImage()` di `src/lib/utils.ts`: resize max **1280×1280px** + JPEG quality **78%**
+  - Estimasi ukuran: foto ~5MB dari HP 50MP → **200–400KB** tersimpan di database
+  - Berlaku di `CameraPhotoInput` (galeri, native capture, getUserMedia takePhoto) dan `CameraViewfinder` (takePhoto + native capture)
+- **Tampilan viewfinder kamera diperbaiki** ([`8ff86c1`]) — Viewfinder live camera dari fixed `h-48` (192px) → `aspect-[4/3]` (proporsional). Ditambahkan **corner guide overlay** (4 sudut biru) di viewfinder dan `CameraViewfinder`.
+- **Preview foto hasil diperbaiki** ([`8ff86c1`]) — Border berubah jadi hijau, badge "✓ Foto tersimpan" di pojok kiri atas, action bar (Galeri | Kamera) di bagian bawah foto.
+
+### Fixed
+- **`getUserMedia` error tidak fallback ke native camera** ([`382dbb3`]) — Sebelumnya jika `getUserMedia` melempar error apapun (`NotAllowedError`, Permissions Policy violation, tidak ada kamera, dll), komponen menampilkan pesan error merah "Izin kamera ditolak..." alih-alih fallback otomatis. Sekarang setiap error dari `getUserMedia` langsung memicu `captureRef.current?.click()` / `setUseNativeCapture(true)` sehingga native camera OS terbuka tanpa error.
+  - `CameraPhotoInput.tsx` — `catch` block `startCamera()`: hapus seluruh `setCameraError(msg)` logic, ganti dengan `captureRef.current?.click()`
+  - `CameraViewfinder.tsx` — `catch` block `startStream()`: hapus `setError(msg)`, ganti dengan `setUseNativeCapture(true)`
+  - State `cameraError` dan render block error merah dihapus sepenuhnya dari `CameraPhotoInput`
+
+---
+
+## [2.18.0] — 2026-04-11
+
+### Fixed
+- **CRITICAL: Tombol "Kamera HP" tidak membuka kamera di iOS Safari / Android** — root cause: `<input type="file" capture="environment">` dengan `className="hidden"` (display:none) yang di-trigger via `ref.current?.click()` kehilangan "trusted user gesture" context, sehingga iOS Safari mengabaikan atribut `capture` dan membuka galeri biasa sebagai fallback.
+  - `CameraPhotoInput.tsx` — Ganti `useRef` + `button` + `.click()` dengan `useId()` + `<label htmlFor>`. Label trigger input secara native tanpa JavaScript, iOS Safari menghormati `capture="environment"` dengan benar. Ganti `className="hidden"` (display:none) ke `className="sr-only"` (off-screen, elemen tetap aktif di DOM).
+  - `admin/pppoe/users` Add form — `className="hidden"` → `"sr-only"`; tambah `pointer-events-none` pada label saat uploading.
+  - `UserDetailModal` Edit form — sama seperti di atas.
+- **Foto Instalasi hilang di form Teknisi (`/technician/register`)** — section Foto Instalasi sama sekali tidak ada di form tambah pelanggan teknisi. Ditambahkan `CameraPhotoInput` multi-foto dengan state `installationPhotos`, `uploadingInstallation`, dan dikirim ke API saat submit.
+
+### Changed
+- **Script RADIUS, Isolir, dan VPN Client dipisah tanggung jawabnya** *(commit d649bee)*:
+  - `setup-radius` — Hapus profile duplikat `radius-default`, konsolidasi ke satu profile `salfanetradius`. Semua rule isolasi (SALFANET-ISOLIR) dipindahkan ke Setup Isolir.
+  - `setup-isolir` — Diubah dari eksekusi API langsung (RouterOSAPI) ke **script generator** (paste-able ke terminal MikroTik). Script mencakup: `pool-isolir`, PPP profile `isolir`, firewall filter + NAT (SALFANET-ISOLIR), catatan route VPS.
+  - `routers/page.tsx` — Ditambah tombol **Setup Isolir** (ikon gembok oranye) di samping tombol RADIUS, dengan handler `handleSetupIsolir()` yang menampilkan script modal.
+  - `vpn-client/page.tsx` — Hapus `radiusSection` dan `wgRadiusSection` dari semua script VPN (L2TP/SSTP/PPTP/WireGuard). Script hanya berisi setup tunnel + API user + catatan langkah berikutnya.
+
+---
+
+## [2.17.0] — 2026-04-10
+
+### Added
+- **`CameraPhotoInput` component** — Komponen reusable baru `src/components/CameraPhotoInput.tsx`. Menampilkan dua tombol **[🖼 Galeri] [📷 Kamera HP]** side-by-side saat belum ada foto. Tombol *Kamera HP* menggunakan `capture="environment"` sehingga langsung membuka kamera belakang di HP tanpa melalui file picker. Setelah upload berhasil, komponen otomatis meminta izin GPS via `navigator.geolocation.getCurrentPosition` dan menampilkan badge **📍 lat, lng · Lihat di Maps ↗** yang dapat diklik. Theme `dark` (cyberpunk) untuk halaman publik, theme `light` untuk modal admin/teknisi.
+- **Kamera HP langsung di form tambah pelanggan (`/daftar`)** — Upload foto KTP diganti dengan `CameraPhotoInput` (dark theme). GPS yang tertangkap otomatis mengisi `formData.latitude` dan `formData.longitude` — bisa melengkapi atau menggantikan input MapPicker manual.
+- **Kamera HP + GPS di `AddPppoeUserModal` (`/admin/pppoe/users`)** — Foto KTP menggunakan `CameraPhotoInput`. Foto instalasi mendapat dua tombol [Galeri] [Kamera HP]; memilih via kamera HP otomatis menangkap GPS ke field latitude/longitude.
+- **Kamera HP di form registrasi teknisi (`/technician/register`)** — Foto KTP diganti dengan `CameraPhotoInput`. Menampilkan badge GPS setelah foto diambil dari kamera.
+- **Kamera HP + GPS di `UserDetailModal`** — Foto KTP menggunakan `CameraPhotoInput`. Foto instalasi mendapat [Galeri] [Kamera HP]; kamera otomatis mengisi GPS ke `formData.latitude/longitude`.
+
+### Changed
+- **Unified photo upload UX** — Semua 4 titik entry pelanggan (daftar publik, modal tambah admin, form teknisi, edit user) sekarang konsisten: dua aksi foto (galeri vs kamera HP), preview langsung, GPS otomatis setelah foto, badge koordinat clickable ke Google Maps.
+
+---
+
+## [2.16.0] — 2026-04-10
+
+### Added
+- **PWA Web Push — Sistem notifikasi push penuh (VAPID)** — notifikasi push browser bekerja di semua portal (customer, teknisi, admin). Teknisi dan admin kini dapat menerima notifikasi push Android/PWA untuk tiket, gangguan, dan broadcast.
+- **`adminPushSubscription` model** — tabel baru `admin_push_subscriptions` untuk menyimpan push subscription admin/operator yang login melalui portal teknisi (`admin_user` type). Sebelumnya diabaikan dengan `{skipped:true}`.
+- **Toggle notif push permanen di sidebar teknisi** — `SidebarPushToggle` selalu tampil di sidebar portal teknisi dengan state ON/OFF yang jelas. ([`d0a97ec`])
+- **Dispatch tiket ke semua teknisi via WA + push** — saat tiket dibuat/di-assign, broadcast WhatsApp + push notification dikirim ke semua teknisi aktif. ([`1eb9358`])
+- **GitHub Actions auto-deploy** — workflow `.github/workflows/deploy.yml` untuk auto-deploy ke VPS saat ada push ke branch `master`. ([`e195e4f`])
+- **`update.sh` auto-rebuild jika standalone hilang** — jika `.next/standalone/server.js` tidak ada, build dipaksa meski kode tidak berubah. API `/api/admin/system/check` mengembalikan `needsBuild: true` dan UI menampilkan tombol rebuild. ([`8ee6c03`])
+- **Bell push + badge di portal teknisi** — SW menangani `push` event, menampilkan notifikasi, badge, dan toast dari service worker. ([`72665f0`])
+- **Silent sync push subscription** — saat portal teknisi/customer dimuat di browser, jika browser masih punya push subscription aktif, langsung di-sync ulang ke DB tanpa user perlu re-toggle.
+
+### Fixed
+- **CRITICAL: Push subscription tidak tersimpan ke DB (semua tabel 0 row)** — root cause: `fetch('/api/push/technician-subscribe', ...)` tidak mengirim cookie `technician-token` karena tidak ada `credentials: 'same-origin'`. Tanpa cookie, `admin_user` tidak terdeteksi → API mencari ID di tabel `technician` → 404 "Technician not found" → subscription tidak tersimpan. Fix: tambah `credentials: 'same-origin'` ke semua 3 fetch call (silent sync, subscribe, unsubscribe). ([`57f6169`])
+- **CRITICAL: `admin_user` push subscription diabaikan** — route `POST /api/push/technician-subscribe` mengembalikan `{skipped:true}` untuk `admin_user` tanpa menyimpan data. Sekarang menyimpan ke `adminPushSubscription`. ([`7df3a8f`])
+- **Push 404 untuk `admin_user`** — route `GET /api/push/vapid-public-key` dan subscribe/unsubscribe mengembalikan 404 saat user adalah `admin_user`. Diperbaiki dengan early return yang benar. ([`1ef8edc`])
+- **`PushManager` in `window` vs `navigator`** — `SidebarPushToggle` menggunakan `PushManager in window` (sesuai spec) bukan `PushManager in navigator`, konsisten dengan `usePushNotification` hook. ([`c31a316`])
+- **Dashboard teknisi: tiket selesai tidak muncul** — dashboard masih menggunakan model `work_orders` yang sudah dihapus. Diperbarui ke model `ticket`. ([`1602b7e`], [`ed3619b`])
+- **PPPoE username GenieACS** — username untuk lookup GenieACS dinormalisasi dengan benar. ([`72665f0`])
+- **WA notif teknisi melalui `WhatsAppService`** — notifikasi WhatsApp ke teknisi sekarang melalui service standar. ([`72665f0`])
+
+### Changed
+- **`push-notification.service.ts`** — `getPushDashboardStats()` mengembalikan `adminSubscribers` + `fcmUserCount`. `sendWebPushBroadcast()` juga mengirim ke admin saat target `technician` atau `all`. `sendToStoredSubscriptions()` mendukung role `'admin'`.
+- **Admin push notifications page** — menampilkan breakdown terpisah: Teknisi X teknisi, Admin X admin, dan total penerima yang benar.
+- **Cleanup: hapus file patch sementara** — `scripts/patch-push-fix.mjs`, `scripts/patch-push-toggle.mjs`, `scripts/patch-push-toggle2.mjs`, `tmp-check.sh` dihapus dari repo.
+
+### Migration
+- Tabel `admin_push_subscriptions` dibuat otomatis via `prisma db push` (field di schema.prisma sudah ditambahkan).
+
+---
+
+## [2.15.0] — 2026-01-15
+
+### Fixed — Cron Job & Backup System Audit
+- **CRITICAL: `backupTopicId` non-nullable** — field di schema `telegramBackupSettings` sebelumnya `String` (wajib), menyebabkan Prisma error saat simpan settings tanpa Topic ID → settings tidak tersimpan → backup Telegram selalu di-skip. Diubah ke `String?` (nullable)
+- **CRITICAL: `MYSQL_PWD` shell syntax** — sebelumnya menggunakan `MYSQL_PWD="${password}" mysqldump ...` yang gagal jika password DB mengandung karakter khusus (`"`, `$`, `` ` ``, `\`). Sekarang menggunakan `env` option dari `execAsync` yang lebih aman
+- **CRITICAL: `/api/cron/telegram` GET undefined `status`** — variabel `status` tidak pernah di-declare, `getTelegramCronStatus()` diimport tapi tidak dipanggil → runtime error saat cek status. Fixed
+- **CRITICAL: `/api/cron` POST tanpa auth** — endpoint bisa dipanggil siapa saja dari internet. Ditambahkan auth check: `CRON_SECRET` header, User-Agent `SALFANET-CRON-SERVICE`, atau session SUPER_ADMIN
+- **Double cron execution** — `initCronJobs()` di `instrumentation.ts` DAN `cron-service.js` menjalankan job yang sama (voucher sync, agent sales, invoice, dll). Sekarang `initCronJobs()` hanya menginisialisasi Telegram cron (yang memang tidak ada di cron-service.js)
+- **Placeholder `/api/backup/telegram/settings`** — endpoint mengembalikan data hardcoded `{ enabled: false }` dan tidak baca/tulis DB. Sekarang baca/tulis ke database `telegramBackupSettings`
+
+### Improved
+- **Health report Telegram** — sekarang menampilkan informasi lengkap: active sessions, total users, active users, overdue invoices, issues (sebelumnya hanya status, size, tables, connections, uptime)
+- **Telegram file size check** — tambah validasi 50MB limit sebelum kirim backup ke Telegram, mencegah silent failure dari Telegram API
+
+### Migration
+- `prisma/migrations/20260615_fix_telegram_backup_topic_nullable.sql` — `ALTER TABLE telegram_backup_settings MODIFY COLUMN backupTopicId VARCHAR(191) NULL`
+
+---
+
+## [2.14.0] — 2026-01-15
+
+### Added
+- **ID Pelanggan (`customerId`) di semua template notifikasi WA** — template yang diperbarui:
+  - `registration-approval` — menampilkan ID pelanggan sebelum username
+  - `admin-create-user` — menampilkan ID pelanggan + area
+  - `invoice-reminder` — menampilkan ID pelanggan di detail invoice
+  - `payment-success` — menampilkan ID pelanggan, paket, dan area
+  - `auto-renewal-success` — menampilkan ID pelanggan + area
+  - `manual-payment-approval` — menampilkan ID pelanggan, paket, dan area
+  - `manual-payment-rejection` — menampilkan ID pelanggan dan username
+  - `account-info` — menampilkan ID pelanggan
+- **ID Pelanggan di template email** — ditambahkan ke:
+  - `registration-approval` — baris ID Pelanggan sebelum Username
+  - `manual-payment-approval` — baris ID Pelanggan di tabel detail
+  - `manual-payment-rejection` — baris ID Pelanggan + Username di tabel detail
+- **Field `customerId` di service interfaces** — `sendRegistrationApproval`, `sendPaymentSuccess`, `sendAutoRenewalSuccess`, `sendInvoiceReminder` (WA + Email) sekarang menerima `customerId?: string`
+- **Field `area` di notifikasi payment-success dan auto-renewal-success** — service interfaces + variabel template diperbarui
+
+### Fixed
+- **Seed template tidak update `message`/`htmlBody`** — bug di `whatsapp-templates.ts` dan `email-templates.ts`: branch `update` tanpa flag `--force-templates` hanya meng-update `name` dan `isActive`, BUKAN konten pesan. Sekarang `message`/`htmlBody` selalu diupdate pada setiap seed.
+- **`update.sh` tidak menjalankan seed** — seed hanya berjalan jika file di `prisma/seeds/` berubah. Sekarang seed selalu berjalan di setiap update.
+
+### Changed
+- **`update.sh` menggunakan `stdbuf`** — `npm run db:seed` dibungkus dengan `stdbuf -oL` agar output log muncul secara real-time di SSH / admin live log panel
+
+---
+
+## [2.13.2] — 2026-04-05
+
+### Changed
+- **Redesign UI: Modern Clean Blue/Indigo theme** — seluruh halaman login (admin, technician, customer, agent) didesain ulang dari cyberpunk/neon ke tampilan modern bersih dengan palette biru/indigo. Sidebar dan komponen global mengikuti skema warna baru. ([`6ec9783`])
+- **`CyberButton` — warna diperbarui** — semua warna neon (cyan/pink/yellow/green) diganti ke blue/indigo/emerald palette yang konsisten dengan tema baru. ([`6ec9783`])
+- **`globals.css` — CSS variables diperbarui** — dark mode: navy background + blue primary; light mode: blue-600 primary; dark mode neon remap dihapus; custom scrollbar diperbarui. ([`6ec9783`])
+
+### Fixed
+- **VPN Client: VPS IP field hanya manual** — auto-fill VPS IP sekarang skip domain name (Cloudflare-proxied, dsb). Field VPS IP di halaman VPN Client menjadi input manual penuh — tidak lagi menarik domain dari API. ([`910cddd`], [`5049e02`])
+- **`scripts/update.sh` — abort jika copy static gagal** — sebelumnya menggunakan `|| true` sehingga kegagalan copy aset statis diabaikan dan `pm2 reload` tetap dipanggil dengan build stale. Sekarang menggunakan `|| err "..."` untuk abort. ([`7c85dd3`])
+- **`scripts/update.sh` — nesting bug `cp -r`** — `cp -r .next/static .next/standalone/.next/static` bisa membuat nested directory jika target sudah ada. Diperbaiki ke `mkdir -p` + `cp -r src/. dst/`. ([`7c85dd3`])
+
+---
+
+## [2.13.1] — 2026-04-05
+
+### Fixed
+- **Wablas send gagal** — ganti dari `POST /api/v2/send-message` (JSON body) ke `GET /api/send-message?token=...` (v1 simple endpoint). V2 endpoint tidak tersedia di semua server Wablas (`wa`, `deu`, `jakarta`, dll). Format token tetap `token.secret_key`. ([`e8bdf6b`])
+- **Hint form Wablas** diperjelas: sebelumnya hanya "Opsional: token.secret_key", sekarang "Format: token.secret_key (dari Device → Settings di dashboard Wablas)".
+
+---
+
+## [2.13.0] — 2026-04-05
+
+### Added
+- **WhatsApp webhook endpoint** (`/api/whatsapp/webhook`) — terima pesan masuk dari Kirimi.id, Wablas, Fonnte, WAHA. Pesan dicatat ke `whatsapp_history` dengan `status: incoming`. Mendukung GET untuk challenge verification. ([`d2ff368`])
+- **Webhook URL display** di halaman providers — panel info dengan URL webhook dan tombol copy. ([`48a213d`])
+- **Kirimi.id native broadcast** — `sendBroadcastViaKirimi()` menggunakan endpoint `/v1/broadcast-message` untuk kirim ke banyak nomor sekaligus. Pesan dikelompokkan per konten unik untuk efisiensi. 1 penerima otomatis pakai `/v1/send-message`. ([`fa136f1`], [`f4b3d4c`])
+- **Per-provider error detail** — saat semua provider gagal, response API menyertakan detail error per provider (nama, tipe, pesan error) agar mudah diagnosa. ([`b7e0544`])
+
+### Fixed
+- **Kirimi.id endpoint salah** — `/send-message` → `/v1/send-message` (sesuai docs resmi Kirimi.id v2.0). ([`11bc666`])
+- **Kirimi.id field penerima salah** — `number` → `receiver` (sesuai docs resmi). ([`11bc666`])
+- **Kirimi.id trailing slash** — `provider.apiUrl` sekarang di-strip trailing slash seperti provider lain. ([`b7e0544`])
+- **Broadcast response mismatch** — route broadcast sekarang return `successCount` / `failCount` di top-level agar frontend toast menampilkan angka yang benar. ([`f4b3d4c`])
+- **HTTP status 502 diubah ke 500** — 502 secara semantik berarti upstream proxy error; 500 lebih tepat untuk kegagalan provider. ([`b7e0544`])
+
+### Changed
+- **Broadcast delay Kirimi.id** diubah dari 5 detik → **30 detik** (rekomendasi resmi Kirimi.id untuk menghindari blokir WhatsApp). ([`2af263c`])
+
+---
+
+## [2.12.0] — 2026-04-02
+
+### Fixed
+- **Isolasi PPPoE manual: radusergroup dioverwrite saat edit user** — `updatePppoeUser` selalu menulis ulang `radusergroup = profile.groupName` tanpa memeriksa status user. Sekarang menghormati `effectiveStatus`: `isolated` → group `isolir`, `blocked`/`stop` → RADIUS kosong, `active` → sync penuh. ([`958fc3a`])
+- **`radclient disconnect` tidak memuat MikroTik vendor dictionary** — tambahkan flag `-d /usr/share/freeradius` ke `coa-handler.service.ts` agar `Disconnect-Request` dikirim dengan format yang benar ke MikroTik. ([`958fc3a`])
+- **CoA "Bad Requests=133, Acks=0"** — `coa.service.ts` tidak memuat MikroTik vendor dict, membuat `Mikrotik-Rate-Limit` dikirim tanpa vendor ID. Tambahkan `-d /usr/share/freeradius` ke `executeRadclient()`. ([`b2fe4fa`])
+- **setup-isolir hardcode IP pool dan rate limit** — `setup-isolir/route.ts` tidak lagi hardcode `10.255.255.2-254 @ 64k/64k`. Sekarang baca `isolationIpPool` + `isolationRateLimit` dari DB company. ([`cb91699`])
+- **9739 duplicate rows di `radgroupreply`** — `freeradius-health.ts` menggunakan `INSERT IGNORE` pada tabel tanpa UNIQUE constraint. Diganti pola `DELETE + INSERT` untuk semua 3 atribut isolir. ([`cb91699`])
+- **footerAgent tidak tersimpan ke database** — field `footerAgent` ada di CREATE query tapi tidak di UPDATE. ([`2adef92`])
+- **Footer login agent hardcoded** — hapus fallback `"Powered by ${poweredBy}"` yang dihardcode di `agent/page.tsx`. ([`f70967f`])
+
+### Added
+- **`production/99-vpn-routes`** — script PPP ip-up untuk otomatis menambahkan route `10.20.30.0/24` via ppp0 ke VPS saat VPN tunnel connect. Diperlukan agar CoA/disconnect packet bisa reach MikroTik.
+
+### Changed
+- Nginx config (`production/nginx-salfanet-radius.conf`) disinkronkan dengan VPS aktual: tambah blok `/api/` dengan no-cache headers, CSP header Cloudflare, `Referrer-Policy`, hide upstream security headers.
+
+---
+
+## [2.11.8] — 2026-03-31
+
+### Fixed
+- **billingDay reset ke 1 saat edit user** — `UserDetailModal.tsx` menggunakan `user.subscriptionType || 'PREPAID'` (wrong default). User POSTPAID tampil di view PREPAID, billingDay selalu reset ke 1. Fix: `subscriptionType: user.subscriptionType ?? 'POSTPAID'` dan `billingDay: user.billingDay ?? new Date(user.expiredAt).getDate()`.
+- **MikroTik local-address verification** — setelah sync local-address ke RouterOS PPP profile, sekarang membaca kembali untuk verifikasi.
+- **NAS IP di kolom tabel PPPoE** — menampilkan IP NAS/router, bukan IP statis user.
+- **updatePppoeUser POSTPAID billingDay** — saat billingDay berubah, `expiredAt` di-recalculate ke tanggal tagihan berikutnya.
+- **Ghost sessions** — `sessions/route.ts` skip session yang tidak ada di `pppoeUser` maupun `hotspotVoucher`. `authorize/route.ts` kirim REJECT untuk user tidak terdaftar.
+- **Dashboard hotspot count selalu 0** — hapus pengecekan Service-Type yang keliru, ganti ke lookup `pppoeUser` vs `hotspotVoucher`.
+- **Next.js prerender crash pada `/_global-error`** — buat `src/app/global-error.tsx` sebagai `'use client'` component.
+- **MapPicker z-index di balik modal** — tambah `createPortal(jsx, document.body)` ke `MapPicker.tsx`.
+- **Nginx manifest 404** — ganti `alias + try_files` (broken dengan regex location) ke `root /var/www/salfanet-radius/public`.
+
+### Added
+- Area badge (kuning, ikon MapPin) di kolom Data Pelanggan PPPoE.
+- Form Tambah Pelanggan: select Area (opsional).
+- 5 action button baru: Eye, Pencil, RefreshCw, Shield, Trash.
+- Agent manual top-up: pilih rekening admin tujuan, upload bukti transfer.
+
+---
+
+## [2.11.6] — 2026-03-28
+
+### Fixed
+- **expiredAt reset otomatis saat save user** — dihapus kalkulasi otomatis `expiredAt` dari `billingDay` di setiap `updatePppoeUser`. `expiredAt` hanya diupdate jika eksplisit dikirim dari form.
+- **Redis crash-loop setelah install** — hardening konfigurasi Redis installer.
+- **Ubuntu UFW tidak auto-enabled** — installer sekarang auto-detect SSH port dan enable UFW.
+
+### Added
+- `scripts/run-deploy.js` — cross-platform deploy wrapper.
+- `npm run clean:local` dan `clean:all`.
+- GenieACS TR-069 device management (`/admin/network/olt`).
+- WiFi configuration dari customer portal.
+
+---
+
+## [2.10.27] — 2026-03-15
+
+### Added
+- Technician portal (11 pages + 19 API routes).
+- Restructuring complete (5 phases).
+
+---
+
+## [2.6.x] — 2025-12
+
+### Added
+- PPPoE isolation system dengan template WhatsApp/Email/HTML.
+- `radgroupreply` untuk group `isolir`: `Mikrotik-Rate-Limit`, `Mikrotik-Group`, `Framed-Pool`.
+
+---
+
+## [2.4.x] — 2025-10
+
+### Added
+- CoA service (real-time disconnect via radclient + MikroTik API).
+- Auto-disconnect cronjob.

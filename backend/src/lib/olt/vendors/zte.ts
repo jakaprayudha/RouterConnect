@@ -1,0 +1,949 @@
+/**
+ * ZTE OLT SNMP/Telnet/SSH Integration
+ * Supports: C320 (V2.1 + V2.2 firmware), C300, C600 series
+ *
+ * ZTE C320 V2.1: base OID 1.3.6.1.4.1.3902.1012
+ * ZTE C320 V2.2: base OID 1.3.6.1.4.1.3902.1082
+ *
+ * Reference: github.com/s4lfanet/go-api-c320, github.com/s4lfanet/nms-ztec320
+ */
+
+import { SNMPConfig, snmpGet, snmpWalk } from '../snmp';
+import { TelnetConfig, executeCommand } from '../telnet';
+import { SSHConfig, executeCommand as sshExecute } from '../ssh';
+
+// ── ZTE C320 V2.1.0 OID Profile (base: 1.3.6.1.4.1.3902.1012) ──────────────
+// OIDs verified against real ZTE C320 V2.1.0 via live SNMP walk.
+// Uses zxAnGponOnuCfgTable (3.28.1.1) and zxAnGponOnuRegTable (3.50.12.1.1).
+const V21 = {
+  base: '1.3.6.1.4.1.3902.1012',
+  // zxAnGponOnuCfgTable (3.28.1.1) — indexed by .{col}.{ponIndex}.{onuId}
+  // VERIFIED WORKING on ZTE C320 V2.1.0 via live SNMP walk
+  onuDescription: '.3.28.1.1.2',    // ONU name/description string (e.g. "test-customer")
+  onuSerial:      '.3.28.1.1.5',    // Serial (Hex-STRING: 8 bytes = 4 ASCII vendor + 4 hex id)
+  // zxAnGponOnuRegTable (3.50.12.1.1) — indexed by .{col}.{ponIndex}.{onuSlot}.{onuId}
+  // VERIFIED WORKING on ZTE C320 V2.1.0 via live SNMP walk
+  onuRegStatus: '.3.50.12.1.1.1',   // Row presence = provisioned. Value itself is NOT an
+                                     // online/registered gate — seen live holding both 1 and 2
+                                     // for equally-real, equally-online ONUs on the same port.
+  onuOperState: '.3.50.12.1.1.6',   // Oper state: 5=working/online, others=offline
+  onuRxPower:   '.3.50.12.1.1.10',  // ONU RX power (raw positive int; dBm = raw/500 - 30, verified
+                                     // against 5 real ONUs' live values on a reference NMS)
+  // NOTE: `.3.50.12.1.1.21` looked like a per-ONU distance OID (and is
+  // documented as such in some other ZTE tooling) but on this firmware it
+  // returns the SAME constant for every ONU on every port — confirmed not
+  // usable; see the `distance` comment in discoverPonV21 below.
+  board1Base:  268500992,            // pon1 index = board1Base + 1*256 = 268501248
+  board2Base:  268509184,            // pon1 index = board2Base + 1*256 = 268509440
+  ponIncrement: 256,
+};
+// Seen-ONU table: zxAnGponOnuDiscoveredInfoTable (3.27.4.1.1)
+// NOT used for unconfigured detection — it also holds ONUs that were only
+// seen once (moved, unplugged, since registered). Kept for reference.
+// Contains ALL ONUs seen on a PON port including unregistered ones.
+// Indexed by .{ponIndex}.{onuSlot}.{onuId} — only col 1 accessible.
+// VERIFIED: returns INTEGER: 2 for both registered (onuId=1) and unregistered (onuId=2).
+export const ZTE_V21_SEEN_ONU_TABLE = '1.3.6.1.4.1.3902.1012.3.27.4.1.1';
+
+// ── ZTE C320 V2.2+ OID Profile (base: 1.3.6.1.4.1.3902.1082) ───────────────
+const V22 = {
+  base: '1.3.6.1.4.1.3902.1082',
+  onuName:    '.500.10.2.3.3.1.2',  // ONU name
+  onuSerial:  '.500.10.2.3.3.1.18', // Serial number
+  onuStatus:  '.500.10.2.3.8.1.4',  // Online status (1=online)
+  onuRxPower: '.500.20.2.2.2.1.10', // RX Power (×0.01 dBm), suffix .{x}.{id}.1
+  onuTxPower: '.500.20.2.2.2.1.14', // TX Power (×0.01 dBm), suffix .{x}.{id}.1 — same tree as RX
+  onuDistance: '.500.10.2.3.10.1.2', // Distance from OLT in meters, suffix .{x}.{id}
+  onuModel:   '.3.50.11.2.1.17',    // ONU model (uses typeSuffix)
+  board1IdBase:   285278464,   board2IdBase:   285278720,
+  board1TypeBase: 268500992,   board2TypeBase: 268566528,
+  idIncrement: 1,              typeIncrement: 256,
+};
+
+// ── PON Port Discovery Table (V2.1) ─────────────────────────────────────────
+// Walking this OID returns one entry per provisioned PON port (indexed by ponIndex).
+// Allows dynamic port count discovery instead of hardcoding 2 boards × 8 ports.
+const ZTE_V21_PON_TABLE = '1.3.6.1.4.1.3902.1012.3.11.3.1.1';
+
+// ── ZTE Performance OIDs (tried in order) ───────────────────────────────────
+// C320 V2.1: temperature/CPU/memory not accessible via SNMP community "public".
+// All known OIDs return "No Such Object" on ZTE C320 V2.1.0 firmware.
+// getTemperature/getCpuUsage/getMemoryUsage will return null → UI shows N/A.
+const C320_TEMP_V21     = '1.3.6.1.4.1.3902.1012.3.36.1.1.4';  // board temp table (likely unavailable)
+const C320_CPU_V21      = '1.3.6.1.4.1.3902.1012.3.38.1.1.4';  // board CPU table (likely unavailable)
+const C320_MEM_V21      = '1.3.6.1.4.1.3902.1012.3.38.1.1.3';  // board memory table (likely unavailable)
+// C320 V2.2 board OIDs (ONU/PON-tree fallback — see CARD_* below for the
+// dedicated chassis-health tree, which is more likely to actually respond)
+const C320_TEMP_V22     = '1.3.6.1.4.1.3902.1082.500.20.2.1.2.1.4';
+const C320_CPU_V22      = '1.3.6.1.4.1.3902.1082.500.20.2.1.2.1.2';
+const C320_MEM_V22      = '1.3.6.1.4.1.3902.1082.500.20.2.1.2.1.3';
+// C320 V2.2 dedicated card/board health tree (zxAnEsAsic..CardTable family).
+// Reference: github.com/s4lfanet/nms-ztec320 (a sibling ZTE C320 NMS project) —
+// documented there as the working OID tree for per-slot card CPU/memory/temp,
+// fan speed, and PSU voltage, distinct from the ONU/PON-data tree above.
+// Tried BEFORE the ONU-tree fallback since it's the tree actually meant for
+// chassis health rather than repurposed ONU-indexed OIDs.
+const CARD_CPU_V22      = '1.3.6.1.4.1.3902.1082.10.1.2.4.1.9.1.1';
+const CARD_MEM_V22      = '1.3.6.1.4.1.3902.1082.10.1.2.4.1.11.1.1';
+const CARD_TEMP_V22     = '1.3.6.1.4.1.3902.1082.10.10.2.1.6.1.2.1.1';
+// Generic ZTE C300/C600 fallback
+const ZTE_OIDS = {
+  temperature: '1.3.6.1.4.1.3902.1015.1015.6.1.3.1.2.0',
+  cpuUsage:    '1.3.6.1.4.1.3902.1015.1015.6.1.1.1.5.0',
+  memoryUsage: '1.3.6.1.4.1.3902.1015.1015.6.1.1.1.6.0',
+};
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function isV22(fw?: string | null): boolean {
+  return !!fw && /v?2\.2/i.test(fw);
+}
+
+function ponIndexV21(board: number, pon: number): number {
+  return (board === 1 ? V21.board1Base : V21.board2Base) + pon * V21.ponIncrement;
+}
+
+function ponSuffixV22(board: number, pon: number): { idSuffix: number; typeSuffix: number } {
+  return {
+    idSuffix:   (board === 1 ? V22.board1IdBase   : V22.board2IdBase)   + pon * V22.idIncrement,
+    typeSuffix: (board === 1 ? V22.board1TypeBase  : V22.board2TypeBase) + pon * V22.typeIncrement,
+  };
+}
+
+function extractLastId(oid: string): number | null {
+  const parts = oid.split('.');
+  const n = parseInt(parts[parts.length - 1], 10);
+  return isNaN(n) ? null : n;
+}
+
+/**
+ * Convert ZTE ONU serial from raw SNMP value to printable form.
+ * ZTE GPON serial format: 8 bytes where first 4 are ASCII vendor code
+ * (e.g. "ZTEG", "HWTC", "FHTT") and last 4 are hex serial digits.
+ * Input: "5A 54 45 47 DA 59 18 AC"  Output: "ZTEGDA5918AC"
+ */
+function hexBytesToSerial(val: string): string {
+  if (!val) return '';
+  // Already a clean serial string (4 ASCII + 8 hex, no spaces)
+  if (/^[A-Z]{4}[0-9A-F]{8}$/i.test(val)) return val.toUpperCase();
+  // Space-separated hex bytes (8 bytes = ZTE format)
+  const parts = val.trim().split(/\s+/);
+  if (parts.length === 8 && parts.every(p => /^[0-9A-Fa-f]{2}$/.test(p))) {
+    try {
+      const prefix = parts.slice(0, 4).map(h => String.fromCharCode(parseInt(h, 16))).join('');
+      // Verify prefix is printable ASCII letters/digits
+      if (/^[A-Za-z0-9]{4}$/.test(prefix)) {
+        const suffix = parts.slice(4).map(h => h.toUpperCase()).join('');
+        return (prefix + suffix).toUpperCase();
+      }
+    } catch { /* fall through */ }
+  }
+  // Other hex-string: convert all bytes to ASCII
+  if (parts.length >= 4 && parts.every(p => /^[0-9A-Fa-f]{1,2}$/.test(p))) {
+    try {
+      return parts.map(h => String.fromCharCode(parseInt(h, 16))).join('');
+    } catch { /* fall through */ }
+  }
+  return val;
+}
+
+function normalizeSerialNumber(val: string | null | undefined): string | null {
+  const serial = (val ?? '').trim().toUpperCase();
+  if (!serial || serial === 'N/A' || serial === 'NA' || serial === 'NULL' || serial === 'NONE') return null;
+  if (!/^[A-Z0-9_-]{4,32}$/.test(serial)) return null;
+  return serial;
+}
+
+function parseSerialFromDetail(output: string): string | null {
+  const match = output.match(/Serial\s+number\s*:\s*([A-Z0-9_-]+)/i);
+  return normalizeSerialNumber(match?.[1]);
+}
+
+// ── SNMP Performance Metrics ─────────────────────────────────────────────────
+
+/** Walk a table OID and return the first numeric value found, optionally filtered */
+async function walkFirstNumber(
+  config: SNMPConfig,
+  baseOid: string,
+  isValid?: (n: number) => boolean
+): Promise<number | null> {
+  const res = await snmpWalk(config, baseOid);
+  if (res.success && res.results) {
+    for (const val of Object.values(res.results)) {
+      const n = parseFloat(val);
+      if (!isNaN(n) && n > 0 && (!isValid || isValid(n))) return n;
+    }
+  }
+  return null;
+}
+
+// Temperatures must be in plausible range for network equipment (10–85°C)
+const isValidTemp = (n: number) => n >= 10 && n <= 85;
+
+export async function getTemperature(config: SNMPConfig): Promise<number | null> {
+  // 1) Dedicated card/board health tree (V2.2) — the tree actually meant
+  // for chassis health, tried before the repurposed ONU-tree OID below.
+  const tCard = await walkFirstNumber(config, CARD_TEMP_V22, isValidTemp);
+  if (tCard !== null) return tCard;
+  // 2) C320 V2.1
+  const t21 = await walkFirstNumber(config, C320_TEMP_V21, isValidTemp);
+  if (t21 !== null) return t21;
+  // 3) C320 V2.2 (ONU-tree fallback)
+  const t22 = await walkFirstNumber(config, C320_TEMP_V22, isValidTemp);
+  if (t22 !== null) return t22;
+  // 4) C300/C600 generic
+  const res = await snmpGet(config, ZTE_OIDS.temperature);
+  if (res.success && res.value) {
+    const n = parseFloat(res.value);
+    if (isValidTemp(n)) return n;
+  }
+  return null;
+}
+
+export async function getCpuUsage(config: SNMPConfig): Promise<number | null> {
+  const cCard = await walkFirstNumber(config, CARD_CPU_V22);
+  if (cCard !== null) return cCard;
+  const c21 = await walkFirstNumber(config, C320_CPU_V21);
+  if (c21 !== null) return c21;
+  const c22 = await walkFirstNumber(config, C320_CPU_V22);
+  if (c22 !== null) return c22;
+  const res = await snmpGet(config, ZTE_OIDS.cpuUsage);
+  if (res.success && res.value) return parseInt(res.value);
+  return null;
+}
+
+export async function getMemoryUsage(config: SNMPConfig): Promise<number | null> {
+  const mCard = await walkFirstNumber(config, CARD_MEM_V22);
+  if (mCard !== null) return mCard;
+  const m21 = await walkFirstNumber(config, C320_MEM_V21);
+  if (m21 !== null) return m21;
+  const m22 = await walkFirstNumber(config, C320_MEM_V22);
+  if (m22 !== null) return m22;
+  const res = await snmpGet(config, ZTE_OIDS.memoryUsage);
+  if (res.success && res.value) return parseInt(res.value);
+  return null;
+}
+
+// ── Telnet-based System Metrics (best-effort) ─────────────────────────────────
+// ZTE C320 V2.1 does NOT expose CPU/memory/temp via Telnet CLI either
+// (confirmed by oltc320_v2.1.1_linux CHANGELOG: "Removed unsupported monitoring").
+// This function tries common ZTE CLI commands and parses what is available.
+// On C320 V2.1 these will all return null; newer models (C600/C300) may respond.
+export async function getSystemMetricsTelnet(
+  telnetConfig: TelnetConfig
+): Promise<{ temperature: number | null; cpuUsage: number | null; memoryUsage: number | null }> {
+  const result = { temperature: null as number | null, cpuUsage: null as number | null, memoryUsage: null as number | null };
+  try {
+    // Try "show card" — some ZTE models show board temp here
+    const cardResult = await executeCommand(telnetConfig, 'show card');
+    if (cardResult.success && cardResult.output) {
+      const tempMatch = cardResult.output.match(/temp(?:erature)?\s*[:\s]+(\d+)/i);
+      if (tempMatch) {
+        const t = parseInt(tempMatch[1]);
+        if (t >= 10 && t <= 85) result.temperature = t;
+      }
+      const cpuMatch = cardResult.output.match(/cpu\s*(?:usage|utilization)?\s*[:\s]+(\d+)/i);
+      if (cpuMatch) {
+        const c = parseInt(cpuMatch[1]);
+        if (c >= 0 && c <= 100) result.cpuUsage = c;
+      }
+      const memMatch = cardResult.output.match(/mem(?:ory)?\s*(?:usage|util)?\s*[:\s]+(\d+)/i);
+      if (memMatch) {
+        const m = parseInt(memMatch[1]);
+        if (m >= 0 && m <= 100) result.memoryUsage = m;
+      }
+    }
+    // Try "show environment" as fallback for temperature
+    if (result.temperature === null) {
+      const envResult = await executeCommand(telnetConfig, 'show environment');
+      if (envResult.success && envResult.output) {
+        const tempMatch = envResult.output.match(/temp(?:erature)?\s*[:\s]+(\d+)/i);
+        if (tempMatch) {
+          const t = parseInt(tempMatch[1]);
+          if (t >= 10 && t <= 85) result.temperature = t;
+        }
+      }
+    }
+  } catch {
+    // Silently ignore — Telnet may not be configured or supported
+  }
+  return result;
+}
+
+// ── Dynamic PON Port Discovery (V2.1) ───────────────────────────────────────
+
+/**
+ * Walk the ZTE C320 V2.1 PON port table to discover all provisioned PON ports.
+ * Converts each ponIndex back to (board, pon) using the V21 base constants.
+ * Falls back to the traditional 2 boards × 8 ports if the walk fails.
+ */
+async function discoverPONPortsV21(config: SNMPConfig): Promise<Array<{board: number, pon: number}>> {
+  const res = await snmpWalk(config, ZTE_V21_PON_TABLE);
+
+  const seenPonIndexes = new Set<number>();
+  if (res.success && res.results && Object.keys(res.results).length > 0) {
+    // ponIndexes are very large numbers (> 268 million) — scan all OID components
+    // to handle any MIB column layout (e.g. .col.ponIndex or .ponIndex directly)
+    for (const oid of Object.keys(res.results)) {
+      for (const part of oid.split('.')) {
+        const n = parseInt(part, 10);
+        if (!isNaN(n) && n > 268000000) seenPonIndexes.add(n);
+      }
+    }
+  }
+
+  const ports: Array<{board: number, pon: number}> = [];
+  const maxPonsPerBoard = 128; // safety cap
+
+  for (const ponIndex of seenPonIndexes) {
+    if (ponIndex > V21.board1Base && ponIndex < V21.board1Base + maxPonsPerBoard * V21.ponIncrement) {
+      const pon = (ponIndex - V21.board1Base) / V21.ponIncrement;
+      if (Number.isInteger(pon) && pon >= 1) ports.push({ board: 1, pon });
+    } else if (ponIndex > V21.board2Base && ponIndex < V21.board2Base + maxPonsPerBoard * V21.ponIncrement) {
+      const pon = (ponIndex - V21.board2Base) / V21.ponIncrement;
+      if (Number.isInteger(pon) && pon >= 1) ports.push({ board: 2, pon });
+    }
+  }
+
+  if (ports.length > 0) {
+    return ports.sort((a, b) => a.board !== b.board ? a.board - b.board : a.pon - b.pon);
+  }
+
+  // Fallback: traditional 2 boards × 8 ports
+  const fallback: Array<{board: number, pon: number}> = [];
+  for (let b = 1; b <= 2; b++) for (let p = 1; p <= 8; p++) fallback.push({ board: b, pon: p });
+  return fallback;
+}
+
+// ── Real per-ONU status via Telnet (SNMP operState cannot tell this apart) ──
+//
+// Confirmed live against github.com/s4lfanet/nms-ztec320's reference NMS,
+// which correctly distinguishes Online from Dying Gasp for the exact same
+// OLT: the SNMP operState OID this file reads is IDENTICAL (5) for both —
+// verified on a port with 66 real ONUs including 3 the reference NMS shows
+// as Dying Gasp. That distinction only shows up in Telnet CLI output:
+//
+//   show gpon onu state gpon-olt_1/{board}/{pon}
+//   OnuIndex   Admin State  OMCC State  Phase State  Channel
+//   1/1/3:8     enable       disable     DyingGasp    1(GPON)
+//
+// One call per PORT returns every ONU's state at once (the same pattern
+// nms-ztec320's collect_all_onus() uses), so this costs one extra Telnet
+// round-trip per port — negligible next to the per-ONU cost of distance
+// below.
+async function fetchPonStateViaTelnet(
+  telnetConfig: TelnetConfig | null | undefined,
+  board: number,
+  pon: number,
+): Promise<Map<number, string> | null> {
+  if (!telnetConfig) return null;
+  try {
+    const result = await executeCommand(telnetConfig, `show gpon onu state gpon-olt_1/${board}/${pon}`);
+    if (!result.success || !result.output) return null;
+
+    const stateMap = new Map<number, string>();
+    for (const rawLine of result.output.split('\n')) {
+      // The device's own "--More--" pagination prompt (answered with a
+      // space to page through) can land on the SAME line as the next row of
+      // data once echoed back. The raw bytes aren't just "--More--" plus
+      // plain spaces though — the device also sends a backspace/space erase
+      // sequence (\x08 repeated) to visually wipe "--More--" off a real
+      // terminal, e.g. " --More--\x08 \x08\x08 ...1/1/1:45  enable...". A
+      // plain text-only `--More--` strip leaves those \x08 bytes behind,
+      // which `.trim()` does NOT treat as whitespace, so the row's onu-index
+      // still ends up mangled instead of "1/1/1:45" and silently fails to
+      // match below. Strip the backspace bytes FIRST, then the prompt text.
+      // Confirmed live: this exact sequence dropped one Dying Gasp ONU (of 3
+      // on a 66-ONU port) from the state map, falling back to SNMP's
+      // operState (which can't tell Dying Gasp apart from Online) and
+      // showing it as online instead.
+      const line = rawLine.replace(/\x08/g, '').replace(/--More--/g, '').trim();
+      if (!line || /^-+$/.test(line) || /^OnuIndex/i.test(line) || /^ONU\b/i.test(line)) continue;
+      const parts = line.split(/\s+/);
+      if (parts.length < 4) continue;
+      const idMatch = parts[0].match(/^\d+\/\d+\/\d+:(\d+)$/);
+      if (!idMatch) continue;
+      const onuId = parseInt(idMatch[1], 10);
+      const phase = parts[3].toLowerCase();
+      const status = /working|logging|active/.test(phase) ? 'online'
+                   : phase.includes('dyinggasp')            ? 'dying_gasp'
+                   : phase.includes('los')                  ? 'los'
+                   : 'offline';
+      stateMap.set(onuId, status);
+    }
+    return stateMap;
+  } catch {
+    return null; // Telnet unavailable — caller falls back to SNMP operState
+  }
+}
+
+// Real per-ONU distance via Telnet — the only source that has it (see the
+// module comment on the `distance` field in discoverPonV21 for why SNMP
+// doesn't). One call per ONU: `show gpon onu detail-info gpon-onu_1/{board}/
+// {pon}:{onuId}`, which includes a line like `ONU Distance: 623m`.
+async function fetchOnuDistanceViaTelnet(
+  telnetConfig: TelnetConfig,
+  board: number,
+  pon: number,
+  onuId: number,
+): Promise<number | null> {
+  try {
+    const iface = `gpon-onu_1/${board}/${pon}:${onuId}`;
+    const result = await executeCommand(telnetConfig, `show gpon onu detail-info ${iface}`);
+    if (!result.success || !result.output) return null;
+    const match = result.output.match(/ONU Distance:\s*(\d+)\s*m/i);
+    return match ? parseInt(match[1], 10) : null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Unconfigured ONUs (CLI is the only source of truth) ─────────────────────
+// Same approach as the reference NMS (E:\nms telnet_client.collect_unregistered_onus):
+// the live `uncfg` CLI listing decides which ONUs are unconfigured. The SNMP
+// seen table (3.27.4.1.1) is NOT used for this: it keeps ONUs the OLT saw at
+// some point, so reading it as "unconfigured" showed ONUs the OLT itself no
+// longer lists.
+
+export interface UncfgEntry {
+  board: number;
+  displayPort: number; // 0-based, as stored in the DB
+  serial: string;
+  onuId?: number;
+  model?: string;
+}
+
+const SERIAL_RE = /^[A-Z]{4}[0-9A-F]{4,12}$/i;
+
+function looksLikeCliError(output: string): boolean {
+  return /%\s*(code|error)|invalid input|unrecognized command|command not found|error\s*\d+/i.test(output);
+}
+
+/** Parse both C320 uncfg layouts:
+ *   gpon-olt_1/1/5   F670LV9.0   ZTEGDC79F447   GDC79F447   (OltIndex Model SN PW)
+ *   gpon-olt_1/1/1   N/A         ZTEGDA5918AC   unknown     (OnuIndex Type SN State)
+ *   gpon-onu_1/1/5:1 ZTEGDC79F447 unknown                   (show gpon onu uncfg)
+ */
+export function parseUncfgListing(output: string): UncfgEntry[] {
+  const entries: UncfgEntry[] = [];
+  const clean = output.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\xff]/g, '');
+  for (const raw of clean.split('\n')) {
+    const line = raw.trim();
+    if (!line || /^-+$/.test(line) || /onuindex|oltindex|onutype/i.test(line)) continue;
+    const parts = line.split(/\s+/);
+    const m = parts[0].match(/gpon[_-](olt|onu)[_-](\d+)\/(\d+)\/(\d+)(?::(\d+))?/i);
+    if (!m) continue;
+    const board = parseInt(m[3], 10);
+    const cliPort = parseInt(m[4], 10);
+    const onuId = m[5] ? parseInt(m[5], 10) : undefined;
+    let serial: string | undefined;
+    let model: string | undefined;
+    if (m[1].toLowerCase() === 'onu') {
+      serial = parts[1];
+    } else {
+      // Model and SN columns swap between firmware builds; the SN is the one
+      // with a 4-letter vendor prefix + hex digits.
+      if (parts[1] && SERIAL_RE.test(parts[1])) { serial = parts[1]; model = parts[2]; }
+      else { serial = parts[2]; model = parts[1]; }
+    }
+    if (!serial || !SERIAL_RE.test(serial)) continue;
+    entries.push({
+      board,
+      displayPort: cliPort > 0 ? cliPort - 1 : cliPort,
+      serial: serial.toUpperCase(),
+      onuId,
+      model: model && model.toUpperCase() !== 'N/A' ? model : undefined,
+    });
+  }
+  return entries;
+}
+
+/**
+ * Live unconfigured-ONU list. Tries `show pon onu uncfg` (C320 V2.1+) then
+ * `show gpon onu uncfg`, optionally scoped to one PON. Returns null when
+ * neither command produced a usable answer (Telnet down, both rejected) —
+ * callers must then treat the unconfigured state as UNKNOWN, not empty.
+ */
+export async function fetchUncfgViaTelnet(telnetConfig: TelnetConfig, scope = ''): Promise<UncfgEntry[] | null> {
+  for (const cmd of ['show pon onu uncfg', 'show gpon onu uncfg']) {
+    try {
+      const result = await executeCommand(telnetConfig, scope ? `${cmd} ${scope}` : cmd);
+      if (!result.success || result.output == null) continue;
+      if (looksLikeCliError(result.output)) continue;
+      return parseUncfgListing(result.output);
+    } catch {
+      /* try the next form */
+    }
+  }
+  return null;
+}
+
+// ── SNMP ONU Discovery — V2.1 ────────────────────────────────────────────────
+
+async function discoverPonV21(
+  config: SNMPConfig,
+  board: number,
+  pon: number,
+  telnetConfig?: TelnetConfig | null,
+  globalUncfgMap?: Map<string, Array<{ serial: string; onuId?: number }>> | null,
+): Promise<any[]> {
+  const ponIndex = ponIndexV21(board, pon);
+  const base = V21.base;
+
+  // Walk ALL OID subtrees for this PON port in PARALLEL (6 concurrent SNMP walks),
+  // plus one Telnet call for real status (see telnetStateMap below) — all run
+  // together since none of them depend on each other.
+  const [regWalk, operWalk, serialWalk, rxWalk, descWalk, telnetStateMap] = await Promise.all([
+    snmpWalk(config, `${base}${V21.onuRegStatus}.${ponIndex}`),    // reg status  (.ponIndex.slot.onuId)
+    snmpWalk(config, `${base}${V21.onuOperState}.${ponIndex}`),    // oper state  (.ponIndex.slot.onuId)
+    snmpWalk(config, `${base}${V21.onuSerial}.${ponIndex}`),       // serial      (.ponIndex.onuId)
+    snmpWalk(config, `${base}${V21.onuRxPower}.${ponIndex}`),      // rx power    (.ponIndex.slot.onuId)
+    snmpWalk(config, `${base}${V21.onuDescription}.${ponIndex}`),  // description (.ponIndex.onuId)
+    fetchPonStateViaTelnet(telnetConfig, board, pon),
+  ]);
+
+  // Build O(1) lookup maps keyed by "onuSlot.onuId" (3-component OIDs) or "onuId" (2-component OIDs)
+  const lastTwoKey   = (oid: string) => oid.split('.').slice(-2).join('.');  // slot.onuId
+  const lastOneKey   = (oid: string) => oid.split('.').slice(-1)[0];         // onuId
+
+  const operMap   = new Map<string, string>();
+  const rxMap     = new Map<string, string>();
+  const serialMap = new Map<string, string>();
+  const descMap   = new Map<string, string>();
+
+  if (operWalk.success && operWalk.results)   for (const [k,v] of Object.entries(operWalk.results))   operMap.set(lastTwoKey(k), v);
+  if (rxWalk.success && rxWalk.results)       for (const [k,v] of Object.entries(rxWalk.results))     rxMap.set(lastTwoKey(k), v);
+  if (serialWalk.success && serialWalk.results) for (const [k,v] of Object.entries(serialWalk.results)) serialMap.set(lastOneKey(k), v);
+  if (descWalk.success && descWalk.results)   for (const [k,v] of Object.entries(descWalk.results))   descMap.set(lastOneKey(k), v);
+
+  const onus: any[] = [];
+  const registeredIds = new Set<number>();
+
+  if (regWalk.success && regWalk.results) {
+    for (const [oid, _regVal] of Object.entries(regWalk.results)) {
+      const parts = oid.split('.');
+      // Verified against a live C320 V2.1.0: this OID's actual suffix is
+      // `.ponIndex.{realOnuId}.{gemPortOrChannel}` — the LAST component is a
+      // constant (always "1" on this device, the GEM/channel index), and the
+      // per-ONU distinguishing ID is the one BEFORE it. The previous code had
+      // these two swapped, so every ONU on a port was pushed with the same
+      // constant onuId="1" — on a port with multiple real ONUs, they all
+      // collided on the same (oltId, frame, slot, port, onuId) DB key and
+      // only one survived, making a port with e.g. 21 real ONUs look like it
+      // had exactly one. (Confirmed live: port 8 has 5 real ONUs, and its
+      // regStatus walk is `.<ponIndex>.1.1`, `.2.1` .. `.5.1` — the "1..5" is
+      // the real ID, matching the CLI's `1/1/8:1` .. `1/1/8:5`.)
+      const onuId       = parseInt(parts[parts.length - 2], 10);
+      const gemPortIdx  = parseInt(parts[parts.length - 1], 10);
+      if (isNaN(onuId) || isNaN(gemPortIdx) || onuId <= 0 || onuId > 128) continue;
+      // regVal is NOT an online/registered boolean gate — verified live on a
+      // port with 66 real ONUs (confirmed via CLI): 46 rows read 1, 20 read
+      // 2, yet ALL 66 report the SAME operState (online) and are real,
+      // provisioned ONUs the reference NMS counts. A row's mere presence in
+      // this table means the ONU is provisioned; regVal appears to be some
+      // other per-ONU attribute (unconfirmed which), not a filter — the
+      // previous `!== 1` check here silently dropped ~30% of every port's
+      // real ONUs.
+      registeredIds.add(onuId);
+
+      const slotIdKey = `${onuId}.${gemPortIdx}`;
+      const idKey     = `${onuId}`;
+
+      // Status: prefer Telnet's real Phase State (distinguishes Dying Gasp
+      // and LOS, which SNMP's operState cannot — see fetchPonStateViaTelnet).
+      // Fall back to the operState heuristic only when Telnet is unavailable.
+      const operVal = parseInt(operMap.get(slotIdKey) ?? '0', 10);
+      const onuStatus = telnetStateMap?.get(onuId)
+        ?? (operVal === 5 || operVal === 4 ? 'online'
+          : operVal === 0                   ? 'unknown'
+          : 'offline');
+
+      // Rx Power. Formula verified against 5 real ONUs on a live C320
+      // (comparing raw SNMP values to the actual dBm shown by a reference
+      // NMS for the same ONUs): dBm = raw/500 - 30, e.g. raw=7230 -> -15.54
+      // dBm (matched to 0.00, others matched within ~0.05 dB of live jitter).
+      // The previous `-(raw/1000)` formula was simply wrong (e.g. it turned
+      // that same raw=7230 into -7.23 dBm instead of the real -15.54 dBm).
+      let rxPower: number | null = null;
+      const rxRaw = parseInt(rxMap.get(slotIdKey) ?? '', 10);
+      if (!isNaN(rxRaw) && rxRaw > 0 && rxRaw < 50000) rxPower = Math.round((rxRaw / 500 - 30) * 100) / 100;
+
+      // Distance: OID `.3.50.12.1.1.21` does NOT carry a per-ONU value on
+      // this firmware — verified live it returns the exact same raw number
+      // (328) for every ONU on a port, and even across different ports,
+      // while the OLT's own CLI (`show gpon onu detail-info`) reports a
+      // real, differing per-ONU distance (e.g. 623m) for the same ONU. No
+      // scaling factor can fix a constant into varying real values.
+      // Fetched via Telnet, one call per ONLINE ONU — the user explicitly
+      // accepted this cost over showing a confidently wrong number. Limited
+      // to 'online' ONUs (skips offline/dying_gasp/los/unregistered) since
+      // those still keep a stale-but-plausible last-known reading in the DB
+      // from when they WERE online, and re-querying a dark ONU for ranging
+      // data is a wasted round-trip. Sequential, not concurrent — see the
+      // module-level PON-port scanning note on why this OLT's SNMP agent
+      // degrades under concurrent load; Telnet sessions are assumed to have
+      // the same risk until proven otherwise, so this stays conservative.
+      let distance: number | null = null;
+      if (telnetConfig && onuStatus === 'online') {
+        distance = await fetchOnuDistanceViaTelnet(telnetConfig, board, pon, onuId);
+      }
+
+      // Serial (hex bytes → ASCII). If SNMP hex can't be parsed, leave null.
+      const serialNumber = normalizeSerialNumber(hexBytesToSerial(serialMap.get(idKey) ?? ''));
+
+      onus.push({
+        frame: 1, slot: board,
+        port: pon - 1,
+        onuId,
+        serialNumber,
+        macAddress: null,
+        status: onuStatus,
+        description: descMap.get(idKey)?.trim() ?? null,
+        onuType: null,
+        rxPower,
+        distance,
+      });
+    }
+  }
+
+  // Unconfigured ONUs come only from the live CLI listing (see
+  // fetchUncfgViaTelnet). No listing this poll → report none; the poller then
+  // leaves previously stored unconfigured rows untouched.
+  const uncfgSerials = new Map<number, string>();
+  const existingSerials = new Set<string>();
+  const displayPort = pon - 1; // DB/display port is 0-based
+  const portKey = `${board}/${displayPort}`;
+
+  const addSerial = (serial: string, fallbackIndex: number, preferredId?: number) => {
+    const normalizedSerial = serial.toUpperCase();
+    if (existingSerials.has(normalizedSerial)) return;
+
+    let id = preferredId && preferredId > 0 && !registeredIds.has(preferredId)
+      ? preferredId
+      : buildVirtualUncfgOnuId(normalizedSerial, fallbackIndex);
+    while (uncfgSerials.has(id) || registeredIds.has(id)) id++;
+
+    uncfgSerials.set(id, normalizedSerial);
+    existingSerials.add(normalizedSerial);
+  };
+
+  let portEntries: Array<{ serial: string; onuId?: number }> | null = null;
+  if (globalUncfgMap) {
+    portEntries = globalUncfgMap.get(portKey) ?? [];
+  } else if (telnetConfig) {
+    const listed = await fetchUncfgViaTelnet(telnetConfig, `gpon-olt_1/${board}/${pon}`);
+    portEntries = listed ? listed.filter((e) => e.board === board && e.displayPort === displayPort) : null;
+  }
+  portEntries?.forEach((entry, index) => addSerial(entry.serial, index, entry.onuId));
+
+  for (const [onuId, serialNumber] of uncfgSerials) {
+    onus.push({
+      frame: 1, slot: board, port: pon - 1, onuId,
+      serialNumber,
+      macAddress: null,
+      status: 'unregistered',
+      description: null, onuType: null, rxPower: null, distance: null,
+    });
+  }
+
+  return onus;
+}
+
+function buildVirtualUncfgOnuId(serial: string, fallbackIndex: number): number {
+  let hash = 0;
+  for (const ch of serial.toUpperCase()) {
+    hash = ((hash * 31) + ch.charCodeAt(0)) >>> 0;
+  }
+  return 1000 + ((hash + fallbackIndex) % 1000000);
+}
+
+function mergePonPortsFromUncfgMap(
+  ports: Array<{ board: number; pon: number }>,
+  globalUncfgMap: Map<string, Array<{ serial: string; onuId?: number }>> | null,
+): Array<{ board: number; pon: number }> {
+  if (!globalUncfgMap || globalUncfgMap.size === 0) return ports;
+
+  const seen = new Set(ports.map(({ board, pon }) => `${board}/${pon}`));
+  for (const key of globalUncfgMap.keys()) {
+    const [boardText, displayPortText] = key.split('/');
+    const board = parseInt(boardText, 10);
+    const displayPort = parseInt(displayPortText, 10);
+    if (!Number.isInteger(board) || !Number.isInteger(displayPort)) continue;
+
+    const pon = displayPort + 1;
+    const ponKey = `${board}/${pon}`;
+    if (seen.has(ponKey)) continue;
+
+    ports.push({ board, pon });
+    seen.add(ponKey);
+  }
+
+  return ports.sort((a, b) => a.board !== b.board ? a.board - b.board : a.pon - b.pon);
+}
+
+// ── SNMP ONU Discovery — V2.2 ────────────────────────────────────────────────
+
+async function discoverPonV22(config: SNMPConfig, board: number, pon: number): Promise<any[]> {
+  const { idSuffix, typeSuffix } = ponSuffixV22(board, pon);
+  const base = V22.base;
+
+  const nameWalk = await snmpWalk(config, `${base}${V22.onuName}.${idSuffix}`);
+  if (!nameWalk.success || !nameWalk.results) return [];
+
+  // A single ONU's own 6 fields are fetched concurrently (they're independent
+  // GETs on the same logical target) — but ONUs themselves are still handled
+  // one at a time. A live test against a real ZTE C320 showed that firing
+  // several PON ports' SNMP walks at once made a full poll SLOWER, not
+  // faster (156s vs 132s sequential) — this OLT's embedded SNMP agent
+  // appears to serialize/degrade under concurrent load rather than pipeline
+  // it, so cross-port/cross-ONU concurrency is deliberately NOT used here.
+  const onus: any[] = [];
+  for (const [oid, nameVal] of Object.entries(nameWalk.results)) {
+    const onuId = extractLastId(oid);
+    if (onuId === null || onuId <= 0 || onuId > 128) continue;
+
+    const [statusR, serialR, typeR, rxR, txR, distR] = await Promise.all([
+      snmpGet(config, `${base}${V22.onuStatus}.${idSuffix}.${onuId}`),
+      snmpGet(config, `${base}${V22.onuSerial}.${idSuffix}.${onuId}`),
+      snmpGet(config, `${base}${V22.onuModel}.${typeSuffix}.${onuId}`),
+      snmpGet(config, `${base}${V22.onuRxPower}.${idSuffix}.${onuId}.1`),
+      snmpGet(config, `${base}${V22.onuTxPower}.${idSuffix}.${onuId}.1`),
+      snmpGet(config, `${base}${V22.onuDistance}.${idSuffix}.${onuId}`),
+    ]);
+
+    const statusVal = statusR.success && statusR.value ? parseInt(statusR.value) : 0;
+    let rxPower: number | null = null;
+    if (rxR.success && rxR.value) {
+      const raw = parseInt(rxR.value);
+      if (!isNaN(raw) && raw !== 0) rxPower = raw * 0.01;
+    }
+    let txPower: number | null = null;
+    if (txR.success && txR.value) {
+      const raw = parseInt(txR.value);
+      if (!isNaN(raw) && raw !== 0) txPower = raw * 0.01;
+    }
+    let distance: number | null = null;
+    if (distR.success && distR.value) {
+      const raw = parseInt(distR.value);
+      if (!isNaN(raw) && raw > 0 && raw < 100000) distance = raw;
+    }
+
+    onus.push({
+      frame: 1, slot: board, port: pon, onuId,
+      serialNumber: serialR.value ?? nameVal ?? '',
+      macAddress: null,
+      status: statusVal === 1 ? 'online' : 'offline',
+      onuType: typeR.value ?? null,
+      rxPower,
+      txPower,
+      distance,
+    });
+  }
+  return onus;
+}
+
+// ── Public: SNMP-based ONU Discovery ─────────────────────────────────────────
+
+/**
+ * Discover all ONUs via SNMP — primary method for ZTE C320.
+ * Supports V2.1.0 (base 1012) and V2.2+ (base 1082).
+ * For V2.1: dynamically discovers PON ports from the PON table (supports 8, 16, or more ports).
+ * For V2.2: falls back to scanning 2 boards × 8 ports.
+ */
+export async function discoverONUsSNMP(
+  config: SNMPConfig,
+  firmwareVersion?: string | null,
+  telnetConfig?: TelnetConfig | null,
+): Promise<any[]> {
+  const useV22 = isV22(firmwareVersion);
+  const onus: any[] = [];
+
+  if (!useV22) {
+    // One Telnet call lists every unconfigured ONU on the OLT.
+    let globalUncfgMap: Map<string, Array<{ serial: string; onuId?: number }>> | null = null;
+    if (telnetConfig) {
+      const listed = await fetchUncfgViaTelnet(telnetConfig);
+      if (listed) {
+        globalUncfgMap = new Map();
+        for (const e of listed) {
+          const key = `${e.board}/${e.displayPort}`;
+          if (!globalUncfgMap.has(key)) globalUncfgMap.set(key, []);
+          globalUncfgMap.get(key)!.push({ serial: e.serial, onuId: e.onuId });
+        }
+      }
+    }
+    // Tells the poller whether this poll's unconfigured list is the OLT's
+    // real, complete answer (so stored rows missing from it can be removed).
+    (onus as any).uncfgAuthoritative = globalUncfgMap !== null;
+
+    // V2.1: walk PON port table to discover actual port count dynamically.
+    // Ports are scanned one at a time deliberately — see the note on
+    // discoverPonV22 above (a live test showed concurrent port scans made
+    // this OLT's SNMP agent slower, not faster).
+    const ponPorts = mergePonPortsFromUncfgMap(await discoverPONPortsV21(config), globalUncfgMap);
+    for (const { board, pon } of ponPorts) {
+      try {
+        const ponOnus = await discoverPonV21(config, board, pon, telnetConfig, globalUncfgMap);
+        onus.push(...ponOnus);
+      } catch { /* empty/unprovisioned PON — skip */ }
+    }
+  } else {
+    // V2.2: scan 2 boards × 8 ports (V2.2 port table OID not yet mapped)
+    for (let board = 1; board <= 2; board++) {
+      for (let pon = 1; pon <= 8; pon++) {
+        try {
+          const ponOnus = await discoverPonV22(config, board, pon);
+          onus.push(...ponOnus);
+        } catch { /* empty/unprovisioned PON — skip */ }
+      }
+    }
+  }
+  return onus;
+}
+
+// ── Telnet/SSH ONU Discovery (fallback) ──────────────────────────────────────
+
+function parseOnuInfo(output: string, frame: number, slot: number, port: number): any[] {
+  const onus: any[] = [];
+  const lines = output.split('\n');
+  for (const line of lines) {
+    const match = line.match(/^\s*(\d+)\s+([0-9a-fA-F]{4,})\s+(online|offline|dying-gasp|dyinggasp)/i);
+    if (match) {
+      const [, onuId, serial, status] = match;
+      onus.push({
+        frame, slot, port,
+        onuId: parseInt(onuId),
+        serialNumber: serial.trim(),
+        macAddress: null,
+        status: status.toLowerCase().replace('-', '_'),
+        rxPower: null,
+      });
+      continue;
+    }
+
+    // ZTE C320 V2.1 state output has no serial:
+    //   1/1/1:1 enable enable working 1(GPON)
+    const stateMatch = line.match(/^\s*\d+\/\d+\/\d+:(\d+)\s+\S+\s+\S+\s+(working|online|los|offline|dying-gasp|dyinggasp)/i);
+    if (stateMatch) {
+      const [, onuId, status] = stateMatch;
+      onus.push({
+        frame, slot, port,
+        onuId: parseInt(onuId, 10),
+        serialNumber: null,
+        macAddress: null,
+        status: /working|online/i.test(status) ? 'online' : status.toLowerCase().replace('-', '_'),
+        rxPower: null,
+      });
+    }
+  }
+  return onus;
+}
+
+/** Parse output of `show gpon onu uncfg gpon-olt_x/y/z` */
+function parseUncfgOnuInfo(output: string, frame: number, slot: number, port: number): any[] {
+  const onus: any[] = [];
+  const lines = output.split('\n');
+  let onuIdCounter = 0;
+  for (const line of lines) {
+    // ZTE: "  SN: ZTEG12345678" or "  SN:ZTEG12345678"
+    const snMatch = line.match(/SN:\s*([0-9A-Za-z]{8,})/i);
+    if (snMatch) {
+      onuIdCounter++;
+      onus.push({
+        frame, slot, port,
+        onuId: 200 + onuIdCounter,  // virtual ID for unregistered (>128 to separate from registered)
+        serialNumber: snMatch[1].trim(),
+        macAddress: null,
+        status: 'unregistered',
+        rxPower: null,
+      });
+    }
+  }
+  return onus;
+}
+
+function parseOpticalInfo(output: string): any {
+  const info: any = {};
+  const rxMatch = output.match(/rx\s*power[^:]*:\s*([-\d.]+)/i);
+  if (rxMatch) info.rxPower = parseFloat(rxMatch[1]);
+  const rxTableMatch = output.match(/gpon-onu_\d+\/\d+\/\d+:\d+\s+([-\d.]+)\s*\(?dbm\)?/i);
+  if (!info.rxPower && rxTableMatch) info.rxPower = parseFloat(rxTableMatch[1]);
+  const txMatch = output.match(/tx\s*power[^:]*:\s*([-\d.]+)/i);
+  if (txMatch) info.txPower = parseFloat(txMatch[1]);
+  const distMatch = output.match(/distance[^:]*:\s*(\d+)/i);
+  if (distMatch) info.distance = parseInt(distMatch[1]);
+  const serial = parseSerialFromDetail(output);
+  if (serial) info.serialNumber = serial;
+  return info;
+}
+
+export async function discoverONUs(config: TelnetConfig): Promise<any[]> {
+  const onus: any[] = [];
+  // C320: 2 boards (GCOB cards), 8 GPON ports each
+  for (let slot = 1; slot <= 2; slot++) {
+    for (let port = 0; port <= 7; port++) {
+      const cliPon = port + 1;
+      // Registered ONUs
+      const r = await executeCommand(config, `show gpon onu state gpon-olt_1/${slot}/${cliPon}`);
+      if (r.success && r.output) {
+        onus.push(...parseOnuInfo(r.output, 1, slot, port));
+      }
+      // Unregistered ONUs
+      const u = await executeCommand(config, `show pon onu uncfg gpon-olt_1/${slot}/${cliPon}`);
+      if (u.success && u.output) {
+        onus.push(...parseUncfgOnuInfo(u.output, 1, slot, port));
+      }
+    }
+  }
+  return onus;
+}
+
+export async function discoverONUsSSH(config: SSHConfig): Promise<any[]> {
+  const onus: any[] = [];
+  for (let slot = 1; slot <= 2; slot++) {
+    for (let port = 0; port <= 7; port++) {
+      const cliPon = port + 1;
+      // Registered ONUs
+      const r = await sshExecute(config, `show gpon onu state gpon-olt_1/${slot}/${cliPon}`);
+      if (r.success && r.output) {
+        onus.push(...parseOnuInfo(r.output, 1, slot, port));
+      }
+      // Unregistered ONUs
+      const u = await sshExecute(config, `show pon onu uncfg gpon-olt_1/${slot}/${cliPon}`);
+      if (u.success && u.output) {
+        onus.push(...parseUncfgOnuInfo(u.output, 1, slot, port));
+      }
+    }
+  }
+  return onus;
+}
+
+export async function getOnuOpticalInfo(
+  config: TelnetConfig, frame: number, slot: number, port: number, onuId: number
+): Promise<any> {
+  const iface = `gpon-onu_${frame}/${slot}/${port + 1}:${onuId}`;
+  const [detail, power] = await Promise.all([
+    executeCommand(config, `show gpon onu detail-info ${iface}`),
+    executeCommand(config, `show pon power onu-rx ${iface}`),
+  ]);
+  const output = `${detail.output ?? ''}\n${power.output ?? ''}`;
+  return output.trim() ? parseOpticalInfo(output) : null;
+}
+
+export async function getOnuOpticalInfoSSH(
+  config: SSHConfig, frame: number, slot: number, port: number, onuId: number
+): Promise<any> {
+  const iface = `gpon-onu_${frame}/${slot}/${port + 1}:${onuId}`;
+  const result = await sshExecute(
+    config, `show gpon onu detail-info ${iface}`
+  );
+  if (result.success && result.output) return parseOpticalInfo(result.output);
+  return null;
+}
+
+export async function getTrafficStats(_config: SNMPConfig): Promise<{
+  rxBytes?: bigint; txBytes?: bigint;
+}> {
+  return {};
+}
+

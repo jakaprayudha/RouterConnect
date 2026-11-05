@@ -1,0 +1,232 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useTranslation } from '@/hooks/useTranslation';
+import { Ticket, MessageSquare, Plus, Filter } from 'lucide-react';
+import { CyberCard, CyberButton } from '@/components/cyberpunk';
+import { formatWIB } from '@/lib/timezone';
+import { apiCustomer } from '@/lib/api';
+
+type TicketStatus = 'OPEN' | 'IN_PROGRESS' | 'WAITING_CUSTOMER' | 'RESOLVED' | 'CLOSED';
+type TicketPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+
+interface TicketItem {
+  id: string;
+  ticketNumber: string;
+  subject: string;
+  status: TicketStatus;
+  priority: TicketPriority;
+  createdAt: string;
+  category?: {
+    name: string;
+    color: string;
+  };
+  _count: {
+    messages: number;
+  };
+}
+
+export default function CustomerTicketsPage() {
+  const { t } = useTranslation();
+  const router = useRouter();
+  const [tickets, setTickets] = useState<TicketItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [customerId, setCustomerId] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Check auth and get customer ID
+    const token = localStorage.getItem('customer_token');
+    const userData = localStorage.getItem('customer_user');
+    
+    if (!token || !userData) {
+      router.push('/customer/login');
+      return;
+    }
+    
+    try {
+      const user = JSON.parse(userData);
+      setCustomerId(user.id);
+    } catch (_error) {
+      router.push('/customer/login');
+    }
+  }, [router]);
+
+  useEffect(() => {
+    if (customerId) {
+      fetchTickets();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter, customerId]);
+
+  const fetchTickets = async () => {
+    if (!customerId) return;
+    
+    try {
+      setLoading(true);
+      const params = new URLSearchParams();
+      params.append('customerId', customerId);
+      if (statusFilter !== 'all') {
+        params.append('status', statusFilter);
+      }
+      
+      const data = await apiCustomer<TicketItem[]>(`/api/tickets?${params.toString()}`);
+      setTickets(data);
+    } catch (error) {
+      console.error('Failed to fetch tickets:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getStatusColor = (status: TicketStatus) => {
+    const colors = {
+      OPEN: 'bg-accent/20 text-accent border border-accent/40',
+      IN_PROGRESS: 'bg-primary/20 text-primary border border-primary/40',
+      WAITING_CUSTOMER: 'bg-warning/20 text-warning border border-warning/40',
+      RESOLVED: 'bg-success/20 text-success border border-success/40',
+      CLOSED: 'bg-muted text-muted-foreground border border-border',
+    };
+    return colors[status] || colors.OPEN;
+  };
+
+  const getPriorityColor = (priority: TicketPriority) => {
+    const colors = {
+      LOW: 'bg-muted text-muted-foreground border border-border',
+      MEDIUM: 'bg-primary/20 text-primary border border-primary/40',
+      HIGH: 'bg-warning/20 text-warning border border-warning/40',
+      URGENT: 'bg-destructive/20 text-destructive border border-destructive/40',
+    };
+    return colors[priority] || colors.MEDIUM;
+  };
+
+  // Admins pick this color freely, so pick readable text against it instead
+  // of assuming white — a pale admin-chosen color with white text was
+  // unreadable.
+  const getCategoryTextColor = (hex: string) => {
+    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    if (!m) return '#fff';
+    const [r, g, b] = [m[1], m[2], m[3]].map(h => parseInt(h, 16) / 255);
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return lum > 0.6 ? '#1a1a1a' : '#fff';
+  };
+
+  return (
+    <div className="p-3 lg:p-5 space-y-3 w-full">
+      {/* Header */}
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-xl font-bold text-primary uppercase tracking-wider drop-">
+            {t('ticket.myTickets')}
+          </h1>
+          <p className="text-sm text-accent/70 mt-0.5">
+            {t('ticket.manageYourTickets')}
+          </p>
+        </div>
+        <CyberButton
+          onClick={() => router.push('/customer/tickets/create')}
+          size="sm"
+          className="flex items-center gap-1.5"
+        >
+          <Plus size={18} />
+          <span className="hidden sm:inline">{t('common.create')}</span>
+        </CyberButton>
+      </div>
+
+      <div>
+        {/* Filters */}
+        <CyberCard className="p-4 mb-6 bg-card border-2 border-primary/30">
+          <div className="flex items-center gap-4">
+            <Filter size={20} className="text-accent drop-" />
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="[color-scheme:light] dark:[color-scheme:dark] border-2 border-primary/30 bg-input rounded-lg px-4 py-2 text-foreground focus:ring-2 focus:ring-primary focus:border-primary outline-none dark:[&>option]:bg-slate-900 dark:[&>option]:text-cyan-100"
+            >
+              <option value="all" className="dark:bg-slate-900 dark:text-cyan-100">{t('ticket.allStatus')}</option>
+              <option value="OPEN" className="dark:bg-slate-900 dark:text-cyan-100">{t('ticket.status_OPEN')}</option>
+              <option value="IN_PROGRESS" className="dark:bg-slate-900 dark:text-cyan-100">{t('ticket.status_IN_PROGRESS')}</option>
+              <option value="WAITING_CUSTOMER" className="dark:bg-slate-900 dark:text-cyan-100">{t('ticket.status_WAITING_CUSTOMER')}</option>
+              <option value="RESOLVED" className="dark:bg-slate-900 dark:text-cyan-100">{t('ticket.status_RESOLVED')}</option>
+              <option value="CLOSED" className="dark:bg-slate-900 dark:text-cyan-100">{t('ticket.status_CLOSED')}</option>
+            </select>
+          </div>
+        </CyberCard>
+
+        {/* Tickets List */}
+        {loading ? (
+          <div className="text-center py-12">
+            <div className="animate-spin rounded-full h-8 w-8 sm:h-12 sm:w-12 border-b-2 border-primary mx-auto "></div>
+            <p className="text-accent mt-4">{t('ticket.loading')}</p>
+          </div>
+        ) : tickets.length === 0 ? (
+          <CyberCard className="p-6 sm:p-12 text-center bg-card border-2 border-primary/30">
+            <Ticket size={48} className="text-primary mx-auto mb-4 drop-" />
+            <h3 className="text-lg font-bold text-primary mb-2 uppercase tracking-wider">
+              {t('ticket.noTickets')}
+            </h3>
+            <p className="text-muted-foreground mb-6">
+              {t('ticket.noTicketsDescription')}
+            </p>
+            <CyberButton
+              onClick={() => router.push('/customer/tickets/create')}
+              className="inline-flex items-center gap-2"
+            >
+              <Plus size={20} />
+              {t('ticket.createFirstTicket')}
+            </CyberButton>
+          </CyberCard>
+        ) : (
+          <div className="space-y-4">
+            {tickets.map((ticket) => (
+              <CyberCard
+                key={ticket.id}
+                onClick={() => router.push(`/customer/tickets/${ticket.id}`)}
+                className="p-6 cursor-pointer bg-card border-2 border-primary/30 hover:border-accent/50 transition-all"
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2 flex-wrap">
+                      <span className="text-sm font-mono text-accent font-bold">
+                        #{ticket.ticketNumber}
+                      </span>
+                      <span className={`px-3 py-1 rounded-lg text-xs font-bold ${getStatusColor(ticket.status)}`}>
+                        {t(`ticket.status_${ticket.status}`)}
+                      </span>
+                      <span className={`px-3 py-1 rounded-lg text-xs font-bold ${getPriorityColor(ticket.priority)}`}>
+                        {t(`ticket.priority_${ticket.priority}`)}
+                      </span>
+                      {ticket.category && (
+                        <span
+                          className="px-3 py-1 rounded-lg text-xs font-bold border"
+                          style={{ backgroundColor: ticket.category.color, borderColor: ticket.category.color, color: getCategoryTextColor(ticket.category.color) }}
+                        >
+                          {ticket.category.name}
+                        </span>
+                      )}
+                    </div>
+                    <h3 className="text-lg font-bold text-foreground mb-2">
+                      {ticket.subject}
+                    </h3>
+                    <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                      <div className="flex items-center gap-1">
+                        <MessageSquare size={16} className="text-accent" />
+                        <span>{ticket._count.messages} {t('ticket.messages')}</span>
+                      </div>
+                      <span>
+                        {t('ticket.created')}: {formatWIB(ticket.createdAt, 'd MMM yyyy HH:mm')}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </CyberCard>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+

@@ -1,0 +1,566 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import Image from 'next/image';
+import { useTranslation } from '@/hooks/useTranslation';
+import { Building2, Mail, Phone, MapPin, Globe, Save, Loader2, RotateCcw, Upload, ImageIcon, X as XIcon } from 'lucide-react';
+import { useToast } from '@/components/cyberpunk/CyberToast';
+import { useAppStore } from '@/lib/store';
+import { setCurrentTimezone } from '@/lib/timezone';
+import { apiAdmin } from '@/lib/api';
+import { useApiQuery, useQueryClient, buildQueryKey } from '@/lib/api/hooks';
+import { AdminBackgroundGlow } from '@/components/AdminBackgroundGlow';
+import type { Company } from '@/types/api';
+
+interface BankAccount {
+  bankName: string;
+  accountNumber: string;
+  accountName: string;
+}
+
+interface CompanySettings {
+  id?: string;
+  name: string;
+  email: string;
+  phone: string;
+  address: string;
+  baseUrl: string;
+  timezone: string;
+  bankAccounts: BankAccount[];
+  poweredBy: string;
+  customerIdPrefix: string;
+  footerAdmin: string;
+  footerCustomer: string;
+  footerTechnician: string;
+  footerAgent: string;
+  invoiceGenerateDays: number;
+  logo?: string;
+}
+
+type CompanySettingsResponse = Company & {
+  bankAccounts?: BankAccount[];
+  poweredBy?: string;
+  customerIdPrefix?: string;
+  footerAdmin?: string;
+  footerCustomer?: string;
+  footerTechnician?: string;
+  footerAgent?: string;
+  invoiceGenerateDays?: number;
+};
+
+interface LogoUploadResponse {
+  success: boolean;
+  url?: string;
+  error?: string;
+}
+
+interface RestartServicesResponse {
+  success: boolean;
+  autoRestarted?: boolean;
+  message?: string;
+  error?: string;
+}
+
+export default function CompanySettingsPage() {
+  const { t } = useTranslation();
+  const { setCompany } = useAppStore();
+  const { addToast } = useToast();
+  const queryClient = useQueryClient();
+  const { data: companyData, isLoading: loading } = useApiQuery<CompanySettingsResponse>('/api/company', { staleTime: 300000 });
+  const [settings, setSettings] = useState<CompanySettings>({
+    name: '',
+    email: '',
+    phone: '',
+    address: '',
+    baseUrl: '',
+    timezone: 'Asia/Jakarta',
+    bankAccounts: [],
+    poweredBy: 'SALFANET RADIUS',
+    customerIdPrefix: '',
+    footerAdmin: '',
+    footerCustomer: '',
+    footerTechnician: '',
+    footerAgent: '',
+    invoiceGenerateDays: 7,
+    logo: '',
+  });
+  const [initialTimezone, setInitialTimezone] = useState('Asia/Jakarta');
+  const [saving, setSaving] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+
+  useEffect(() => {
+    if (companyData) {
+      setSettings({
+        id: companyData.id || '',
+        name: companyData.name || '',
+        email: companyData.email || '',
+        phone: companyData.phone || '',
+        address: companyData.address || '',
+        baseUrl: companyData.baseUrl || '',
+        timezone: companyData.timezone || 'Asia/Jakarta',
+        bankAccounts: companyData.bankAccounts || [],
+        poweredBy: companyData.poweredBy || 'SALFANET RADIUS',
+        customerIdPrefix: companyData.customerIdPrefix || '',
+        footerAdmin: companyData.footerAdmin || '',
+        footerCustomer: companyData.footerCustomer || '',
+        footerTechnician: companyData.footerTechnician || '',
+        footerAgent: companyData.footerAgent || '',
+        invoiceGenerateDays: companyData.invoiceGenerateDays || 7,
+        logo: companyData.logo || '',
+      });
+      setInitialTimezone(companyData.timezone || 'Asia/Jakarta');
+    }
+  }, [companyData]);
+
+  const handleLogoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingLogo(true);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const data = await apiAdmin<LogoUploadResponse>('/api/upload/logo', { method: 'POST', body: form });
+      if (data.success) {
+        setSettings(prev => ({ ...prev, logo: data.url }));
+        setCompany({ logo: data.url });
+        addToast({ type: 'success', title: 'Logo uploaded', description: 'Logo akan tampil setelah simpan.', duration: 3000 });
+      } else {
+        addToast({ type: 'error', title: 'Upload gagal', description: data.error || 'Gagal upload logo.', duration: 4000 });
+      }
+    } catch (error: unknown) {
+      addToast({ type: 'error', title: 'Upload gagal', description: error instanceof Error ? error.message : 'Terjadi kesalahan saat upload.', duration: 4000 });
+    } finally {
+      setUploadingLogo(false);
+      e.target.value = '';
+    }
+  };
+
+  // Check if timezone has changed
+  const timezoneChanged = settings.timezone !== initialTimezone;
+
+  // Handle restart services
+  const handleRestartServices = async () => {
+    setRestarting(true);
+    try {
+      const restartResult = await apiAdmin<RestartServicesResponse>('/api/settings/restart-services', {
+        method: 'POST',
+        body: JSON.stringify({ services: 'all', delay: 2000 })
+      });
+
+      if (restartResult.success) {
+        if (restartResult.autoRestarted) {
+          addToast({ type: 'success', title: t('settings.servicesRestarting') || 'Services Restarting', description: t('settings.pageWillReload') || 'Page will reload in 5 seconds...', duration: 5000 });
+          setTimeout(() => { window.location.reload(); }, 5000);
+        } else {
+          addToast({ type: 'success', title: 'Timezone Updated! ', description: t('settings.timezoneApplied') || 'Timezone applied. Page will reload.', duration: 4000 });
+          setTimeout(() => { window.location.reload(); }, 4000);
+        }
+      } else {
+        addToast({
+          type: 'warning',
+          title: 'Auto Restart Not Available',
+          description: `${restartResult.message || ''} ${t('settings.restartManually') || 'Please restart manually: pm2 restart all'}`,
+          duration: 8000
+        });
+      }
+    } catch (error: unknown) {
+      console.error('Restart error:', error);
+      addToast({
+        type: 'error',
+        title: 'Restart Failed',
+        description: t('settings.autoRestartFailed') || 'Auto restart failed. Please restart manually.',
+        duration: 8000
+      });
+    } finally {
+      setRestarting(false);
+    }
+  };
+
+  // Handle save and restart
+  const handleSaveAndRestart = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+
+    try {
+      await apiAdmin('/api/company', {
+        method: 'POST',
+        body: JSON.stringify(settings)
+      });
+
+      setCompany({
+        name: settings.name,
+        email: settings.email,
+        phone: settings.phone,
+        address: settings.address,
+        baseUrl: settings.baseUrl,
+        timezone: settings.timezone,
+        poweredBy: settings.poweredBy,
+        logo: settings.logo,
+      });
+      setCurrentTimezone(settings.timezone);
+      setInitialTimezone(settings.timezone);
+
+      setSaving(false);
+      queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/company') });
+      await handleRestartServices();
+    } catch (error: unknown) {
+      setSaving(false);
+      addToast({ type: 'error', title: t('common.error'), description: error instanceof Error ? error.message : t('settings.saveSettingsFailed') });
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+
+    try {
+      await apiAdmin('/api/company', {
+        method: 'POST',
+        body: JSON.stringify(settings)
+      });
+
+      // Update global store with new settings (including timezone)
+      setCompany({
+        name: settings.name,
+        email: settings.email,
+        phone: settings.phone,
+        address: settings.address,
+        baseUrl: settings.baseUrl,
+        timezone: settings.timezone,
+        poweredBy: settings.poweredBy,
+        logo: settings.logo,
+      });
+
+      // Update timezone library
+      setCurrentTimezone(settings.timezone);
+      setInitialTimezone(settings.timezone);
+
+      queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/company') });
+      addToast({ type: 'success', title: t('common.success'), description: t('settings.companySaved'), duration: 2000 });
+    } catch (error: unknown) {
+      addToast({ type: 'error', title: t('common.error'), description: error instanceof Error ? error.message : t('settings.saveSettingsFailed') });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+          <div className="absolute top-1/4 left-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-primary/10 rounded-full blur-3xl animate-pulse"></div>
+          <div className="absolute bottom-1/4 right-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-brand-500/20 rounded-full blur-3xl animate-pulse delay-1000"></div>
+        </div>
+        <Loader2 className="w-12 h-12 animate-spin text-brand-500 dark:text-brand-500 relative z-10" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-background relative">
+      <AdminBackgroundGlow />
+      <div className="relative z-10 space-y-6">
+        <div className="space-y-3">
+          {/* Header */}
+          <div>
+            <h1 className="text-xl sm:text-2xl font-bold text-foreground dark:text-transparent dark:bg-clip-text dark:bg-gradient-to-r dark:from-brand-500 dark:via-white dark:to-pink-500 dark:drop- flex items-center gap-2">
+              <Building2 className="w-6 h-6 text-brand-500" />
+              <span>{t('settings.companySettings')}</span>
+            </h1>
+            <p className="text-xs sm:text-sm text-muted-foreground mt-1">{t('settings.manageCompanyInfo')}</p>
+          </div>
+
+          {/* Form */}
+          <form onSubmit={handleSubmit} className="bg-card rounded-lg border border-border p-3">
+            <div className="space-y-3">
+              {/* Logo Perusahaan */}
+              <div>
+                <label className="flex items-center gap-1.5 text-[11px] font-medium text-foreground mb-1">
+                  <ImageIcon className="w-3 h-3" />
+                  Logo Perusahaan
+                </label>
+                <div className="flex items-center gap-3">
+                  {settings.logo ? (
+                    <div className="relative group">
+                      <Image unoptimized
+                        src={settings.logo}
+                        alt="Logo"
+                        width={220}
+                        height={120}
+                        className="w-20 h-20 object-contain rounded-lg border border-border bg-card p-1"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => { setSettings(prev => ({ ...prev, logo: '' })); setCompany({ logo: '' }); }}
+                        className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 hover:bg-red-600 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                      >
+                        <XIcon className="w-3 h-3 text-white" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="w-20 h-20 rounded-lg border-2 border-dashed border-border bg-card flex items-center justify-center text-muted-foreground">
+                      <ImageIcon className="w-5 h-5" />
+                    </div>
+                  )}
+                  <div className="flex-1">
+                    <label className="cursor-pointer">
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/jpg,image/svg+xml,image/webp,image/avif,image/gif"
+                        className="hidden"
+                        onChange={handleLogoUpload}
+                        disabled={uploadingLogo}
+                      />
+                      <div className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-border rounded-lg bg-card hover:bg-accent transition-colors cursor-pointer">
+                        {uploadingLogo ? (
+                          <><Loader2 className="w-3 h-3 animate-spin" /> Uploading...</>
+                        ) : (
+                          <><Upload className="w-3 h-3" /> Upload Logo</>
+                        )}
+                      </div>
+                    </label>
+                    <p className="text-[10px] text-muted-foreground mt-1">PNG, JPG, SVG, WebP, AVIF, GIF · Maks 2MB</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Nama Perusahaan */}
+              <div>
+                <label className="flex items-center gap-1.5 text-[11px] font-medium text-foreground mb-1">
+                  <Building2 className="w-3 h-3" />
+                  {t('settings.companyName')}
+                </label>
+                <input
+                  type="text"
+                  value={settings.name}
+                  onChange={(e) => setSettings({ ...settings, name: e.target.value })}
+                  className="w-full px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring focus:border-primary"
+                  placeholder="Nama perusahaan Anda"
+                  required
+                />
+              </div>
+
+              {/* Email & Phone - 2 columns on desktop */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="flex items-center gap-1.5 text-[11px] font-medium text-foreground mb-1">
+                    <Mail className="w-3 h-3" />
+                    Email
+                  </label>
+                  <input
+                    type="email"
+                    value={settings.email}
+                    onChange={(e) => setSettings({ ...settings, email: e.target.value })}
+                    className="w-full px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring focus:border-primary"
+                    placeholder="email@perusahaan.com"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="flex items-center gap-1.5 text-[11px] font-medium text-foreground mb-1">
+                    <Phone className="w-3 h-3" />
+                    {t('settings.phone')}
+                  </label>
+                  <input
+                    type="tel"
+                    value={settings.phone}
+                    onChange={(e) => setSettings({ ...settings, phone: e.target.value })}
+                    className="w-full px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring focus:border-primary"
+                    placeholder="08xxxxxxxxxx"
+                    required
+                  />
+                </div>
+              </div>
+
+              {/* Alamat */}
+              <div>
+                <label className="flex items-center gap-1.5 text-[11px] font-medium text-foreground mb-1">
+                  <MapPin className="w-3 h-3" />
+                  {t('settings.address')}
+                </label>
+                <textarea
+                  value={settings.address}
+                  onChange={(e) => setSettings({ ...settings, address: e.target.value })}
+                  className="w-full px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring focus:border-primary"
+                  rows={2}
+                  placeholder="Alamat lengkap perusahaan"
+                  required
+                />
+              </div>
+
+              {/* Base URL */}
+              <div>
+                <label className="flex items-center gap-1.5 text-[11px] font-medium text-foreground mb-1">
+                  <Globe className="w-3 h-3" />
+                  Base URL
+                </label>
+                <input
+                  type="url"
+                  value={settings.baseUrl}
+                  onChange={(e) => setSettings({ ...settings, baseUrl: e.target.value })}
+                  className="w-full px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring focus:border-primary"
+                  placeholder="https://billing.domain.com"
+                  required
+                />
+                <p className="mt-1 text-[10px] text-muted-foreground">{t('settings.baseUrlHelp')}</p>
+              </div>
+
+              {/* Invoice Generate Days */}
+              <div>
+                <label className="flex items-center gap-1.5 text-[11px] font-medium text-foreground mb-1">
+                  {t('settings.invoiceGenerateDays')}
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="30"
+                  value={settings.invoiceGenerateDays}
+                  onChange={(e) => setSettings({ ...settings, invoiceGenerateDays: parseInt(e.target.value) || 7 })}
+                  className="w-full px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring focus:border-primary"
+                  placeholder="7"
+                  required
+                />
+                <p className="mt-1 text-[10px] text-muted-foreground">{t('settings.invoiceGenerateDaysHelp')}</p>
+              </div>
+
+              {/* Prefix ID Pelanggan */}
+              <div>
+                <label className="flex items-center gap-1.5 text-[11px] font-medium text-foreground mb-1">
+                  Prefix ID Pelanggan
+                </label>
+                <input
+                  type="text"
+                  value={settings.customerIdPrefix}
+                  onChange={(e) => setSettings({ ...settings, customerIdPrefix: e.target.value.toUpperCase().replace(/[^A-Z0-9\-]/g, '').slice(0, 8) })}
+                  className="w-full px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring focus:border-primary"
+                  placeholder="Contoh: SF- atau ISP"
+                  maxLength={8}
+                />
+                <p className="mt-1 text-[10px] text-muted-foreground">Awalan yang ditambahkan di depan ID pelanggan baru. Kosongkan untuk tanpa prefix. Contoh prefix "SF-" → ID menjadi SF-12345678</p>
+              </div>
+
+              {/* Powered By / Support by Invoice */}
+              <div>
+                <label className="flex items-center gap-1.5 text-[11px] font-medium text-foreground mb-1">
+                  Powered By (Footer Invoice)
+                </label>
+                <input
+                  type="text"
+                  value={settings.poweredBy}
+                  onChange={(e) => setSettings({ ...settings, poweredBy: e.target.value })}
+                  className="w-full px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring focus:border-primary"
+                  placeholder="Contoh: Salfa Net atau nama vendor"
+                  maxLength={100}
+                />
+                <p className="mt-1 text-[10px] text-muted-foreground">Teks ini akan ditampilkan di footer invoice sebagai "Support by ..." . Kosongkan jika tidak ingin ditampilkan.</p>
+              </div>
+
+              {/* Timezone */}
+              <div>
+                <label className="flex items-center gap-1.5 text-[11px] font-medium text-foreground mb-1">
+                  🌍 Timezone
+                </label>
+                <select
+                  value={settings.timezone}
+                  onChange={(e) => setSettings({ ...settings, timezone: e.target.value })}
+                  className="w-full px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring focus:border-primary"
+                  required
+                >
+                  <optgroup label="Indonesia">
+                    <option value="Asia/Jakarta">WIB - Jakarta, Sumatera, Jawa, Kalimantan Barat/Tengah (UTC+7)</option>
+                    <option value="Asia/Makassar">WITA - Bali, NTB, NTT, Sulawesi, Kalimantan Selatan/Timur (UTC+8)</option>
+                    <option value="Asia/Jayapura">WIT - Maluku, Papua (UTC+9)</option>
+                  </optgroup>
+                  <optgroup label="Asia Tenggara">
+                    <option value="Asia/Singapore">Singapore (SGT - UTC+8)</option>
+                    <option value="Asia/Kuala_Lumpur">Malaysia (MYT - UTC+8)</option>
+                    <option value="Asia/Bangkok">Thailand (ICT - UTC+7)</option>
+                    <option value="Asia/Manila">Philippines (PHT - UTC+8)</option>
+                    <option value="Asia/Ho_Chi_Minh">Vietnam (ICT - UTC+7)</option>
+                  </optgroup>
+                  <optgroup label="Asia Lainnya">
+                    <option value="Asia/Dubai">UAE (GST - UTC+4)</option>
+                    <option value="Asia/Riyadh">Saudi Arabia (AST - UTC+3)</option>
+                    <option value="Asia/Tokyo">Japan (JST - UTC+9)</option>
+                    <option value="Asia/Seoul">South Korea (KST - UTC+9)</option>
+                    <option value="Asia/Hong_Kong">Hong Kong (HKT - UTC+8)</option>
+                  </optgroup>
+                  <optgroup label="Australia & Pacific">
+                    <option value="Australia/Sydney">Australia Sydney (AEDT - UTC+11)</option>
+                    <option value="Australia/Melbourne">Australia Melbourne (AEDT - UTC+11)</option>
+                    <option value="Pacific/Auckland">New Zealand (NZDT - UTC+13)</option>
+                  </optgroup>
+                </select>
+                <div className="mt-1.5 p-2 bg-warning/10 border border-warning/30 rounded-lg">
+                  <p className="text-[10px] text-warning">
+                    <strong>{t('settings.timezoneWarningTitle')}</strong> {t('settings.timezoneWarning1')}
+                  </p>
+                  <ul className="mt-1 ml-4 text-[10px] text-warning/80 list-disc space-y-0.5">
+                    <li>{t('settings.timezoneWarning1')}</li>
+                    <li>{t('settings.timezoneWarning2')}</li>
+                    <li>{t('settings.timezoneWarning3')}</li>
+                    <li>{t('settings.timezoneWarning4')}</li>
+                    <li>{t('settings.timezoneWarning5')}</li>
+                  </ul>
+                </div>
+              </div>
+
+              {/* Submit Buttons */}
+              <div className="pt-2 flex flex-col sm:flex-row gap-2">
+                <button
+                  type="submit"
+                  disabled={saving || restarting}
+                  className="flex items-center justify-center gap-1.5 px-4 py-1.5 bg-primary hover:bg-primary/90 text-primary-foreground text-white text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
+                >
+                  {saving ? (
+                    <>
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      {t('settings.saving')}
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-3 h-3" />
+                      {t('settings.saveSettings')}
+                    </>
+                  )}
+                </button>
+
+                {/* Save & Restart Button - only show when timezone changed */}
+                {timezoneChanged && (
+                  <button
+                    type="button"
+                    onClick={handleSaveAndRestart}
+                    disabled={saving || restarting}
+                    className="flex items-center justify-center gap-1.5 px-4 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {restarting ? (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        {t('settings.restarting')}
+                      </>
+                    ) : (
+                      <>
+                        <RotateCcw className="w-3 h-3" />
+                        {t('settings.saveAndRestart')}
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+
+              {/* Timezone change indicator */}
+              {timezoneChanged && (
+                <div className="mt-2 p-2 bg-warning/10 border border-warning/30 rounded-lg">
+                  <p className="text-[10px] text-warning">
+                    {t('settings.timezoneChangedNote')}
+                  </p>
+                </div>
+              )}
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,309 @@
+﻿import { NextRequest, NextResponse } from 'next/server';
+import { requirePermission } from '@/server/middleware/api-auth';
+import { prisma } from '@/server/db/client';
+import * as os from 'os';
+
+// Check if a string is a valid IP address (IPv4)
+function _isValidIp(host: string): boolean {
+  const ipv4 = /^(\d{1,3}\.){3}\d{1,3}$/;
+  if (ipv4.test(host)) {
+    return host.split('.').every(octet => parseInt(octet) >= 0 && parseInt(octet) <= 255);
+  }
+  return false;
+}
+
+// Auto-detect server IP from network interfaces
+// Priority: private/local IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x) over public IPs
+// because MikroTik typically reaches the VPS via local network/VPN, not public IP.
+// Public IPs often point to Cloudflare proxy or NAT gateway which don't work for RADIUS UDP.
+function isPrivateIp(ip: string): boolean {
+  if (ip.startsWith('10.')) return true;
+  if (ip.startsWith('192.168.')) return true;
+  if (ip.startsWith('172.')) {
+    const second = parseInt(ip.split('.')[1], 10);
+    return second >= 16 && second <= 31;
+  }
+  return false;
+}
+
+function getServerIp(): string {
+  const interfaces = os.networkInterfaces();
+  const allIps: { ip: string; private: boolean; internal: boolean }[] = [];
+  for (const name of Object.keys(interfaces)) {
+    // Skip docker/bridge/veth interfaces — they're not reachable from MikroTik
+    if (/^(docker|br-|veth|virbr)/.test(name)) continue;
+    for (const iface of interfaces[name] || []) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        allIps.push({ ip: iface.address, private: isPrivateIp(iface.address), internal: iface.internal });
+      }
+    }
+  }
+  // Prefer private IPs (MikroTik reaches VPS via local network)
+  const privateIp = allIps.find(i => i.private);
+  if (privateIp) return privateIp.ip;
+  // Fallback to first non-internal IP
+  const firstIp = allIps[0];
+  if (firstIp) return firstIp.ip;
+  return '127.0.0.1';
+}
+
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const authCheck = await requirePermission('routers.manage');
+  if (!authCheck.authorized) return authCheck.response;
+  try {
+    const { id: routerId } = await params;
+
+    // Get router details from router table
+    const router = await prisma.router.findUnique({
+      where: { id: routerId },
+      include: {
+        vpnClient: {
+          include: {
+            vpnServer: true,
+          },
+        },
+      },
+    });
+
+    if (!router) {
+      return NextResponse.json({ error: 'Router not found' }, { status: 404 });
+    }
+
+    // Determine RADIUS server IP based on connection type
+    // Priority: auto-detect private IP from network interfaces → RADIUS_SERVER_IP env → VPS_IP env
+    // IMPORTANT: Jangan pakai domain (NEXTAUTH_URL hostname) karena:
+    // 1. Domain bisa resolve ke Cloudflare proxy IP (104.x.x.x) yang tidak support RADIUS UDP
+    // 2. MikroTik /radius add butuh IP asli yang reachable via local network/VPN
+    // 3. Cloudflare proxy hanya untuk HTTP/HTTPS, bukan UDP 1812/1813/3799
+    //
+    // LOGIC: Auto-detect private IP (192.168.x.x, 10.x.x.x) lebih diprioritaskan
+    // dari env RADIUS_SERVER_IP karena MikroTik biasanya di jaringan lokal yang sama
+    // dengan VPS. Env RADIUS_SERVER_IP sering diset ke IP publik (untuk Cloudflare/NAT)
+    // yang TIDAK bisa dipakai untuk RADIUS UDP traffic.
+    const detectedIp = getServerIp();
+    const envRadiusIp = process.env.RADIUS_SERVER_IP || process.env.VPS_IP;
+    // Use detected private IP if available, otherwise fall back to env
+    let radiusServerIp = isPrivateIp(detectedIp) ? detectedIp : (envRadiusIp || detectedIp);
+    let nasSrcAddress = ''; // VPN IP of the router (NAS), used as src-address in /radius add
+
+    // LOGIC:
+    // - Jika router MENGGUNAKAN VPN Client → pakai VPN IP dari isRadiusServer
+    // - Jika router TIDAK menggunakan VPN Client (IP Publik) → pakai IP VPS publik
+    
+    if (router.vpnClientId && router.vpnClient) {
+      // Router terhubung via VPN Client
+      const vpnType = (router.vpnClient.vpnType || '').toUpperCase()
+
+      if (vpnType === 'WIREGUARD') {
+        // WireGuard VPS mode: RADIUS server = VPS gateway IP (x.x.x.1)
+        // Derived from the VPN server's subnet (e.g. 10.200.0.0/24 → 10.200.0.1)
+        const subnet = (router.vpnClient as any).vpnServer?.subnet || '10.200.0.0/24'
+        radiusServerIp = subnet.replace(/\.\d+\/\d+$/, '.1')
+      } else {
+        // PPP VPN: RADIUS server = VPN IP of the client marked as isRadiusServer
+        const radiusServerVpn = await prisma.vpnClient.findFirst({
+          where: { isRadiusServer: true },
+        })
+        if (radiusServerVpn) {
+          radiusServerIp = radiusServerVpn.vpnIp
+        }
+      }
+
+      // src-address = VPN IP of this NAS router so FreeRADIUS can match nasname
+      nasSrcAddress = router.vpnClient.vpnIp || '';
+    } else {
+      // Non-VPN (direct/public IP): src-address = nasname (IP registered in FreeRADIUS)
+      // PENTING: Tanpa src-address, MikroTik memilih source IP otomatis dari routing table
+      // yang mungkin berbeda dari nasname → FreeRADIUS menolak ("unknown client")
+      nasSrcAddress = router.nasname;
+    }
+
+    // Get RADIUS config from router record
+    const radiusSecret = router.secret || 'secret123';
+    const radiusAuthPort = router.ports ? parseInt(router.ports.toString()) : 1812;
+    const radiusAcctPort = 1813;
+    const radiusCOAPort = 3799;
+
+    const comment = 'SALFANET RADIUS - Auto Setup';
+
+    // src-address selalu di-set (VPN maupun non-VPN) agar FreeRADIUS bisa match nasname
+    const srcAddressParam = nasSrcAddress ? ` src-address=${nasSrcAddress}` : '';
+    const srcAddressNote = router.vpnClientId
+      ? `# NOTE: src-address=${nasSrcAddress} (VPN IP) wajib diisi agar FreeRADIUS mengenali NAS ini`
+      : `# NOTE: src-address=${nasSrcAddress} wajib diisi agar RADIUS request dikirim dari IP yang terdaftar di FreeRADIUS`;
+
+    // Derive VPN gateway IP from RADIUS server IP (e.g. 10.20.30.10 → 10.20.30.1)
+    // Needed because CoA packets from VPS may be masqueraded through VPN gateway
+    const gatewayIp = radiusServerIp.replace(/\.\d+$/, '.1');
+    const isVpnSetup = !!router.vpnClientId;
+    // Only add gateway entry when using VPN tunnel (gateway masquerade scenario)
+    // ROS 6: no require-message-auth param | ROS 7: require-message-auth=no
+    const gatewayRadiusEntryRos6 = isVpnSetup ? `
+# 2b. Tambah entry untuk VPN Gateway (CoA masquerade)
+# PENTING: Saat VPS mengirim CoA Disconnect, paket di-masquerade melalui gateway VPN
+# MikroTik melihat src-address=${gatewayIp} (gateway) bukan ${radiusServerIp} (VPS)
+/radius add address=${gatewayIp} secret=${radiusSecret} service=ppp,hotspot,login,wireless src-address=${nasSrcAddress} timeout=1100ms comment="CoA from VPS via gateway masquerade"
+` : '';
+    const gatewayRadiusEntryRos7 = isVpnSetup ? `
+# 2b. Tambah entry untuk VPN Gateway (CoA masquerade)
+# PENTING: Saat VPS mengirim CoA Disconnect, paket di-masquerade melalui gateway VPN
+# MikroTik melihat src-address=${gatewayIp} (gateway) bukan ${radiusServerIp} (VPS)
+/radius add address=${gatewayIp} secret=${radiusSecret} service=ppp,hotspot,login,wireless src-address=${nasSrcAddress} timeout=1100ms require-message-auth=no comment="CoA from VPS via gateway masquerade"
+` : '';
+
+    const gatewayFirewallRule = isVpnSetup ? `
+# Allow CoA dari gateway (VPN masquerade) — sumber alternatif CoA disconnect
+/ip firewall filter add chain=input protocol=udp src-address=${gatewayIp} dst-port=${radiusCOAPort} action=accept comment="SALFANET-RADIUS CoA via gateway ${gatewayIp}"
+` : '';
+
+    // Generate MikroTik script — two versions: ROS 6 (no require-message-auth) and ROS 7
+    const buildScript = (rosVersion: 6 | 7) => {
+      const mainRadiusLine = rosVersion === 7
+        ? `/radius add address=${radiusServerIp} secret=${radiusSecret}${srcAddressParam} service=ppp,hotspot,login,wireless authentication-port=${radiusAuthPort} accounting-port=${radiusAcctPort} timeout=3s require-message-auth=no comment="${comment}"`
+        : `/radius add address=${radiusServerIp} secret=${radiusSecret}${srcAddressParam} service=ppp,hotspot,login,wireless authentication-port=${radiusAuthPort} accounting-port=${radiusAcctPort} timeout=3s comment="${comment}"`;
+      const gatewayRadiusEntry = rosVersion === 7 ? gatewayRadiusEntryRos7 : gatewayRadiusEntryRos6;
+
+      // Auth mode configuration
+      const authMode = router.authMode || 'radius';
+      const _authModeComment = `# Authentication Mode: ${authMode.toUpperCase()}`;
+      const authModeConfig = authMode === 'local'
+        ? `# LOCAL ONLY — tidak menggunakan RADIUS untuk autentikasi
+/ppp aaa set use-radius=no accounting=yes interim-update=5m`
+        : `# RADIUS ONLY — semua autentikasi via FreeRADIUS
+/ppp aaa set use-radius=yes accounting=yes interim-update=5m`;
+
+      return `
+# ============================================
+# SALFANET RADIUS Setup Script (RouterOS ${rosVersion}.x)
+# Router: ${router.name}
+# Router NAS IP: ${nasSrcAddress || router.nasname}
+# RADIUS Server: ${radiusServerIp}
+# VPN Gateway: ${isVpnSetup ? gatewayIp : 'N/A (Public IP mode)'}
+# Connection: ${router.vpnClientId ? 'VPN Tunnel' : 'Public IP'}
+# Auth Mode: ${authMode.toUpperCase()}
+# Generated: ${new Date().toISOString()}
+# ============================================
+
+# 1. Hapus RADIUS lama (jika ada)
+/radius remove [find where comment~"SALFANET" || comment~"Auto Setup" || comment~"gateway masquerade"]
+
+${authMode === 'local' ? `# LOCAL MODE — RADIUS tidak digunakan, skip RADIUS server setup
+${authModeConfig}` : `# 2. Tambah RADIUS Server (utama — auth/acct + CoA)
+${srcAddressNote}
+${mainRadiusLine}
+${gatewayRadiusEntry}
+# 3. Enable RADIUS untuk PPP + Interim-Update setiap 5 menit
+${authModeConfig}`}
+
+${authMode !== 'local' ? `
+# 4. Enable RADIUS Incoming (CoA/Disconnect)
+/radius incoming set accept=yes port=${radiusCOAPort}` : ''}
+
+# 5. Buat IP Pool untuk PPP (jika belum ada)
+:if ([:len [/ip pool find name="pool-radius-default"]] = 0) do={
+    /ip pool add name=pool-radius-default ranges=10.10.10.2-10.10.10.254 comment="SALFANET RADIUS"
+}
+
+# 6. Buat PPP Profile salfanetradius (jika belum ada)
+:if ([:len [/ppp profile find name="salfanetradius"]] = 0) do={
+    /ppp profile add name=salfanetradius local-address=10.10.10.1 remote-address=pool-radius-default use-compression=no use-encryption=no comment="SALFANET RADIUS Profile"
+}
+
+# 7. Enable RADIUS untuk semua Hotspot Server Profile
+${authMode !== 'local' ? '/ip hotspot profile set [find] use-radius=yes' : '# Skipped — local auth mode'}
+
+${authMode !== 'local' ? `
+# ============================================
+# FIREWALL RULES — RADIUS & CoA
+# ============================================
+# Hapus rules lama
+/ip firewall filter remove [find where comment~"SALFANET-RADIUS"]
+
+# Allow RADIUS CoA/Disconnect dari server (UDP 3799)
+/ip firewall filter add chain=input protocol=udp src-address=${radiusServerIp} dst-port=${radiusCOAPort} action=accept comment="SALFANET-RADIUS CoA from ${radiusServerIp}"
+${gatewayFirewallRule}
+# Allow RADIUS auth/acct response dari server (UDP 1812-1813)
+/ip firewall filter add chain=input protocol=udp src-address=${radiusServerIp} dst-port=${radiusAuthPort},${radiusAcctPort} action=accept comment="SALFANET-RADIUS Auth/Acct from ${radiusServerIp}"
+
+# ============================================
+# KEEPALIVE & NETWATCH — Deteksi putus lebih cepat
+# ============================================
+/tool netwatch remove [find where comment~"SALFANET"]
+/tool netwatch add host=${radiusServerIp} interval=30s timeout=5s \\
+    down-script="/log warning message=\\"SALFANET: RADIUS server ${radiusServerIp} tidak reachable\\"" \\
+    up-script="/log info message=\\"SALFANET: RADIUS server ${radiusServerIp} kembali online\\"" \\
+    comment="SALFANET RADIUS Monitor"` : ''}
+
+# ============================================
+# SELESAI! Verifikasi dengan:
+# /radius print
+# /ppp aaa print
+# /radius incoming print
+# /ppp profile print where name="salfanetradius"
+${authMode !== 'local' ? '# /ip firewall filter print where comment~"SALFANET-RADIUS"\n# /tool netwatch print' : ''}
+# ============================================
+# LANGKAH SELANJUTNYA: Setup Isolir
+# Klik tombol "Setup Isolir" pada router ini untuk mendapatkan
+# script firewall isolasi pelanggan.
+# ============================================
+`.trim();
+    };
+
+    const scriptRos6 = buildScript(6);
+    const scriptRos7 = buildScript(7);
+    // Keep backward-compat: default script = ROS 7
+    const script = scriptRos7;
+
+    // Sync radius-default group to RADIUS database
+    try {
+      const existingRadiusGroup = await prisma.radgroupreply.findFirst({
+        where: {
+          groupname: 'radius-default',
+          attribute: 'Mikrotik-Group',
+        },
+      });
+      
+      if (!existingRadiusGroup) {
+        await prisma.radgroupreply.create({
+          data: {
+            groupname: 'radius-default',
+            attribute: 'Mikrotik-Group',
+            op: ':=',
+            value: 'radius-default',
+          },
+        });
+      }
+    } catch (_dbError) {
+      console.log('RADIUS DB sync skipped');
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: 'Script RADIUS berhasil di-generate. Copy dan paste ke MikroTik Terminal.',
+      script,
+      scriptRos6,
+      scriptRos7,
+      config: {
+        radiusServer: radiusServerIp,
+        nasSrcAddress: nasSrcAddress || null,
+        authPort: radiusAuthPort.toString(),
+        acctPort: radiusAcctPort.toString(),
+        coaPort: radiusCOAPort.toString(),
+        radiusSecret: radiusSecret,
+        connectionType: router.vpnClientId ? 'VPN' : 'Public IP',
+      },
+    });
+  } catch (error: any) {
+    console.error('Generate RADIUS script error:', error);
+    return NextResponse.json(
+      {
+        error: 'Failed to generate RADIUS script',
+        details: error.message || 'Unknown error',
+      },
+      { status: 500 }
+    );
+  }
+}

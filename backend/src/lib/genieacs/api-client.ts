@@ -1,0 +1,536 @@
+/**
+ * Server-side GenieACS NBI client.
+ *
+ * Resolves credentials in this order:
+ *   1. `genieacsSettings` row from the application DB (preferred — set
+ *      via the existing /admin/settings/genieacs UI).
+ *   2. Environment variables `GENIEACS_NBI_INTERNAL_URL` /
+ *      `GENIEACS_NBI_URL`, `GENIEACS_NBI_USERNAME`,
+ *      `GENIEACS_NBI_PASSWORD` as a fallback for headless setups.
+ *
+ * All functions are async and intentionally throw on transport
+ * errors so route handlers can wrap them with `fail()` from
+ * `helpers.ts` for a consistent envelope.
+ */
+
+import 'server-only';
+import crypto from 'crypto';
+import { getGenieACSCredentials } from '@/app/api/settings/genieacs/route';
+import { basicAuthHeader } from './helpers';
+import type {
+  GenieDevice,
+  GeniePreset,
+  GenieProvision,
+  GenieVirtualParameter,
+  GenieConfig,
+  GenieTask,
+  GenieFault,
+  ParamUpdate,
+} from './types';
+
+interface NbiAuth {
+  baseUrl: string;
+  username?: string;
+  password?: string;
+}
+
+async function resolveAuth(): Promise<NbiAuth> {
+  const creds = await getGenieACSCredentials();
+  if (creds && creds.host) {
+    return {
+      baseUrl: creds.host.replace(/\/+$/, ''),
+      username: creds.username,
+      password: creds.password,
+    };
+  }
+  const envUrl =
+    process.env.GENIEACS_NBI_INTERNAL_URL ||
+    process.env.GENIEACS_NBI_URL ||
+    process.env.NEXT_PUBLIC_GENIEACS_NBI_URL;
+  if (!envUrl) {
+    throw new Error('GenieACS NBI is not configured');
+  }
+  return {
+    baseUrl: envUrl.replace(/\/+$/, ''),
+    username: process.env.GENIEACS_NBI_USERNAME,
+    password: process.env.GENIEACS_NBI_PASSWORD,
+  };
+}
+
+interface NbiOptions {
+  method?: string;
+  query?: Record<string, string | number | undefined>;
+  body?: unknown;
+  headers?: Record<string, string>;
+  /** Return raw Response (for binary/text routes). */
+  raw?: boolean;
+  /** Override default timeout (ms). */
+  timeoutMs?: number;
+}
+
+// ─── Retry / timeout configuration ──────────────────────────────────────────
+const DEFAULT_TIMEOUT_MS = 30_000; // 30 seconds
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 1_000; // 1s initial, exponential backoff
+
+/**
+ * Low-level wrapper around `fetch` against the configured NBI base URL.
+ * Resolves to parsed JSON unless `raw` is true.
+ * Includes timeout (30s default) and retry (max 2 attempts) for transient failures.
+ */
+export async function nbiRequest<T = unknown>(path: string, opts: NbiOptions = {}): Promise<T> {
+  const auth = await resolveAuth();
+  const qs = opts.query
+    ? '?' +
+      Object.entries(opts.query)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
+        .join('&')
+    : '';
+  const url = `${auth.baseUrl}${path}${qs}`;
+  const baseHeaders: Record<string, string> = {
+    Accept: 'application/json',
+    ...basicAuthHeader(auth.username, auth.password),
+    ...(opts.headers ?? {}),
+  };
+  let body: BodyInit | undefined;
+  if (opts.body !== undefined) {
+    if (typeof opts.body === 'string' || opts.body instanceof Uint8Array) {
+      body = opts.body as BodyInit;
+    } else {
+      body = JSON.stringify(opts.body);
+      baseHeaders['Content-Type'] = baseHeaders['Content-Type'] || 'application/json';
+    }
+  }
+
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    // AbortController for per-attempt timeout
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(url, {
+        method: opts.method ?? 'GET',
+        headers: baseHeaders,
+        body,
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        // Retry on 5xx (server errors) and 429 (rate limit), but not on 4xx client errors
+        if ((res.status >= 500 || res.status === 429) && attempt < MAX_RETRIES) {
+          const delay = RETRY_DELAY_MS * Math.pow(2, attempt);
+          console.warn(`[GenieACS] NBI ${opts.method ?? 'GET'} ${path} -> ${res.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+        throw new Error(`NBI ${opts.method ?? 'GET'} ${path} -> ${res.status} ${text.slice(0, 200)}`);
+      }
+      if (opts.raw) return res as unknown as T;
+      if (res.status === 204) return undefined as T;
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) return (await res.json()) as T;
+      return (await res.text()) as unknown as T;
+    } catch (err) {
+      clearTimeout(timer);
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      // Retry on abort (timeout) and network errors
+      const isAbort = lastError.name === 'AbortError';
+      const isNetworkError = lastError.message.includes('fetch failed') || lastError.message.includes('ECONNREFUSED') || lastError.message.includes('ETIMEDOUT') || lastError.message.includes('ENOTFOUND');
+
+      if ((isAbort || isNetworkError) && attempt < MAX_RETRIES) {
+        const delay = RETRY_DELAY_MS * Math.pow(2, attempt);
+        console.warn(`[GenieACS] NBI ${opts.method ?? 'GET'} ${path} -> ${isAbort ? 'timeout' : 'network error'}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+
+      // No more retries — rethrow with context
+      if (isAbort) {
+        throw new Error(`NBI ${opts.method ?? 'GET'} ${path} -> timeout after ${timeoutMs}ms`);
+      }
+      throw lastError;
+    }
+  }
+
+  // Should not reach here, but just in case
+  throw lastError ?? new Error(`NBI ${opts.method ?? 'GET'} ${path} -> exhausted retries`);
+}
+
+/* ---------- Devices ---------- */
+
+export async function getDevices(query?: object, projection?: string): Promise<GenieDevice[]> {
+  const q: Record<string, string> = {};
+  if (query) q.query = JSON.stringify(query);
+  if (projection) q.projection = projection;
+  return nbiRequest<GenieDevice[]>('/devices', { query: q });
+}
+
+export async function getDevice(deviceId: string): Promise<GenieDevice | null> {
+  const arr = await getDevices({ _id: deviceId });
+  return arr[0] ?? null;
+}
+
+export async function deleteDevice(deviceId: string): Promise<void> {
+  await nbiRequest(`/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' });
+}
+
+export async function countDevices(query?: object): Promise<number> {
+  const q: Record<string, string> = {};
+  if (query) q.query = JSON.stringify(query);
+  // GenieACS returns count in `total` header for HEAD requests; fall back to length.
+  const arr = await nbiRequest<GenieDevice[]>('/devices', { query: { ...q, projection: '_id' } });
+  return arr.length;
+}
+
+/* ---------- Tasks ---------- */
+
+export async function createTask(deviceId: string, task: Partial<GenieTask>): Promise<GenieTask> {
+  return nbiRequest<GenieTask>(`/devices/${encodeURIComponent(deviceId)}/tasks`, {
+    method: 'POST',
+    query: { connection_request: '' },
+    body: task,
+  });
+}
+
+export async function getTasks(query?: object): Promise<GenieTask[]> {
+  const q: Record<string, string> = {};
+  if (query) q.query = JSON.stringify(query);
+  return nbiRequest<GenieTask[]>('/tasks', { query: q });
+}
+
+export async function deleteTask(taskId: string): Promise<void> {
+  await nbiRequest(`/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
+}
+
+export async function getParameterValues(deviceId: string, paths: string[]): Promise<GenieTask> {
+  return createTask(deviceId, { name: 'getParameterValues', parameterNames: paths });
+}
+
+export async function setParameterValues(deviceId: string, updates: ParamUpdate[]): Promise<GenieTask> {
+  return createTask(deviceId, {
+    name: 'setParameterValues',
+    parameterValues: updates.map((u) => [u.path, u.value, u.type ?? 'xsd:string']),
+  });
+}
+
+export async function rebootDevice(deviceId: string): Promise<GenieTask> {
+  return createTask(deviceId, { name: 'reboot' });
+}
+
+export async function factoryResetDevice(deviceId: string): Promise<GenieTask> {
+  return createTask(deviceId, { name: 'factoryReset' });
+}
+
+export async function refreshObject(deviceId: string, objectName: string): Promise<GenieTask> {
+  return createTask(deviceId, { name: 'refreshObject', objectName });
+}
+
+export async function addObject(deviceId: string, objectName: string): Promise<GenieTask> {
+  return createTask(deviceId, { name: 'addObject', objectName });
+}
+
+export async function deleteObject(deviceId: string, objectName: string): Promise<GenieTask> {
+  return createTask(deviceId, { name: 'deleteObject', objectName });
+}
+
+export async function downloadFirmware(
+  deviceId: string,
+  fileType: string,
+  fileName: string,
+  targetFileName?: string,
+): Promise<GenieTask> {
+  return createTask(deviceId, { name: 'download', fileType, fileName, targetFileName });
+}
+
+/* ---------- Faults ---------- */
+
+export async function getFaults(query?: object): Promise<GenieFault[]> {
+  const q: Record<string, string> = {};
+  if (query) q.query = JSON.stringify(query);
+  return nbiRequest<GenieFault[]>('/faults', { query: q });
+}
+
+export async function deleteFault(faultId: string): Promise<void> {
+  await nbiRequest(`/faults/${encodeURIComponent(faultId)}`, { method: 'DELETE' });
+}
+
+/* ---------- Presets ---------- */
+
+export async function getPresets(): Promise<GeniePreset[]> {
+  return nbiRequest<GeniePreset[]>('/presets');
+}
+
+export async function getPreset(id: string): Promise<GeniePreset | null> {
+  const all = await getPresets();
+  return all.find((p) => p._id === id) ?? null;
+}
+
+export async function createOrUpdatePreset(id: string, preset: Omit<GeniePreset, '_id'>): Promise<void> {
+  await nbiRequest(`/presets/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: preset,
+  });
+}
+
+export async function deletePreset(id: string): Promise<void> {
+  await nbiRequest(`/presets/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/* ---------- Provisions ---------- */
+
+export async function getProvisions(): Promise<GenieProvision[]> {
+  return nbiRequest<GenieProvision[]>('/provisions');
+}
+
+export async function getProvision(id: string): Promise<GenieProvision | null> {
+  const all = await getProvisions();
+  return all.find((p) => p._id === id) ?? null;
+}
+
+export async function createOrUpdateProvision(id: string, script: string): Promise<void> {
+  await nbiRequest(`/provisions/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: script,
+    headers: { 'Content-Type': 'application/javascript' },
+  });
+}
+
+export async function deleteProvision(id: string): Promise<void> {
+  await nbiRequest(`/provisions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/* ---------- Virtual Parameters (NBI side) ---------- */
+
+export async function getVirtualParameters(): Promise<GenieVirtualParameter[]> {
+  return nbiRequest<GenieVirtualParameter[]>('/virtual_parameters');
+}
+
+export async function getVirtualParameter(id: string): Promise<GenieVirtualParameter | null> {
+  const all = await getVirtualParameters();
+  return all.find((v) => v._id === id) ?? null;
+}
+
+export async function createOrUpdateVirtualParameter(id: string, script: string): Promise<void> {
+  await nbiRequest(`/virtual_parameters/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: script,
+    headers: { 'Content-Type': 'application/javascript' },
+  });
+}
+
+export async function deleteVirtualParameter(id: string): Promise<void> {
+  await nbiRequest(`/virtual_parameters/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/* ---------- Config ---------- */
+
+export async function getConfigs(): Promise<GenieConfig[]> {
+  return nbiRequest<GenieConfig[]>('/config');
+}
+
+export async function getConfig(id: string): Promise<GenieConfig | null> {
+  const all = await getConfigs();
+  return all.find((c) => c._id === id) ?? null;
+}
+
+export async function setConfig(id: string, value: string | number | boolean): Promise<void> {
+  await nbiRequest(`/config/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: { value },
+  });
+}
+
+export async function deleteConfig(id: string): Promise<void> {
+  await nbiRequest(`/config/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/* ---------- Files ---------- */
+// Files management removed — use GenieACS UI directly for firmware/file uploads.
+
+/* ---------- Direct Connection Request (bypass GenieACS) ---------- */
+// Ported from salfanet-radius-go internal/api/handlers/genieacs_ext.go
+// sendDirectConnectionRequest + buildDigestAuth + parseDigestParams.
+// Used when GenieACS server cannot reach the device directly but the
+// Salfanet backend can (same network as the CPE).
+
+/**
+ * Parse a Digest WWW-Authenticate challenge into a key/value map.
+ * Ported from Go parseDigestParams.
+ */
+function parseDigestParams(challenge: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  const s = challenge.replace(/^Digest\s+/i, '').trim();
+  // Split by comma but tolerate quoted values containing commas.
+  const parts: string[] = [];
+  let buf = '';
+  let inQuotes = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '"') inQuotes = !inQuotes;
+    if (ch === ',' && !inQuotes) {
+      parts.push(buf);
+      buf = '';
+    } else {
+      buf += ch;
+    }
+  }
+  if (buf) parts.push(buf);
+  for (const part of parts) {
+    const p = part.trim();
+    const idx = p.indexOf('=');
+    if (idx < 0) continue;
+    const key = p.slice(0, idx).trim();
+    let val = p.slice(idx + 1).trim();
+    val = val.replace(/^"(.*)"$/, '$1');
+    result[key] = val;
+  }
+  return result;
+}
+
+/**
+ * Build a Digest Authorization header from a WWW-Authenticate challenge.
+ * Ported from Go buildDigestAuth (RFC 2617, MD5, qop=auth).
+ */
+function buildDigestAuth(
+  challenge: string,
+  uri: string,
+  username: string,
+  password: string,
+  method: string,
+): string {
+  const params = parseDigestParams(challenge);
+  const realm = params['realm'] ?? '';
+  const nonce = params['nonce'] ?? '';
+  const qop = params['qop'] ?? '';
+  const opaque = params['opaque'] ?? '';
+
+  const cnonce = crypto
+    .randomBytes(16)
+    .toString('hex');
+  const nc = '00000001';
+
+  const ha1 = crypto
+    .createHash('md5')
+    .update(`${username}:${realm}:${password}`)
+    .digest('hex');
+  const ha2 = crypto
+    .createHash('md5')
+    .update(`${method}:${uri}`)
+    .digest('hex');
+
+  let response: string;
+  if (qop === 'auth') {
+    const respData = `${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`;
+    response = crypto.createHash('md5').update(respData).digest('hex');
+  } else {
+    const respData = `${ha1}:${nonce}:${ha2}`;
+    response = crypto.createHash('md5').update(respData).digest('hex');
+  }
+
+  let auth = `Digest username="${username}", realm="${realm}", nonce="${nonce}", uri="${uri}", response="${response}"`;
+  if (qop) auth += `, qop=${qop}, nc=${nc}, cnonce="${cnonce}"`;
+  if (opaque) auth += `, opaque="${opaque}"`;
+  return auth;
+}
+
+/**
+ * Send a connection request directly to the device, bypassing GenieACS.
+ * Tries basic auth first, falls back to digest auth on 401 challenge.
+ * Ported from Go sendDirectConnectionRequest.
+ */
+export async function sendDirectConnectionRequest(
+  crURL: string,
+  crUser: string,
+  crPass: string,
+  deviceID: string,
+): Promise<{ ok: boolean; status: number; method: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    // No auth needed
+    if (!crUser && !crPass) {
+      const resp = await fetch(crURL, { method: 'GET', signal: controller.signal });
+      await resp.text().catch(() => undefined);
+      clearTimeout(timer);
+      console.log(`[GenieACS] direct CR sent (no auth) device=${deviceID} status=${resp.status}`);
+      return { ok: resp.ok, status: resp.status, method: 'none' };
+    }
+
+    // Try basic auth first
+    const basic = Buffer.from(`${crUser}:${crPass}`).toString('base64');
+    const resp1 = await fetch(crURL, {
+      method: 'GET',
+      headers: { Authorization: `Basic ${basic}` },
+      signal: controller.signal,
+    });
+    const _body1 = await resp1.text().catch(() => '');
+    if (resp1.status === 200) {
+      clearTimeout(timer);
+      console.log(`[GenieACS] direct CR sent (basic auth) device=${deviceID} status=200`);
+      return { ok: true, status: 200, method: 'basic' };
+    }
+
+    // 401 → try digest
+    if (resp1.status === 401) {
+      const authHeader = resp1.headers.get('www-authenticate') || '';
+      if (/digest/i.test(authHeader)) {
+        let digestURI = crURL;
+        try {
+          const u = new URL(crURL);
+          digestURI = u.pathname + u.search;
+        } catch {
+          /* keep full URL */
+        }
+        const digestAuth = buildDigestAuth(authHeader, digestURI, crUser, crPass, 'GET');
+        const resp2 = await fetch(crURL, {
+          method: 'GET',
+          headers: { Authorization: digestAuth },
+          signal: controller.signal,
+        });
+        await resp2.text().catch(() => undefined);
+        clearTimeout(timer);
+        console.log(`[GenieACS] direct CR sent (digest auth) device=${deviceID} status=${resp2.status}`);
+        return { ok: resp2.ok, status: resp2.status, method: 'digest' };
+      }
+    }
+
+    clearTimeout(timer);
+    console.log(`[GenieACS] direct CR sent (fallback) device=${deviceID} status=${resp1.status}`);
+    return { ok: resp1.ok, status: resp1.status, method: 'basic-fallback' };
+  } catch (err) {
+    clearTimeout(timer);
+    console.error(`[GenieACS] direct CR failed device=${deviceID}:`, err);
+    return { ok: false, status: 0, method: 'error' };
+  }
+}
+
+/**
+ * Extract ConnectionRequestURL/Username/Password from a raw GenieACS device.
+ * Returns empty strings when not present.
+ */
+export function extractConnectionRequestInfo(device: any): {
+  crURL: string;
+  crUser: string;
+  crPass: string;
+} {
+  let crURL = '';
+  let crUser = '';
+  let crPass = '';
+  const igd = device?.InternetGatewayDevice;
+  const mgmt = igd?.ManagementServer;
+  if (mgmt) {
+    crURL = mgmt.ConnectionRequestURL?._value ?? '';
+    crUser = mgmt.ConnectionRequestUsername?._value ?? '';
+    crPass = mgmt.ConnectionRequestPassword?._value ?? '';
+  }
+  return { crURL, crUser, crPass };
+}
+

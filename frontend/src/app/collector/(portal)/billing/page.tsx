@@ -1,0 +1,904 @@
+'use client';
+
+import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
+import { apiAdmin, ApiError } from '@/lib/api/client';
+import { printInvoiceStandard, printInvoiceThermal } from '@/lib/invoice-print';
+import { BluetoothPrinter, type ThermalReceiptData } from '@/lib/bluetooth-printer';
+import { formatWIB } from '@/lib/timezone';
+import { showError, showSuccess, showWarning } from '@/lib/sweetalert';
+import { Users, Search, CheckCircle, Loader2, ChevronDown, X, Upload, Printer, Bluetooth, MessageCircle, FileText, Wallet, MapPin, Wifi, Calendar, Phone, CalendarClock, LocateFixed } from 'lucide-react';
+
+const PAGE_SIZE = 50;
+const fmtRp = (v: number) => `Rp ${Number(v || 0).toLocaleString('id-ID')}`;
+const fmtDate = (d: string) => d ? formatWIB(d, 'dd MMM yyyy') : '-';
+
+export default function CollectorBillingPage() {
+  const [users, setUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState('unpaid');
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [expandedUser, setExpandedUser] = useState<string | null>(null);
+  const [payModal, setPayModal] = useState<{ invoiceId: string; invoiceNumber: string; amount: number; customerName: string } | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState('cash');
+  const [payLoading, setPayLoading] = useState(false);
+  const [proofPreview, setProofPreview] = useState<string | null>(null);
+  const [proofFile, setProofFile] = useState<File | null>(null);
+  const [promiseModal, setPromiseModal] = useState<{ userId: string; invoiceId: string; customerName: string } | null>(null);
+  const [promiseDate, setPromiseDate] = useState('');
+  const [promiseNotes, setPromiseNotes] = useState('');
+  const [promiseLoading, setPromiseLoading] = useState(false);
+  const [gpsStatus, setGpsStatus] = useState<'capturing' | 'ok' | 'denied'>('capturing');
+  const [gpsCoords, setGpsCoords] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [btPrinter, setBtPrinter] = useState<BluetoothPrinter | null>(null);
+  const [btConnected, setBtConnected] = useState(false);
+  const [showPrintMenu, setShowPrintMenu] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const printMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const res = await apiAdmin<{ users: any[] }>(`/api/collector/users?filter=${filter}`);
+      setUsers(res.users || []);
+    } catch (e: unknown) {
+      setLoadError(e instanceof Error ? e.message : 'Gagal memuat data pelanggan');
+    }
+    finally { setLoading(false); }
+  }, [filter]);
+
+  useEffect(() => { loadData() }, [loadData]);
+
+  const filtered = users.filter(u => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return (u.name || '').toLowerCase().includes(q) ||
+      (u.username || '').toLowerCase().includes(q) ||
+      (u.customerId || '').toLowerCase().includes(q) ||
+      (u.phone || '').toLowerCase().includes(q);
+  });
+  const visible = filtered.slice(0, visibleCount);
+
+  const handleProofSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setProofFile(file);
+    const reader = new FileReader();
+    reader.onload = (ev) => setProofPreview(ev.target?.result as string);
+    reader.readAsDataURL(file);
+  };
+
+  const compressImage = (file: File, maxW: number, quality: number): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let w = img.width, h = img.height;
+          if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+          canvas.width = w; canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) { reject(new Error('no ctx')); return; }
+          ctx.drawImage(img, 0, 0, w, h);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.onerror = reject;
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handlePrintA4 = async (invoiceId: string) => {
+    setActionLoading(`a4-${invoiceId}`);
+    setShowPrintMenu(null);
+    try {
+      await printInvoiceStandard(invoiceId, (type, title, desc) => {
+        if (type === 'error') showError(desc || title, title);
+      });
+    } catch (_err) {
+      showError('Gagal mencetak invoice');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handlePrintThermal = async (invoiceId: string) => {
+    setActionLoading(`thermal-${invoiceId}`);
+    setShowPrintMenu(null);
+    try {
+      await printInvoiceThermal(invoiceId, (type, title, desc) => {
+        if (type === 'error') showError(desc || title, title);
+      });
+    } catch (_err) {
+      showError('Gagal mencetak struk');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleBluetoothConnect = async () => {
+    if (!BluetoothPrinter.isSupported()) {
+      showWarning('Bluetooth printing tidak tersedia. Gunakan Chrome/Edge di Android atau APK Salfanet Collector.');
+      return;
+    }
+    setActionLoading('bt-connect');
+    try {
+      const printer = new BluetoothPrinter();
+      const ok = await printer.connect();
+      if (ok) {
+        setBtPrinter(printer);
+        setBtConnected(true);
+      }
+    } catch (err: any) {
+      showError(err.message || 'Gagal connect ke printer Bluetooth');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleBluetoothDisconnect = async () => {
+    if (btPrinter) {
+      await btPrinter.disconnect();
+      setBtPrinter(null);
+      setBtConnected(false);
+    }
+  };
+
+  const handlePrintBluetooth = async (invoiceId: string) => {
+    setShowPrintMenu(null);
+    if (!btPrinter || !btConnected) {
+      // Try to connect first
+      if (!BluetoothPrinter.isSupported()) {
+        showWarning('Bluetooth printing tidak tersedia. Gunakan Chrome/Edge di Android atau APK Salfanet Collector.');
+        return;
+      }
+      setActionLoading(`bt-${invoiceId}`);
+      try {
+        const printer = new BluetoothPrinter();
+        const ok = await printer.connect();
+        if (!ok) {
+          showError('Gagal connect ke printer Bluetooth');
+          return;
+        }
+        setBtPrinter(printer);
+        setBtConnected(true);
+
+        // Fetch invoice data and print
+        const res = await fetch(`/api/invoices/${invoiceId}/pdf`, { credentials: 'include' });
+        const data = await res.json();
+        if (!data.success || !data.data) {
+          showError('Gagal mengambil data invoice');
+          return;
+        }
+        const inv = data.data;
+        const receiptData: ThermalReceiptData = {
+          company: inv.company,
+          customer: inv.customer,
+          invoice: inv.invoice,
+          items: inv.items,
+          additionalFees: inv.additionalFees,
+          amountFormatted: inv.amountFormatted,
+        };
+        await printer.printReceipt(receiptData);
+        showSuccess('Struk berhasil dicetak via Bluetooth');
+      } catch (err: any) {
+        showError(err.message || 'Gagal mencetak via Bluetooth');
+      } finally {
+        setActionLoading(null);
+      }
+      return;
+    }
+
+    // Already connected - just print
+    setActionLoading(`bt-${invoiceId}`);
+    try {
+      const res = await fetch(`/api/invoices/${invoiceId}/pdf`, { credentials: 'include' });
+      const data = await res.json();
+      if (!data.success || !data.data) {
+        showError('Gagal mengambil data invoice');
+        return;
+      }
+      const inv = data.data;
+      const receiptData: ThermalReceiptData = {
+        company: inv.company,
+        customer: inv.customer,
+        invoice: inv.invoice,
+        items: inv.items,
+        additionalFees: inv.additionalFees,
+        amountFormatted: inv.amountFormatted,
+      };
+      await btPrinter.printReceipt(receiptData);
+    } catch (err: any) {
+      showError(err.message || 'Gagal mencetak via Bluetooth');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleSendWhatsApp = async (invoiceId: string, invoiceNumber: string, customerName: string) => {
+    setActionLoading(`wa-${invoiceId}`);
+    try {
+      const res = await apiAdmin<{ success: boolean; message?: string; error?: string }>('/api/collector/send-invoice', {
+        method: 'POST',
+        body: JSON.stringify({ invoiceId }),
+      });
+      if (res.success) {
+        showSuccess(`Bukti pembayaran lunas terkirim via WhatsApp ke pelanggan ${customerName}`);
+      } else {
+        showError(res.error || 'Gagal mengirim WhatsApp');
+      }
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : 'Gagal mengirim WhatsApp';
+      showError(msg);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  // Close print menu on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (printMenuRef.current && !printMenuRef.current.contains(e.target as Node)) {
+        setShowPrintMenu(null);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const handlePay = async () => {
+    if (!payModal) return;
+    if (paymentMethod === 'transfer' && !proofPreview) {
+      showWarning('Harap upload bukti transfer terlebih dahulu');
+      return;
+    }
+    setPayLoading(true);
+    try {
+      let proofData = proofPreview;
+      if (proofFile && paymentMethod === 'transfer') {
+        try {
+          proofData = await compressImage(proofFile, 1200, 0.8);
+        } catch {
+          // fallback to raw preview
+        }
+      }
+      await apiAdmin('/api/collector/mark-paid', {
+        method: 'POST',
+        body: JSON.stringify({ invoiceId: payModal.invoiceId, paymentMethod, collectorProof: proofData }),
+      });
+      setPayModal(null);
+      setPaymentMethod('cash');
+      setProofPreview(null);
+      setProofFile(null);
+      loadData();
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : 'Gagal menandai lunas';
+      showError(msg);
+    } finally {
+      setPayLoading(false);
+    }
+  };
+
+  const captureGps = () => {
+    setGpsStatus('capturing');
+    setGpsCoords(null);
+    if (!navigator.geolocation) {
+      setGpsStatus('denied');
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setGpsCoords({ latitude: pos.coords.latitude, longitude: pos.coords.longitude });
+        setGpsStatus('ok');
+      },
+      () => setGpsStatus('denied'),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  };
+
+  const openPromiseModal = (userId: string, invoiceId: string, customerName: string) => {
+    setPromiseModal({ userId, invoiceId, customerName });
+    setPromiseDate('');
+    setPromiseNotes('');
+    captureGps();
+  };
+
+  const handleCreatePromise = async () => {
+    if (!promiseModal) return;
+    if (!promiseDate) { showWarning('Pilih tanggal janji bayar'); return; }
+    if (new Date(promiseDate) <= new Date()) { showWarning('Tanggal janji harus di masa depan'); return; }
+    if (gpsStatus !== 'ok' || !gpsCoords) {
+      showWarning('Lokasi GPS wajib didapat terlebih dahulu. Aktifkan izin lokasi lalu coba lagi.');
+      return;
+    }
+    setPromiseLoading(true);
+    try {
+      await apiAdmin('/api/collector/promise', {
+        method: 'POST',
+        body: JSON.stringify({
+          userId: promiseModal.userId,
+          invoiceId: promiseModal.invoiceId,
+          promiseDate,
+          notes: promiseNotes || null,
+          latitude: gpsCoords.latitude,
+          longitude: gpsCoords.longitude,
+        }),
+      });
+      showSuccess('Janji bayar tercatat dengan lokasi GPS. Akses internet pelanggan dibuka kembali.');
+      setPromiseModal(null);
+      loadData();
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : 'Gagal membuat janji bayar';
+      showError(msg);
+    } finally {
+      setPromiseLoading(false);
+    }
+  };
+
+  return (
+    <div className="animate-fade-in">
+      <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="text-xl font-bold text-foreground">Tagihan Pelanggan</h2>
+          <p className="text-sm text-muted-foreground mt-1">Tandai invoice sebagai lunas saat menerima pembayaran</p>
+        </div>
+        {/* Bluetooth printer status */}
+        <div className="flex items-center gap-2">
+          {btConnected ? (
+            <div className="flex items-center gap-2">
+              <span className="flex items-center gap-1.5 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                <Bluetooth className="w-4 h-4" />
+                Printer terhubung
+              </span>
+              <button
+                onClick={handleBluetoothDisconnect}
+                className="text-xs text-red-500 hover:text-red-600"
+              >
+                Putus
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={handleBluetoothConnect}
+              disabled={actionLoading === 'bt-connect'}
+              className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border text-muted-foreground hover:bg-accent transition-all"
+            >
+              {actionLoading === 'bt-connect' ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Bluetooth className="w-3.5 h-3.5" />
+              )}
+              Hubungkan Printer BT
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Filter */}
+      <div className="flex gap-2 mb-4 flex-wrap">
+        {[
+          { key: 'unpaid', label: 'Belum Bayar' },
+          { key: 'all', label: 'Semua' },
+          { key: 'paid', label: 'Lunas' },
+        ].map(f => (
+          <button
+            key={f.key}
+            onClick={() => { setFilter(f.key); setVisibleCount(PAGE_SIZE); }}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+              filter === f.key
+                ? 'bg-emerald-600 text-white'
+                : 'bg-card border border-border text-muted-foreground hover:bg-accent'
+            }`}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Search */}
+      <div className="relative mb-4">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+        <input
+          type="text"
+          value={search}
+          onChange={e => { setSearch(e.target.value); setVisibleCount(PAGE_SIZE); }}
+          className="w-full pl-10 pr-10 py-2 rounded-lg border border-border bg-card text-foreground text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+          placeholder="Cari nama, username, ID, No. HP..."
+        />
+        {search && (
+          <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground">
+            <X className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+
+      {/* List */}
+      {loadError && (
+        <div className="bg-destructive/10 border border-destructive/30 rounded-xl p-3 mb-3 flex items-center justify-between gap-3">
+          <span className="text-sm text-destructive">Gagal memuat data: {loadError}{users.length > 0 ? ' — data di bawah mungkin tidak terbaru.' : ''}</span>
+          <button onClick={loadData} className="shrink-0 text-xs font-semibold text-destructive underline">Coba lagi</button>
+        </div>
+      )}
+      {loading ? (
+        <div className="text-center py-12 text-muted-foreground">Memuat...</div>
+      ) : visible.length === 0 ? (
+        <div className="bg-card border border-border rounded-xl p-4 sm:p-8 text-center text-muted-foreground">
+          <Users className="w-10 h-10 mx-auto mb-3 opacity-20" />
+          Tidak ada data.
+        </div>
+      ) : (
+        <>
+          {/* Table */}
+          <div className="overflow-x-auto bg-card border border-border rounded-xl">
+            <table className="w-full text-sm">
+              <thead className="bg-accent/50 border-b border-border">
+                <tr className="text-left text-xs text-muted-foreground">
+                  <th className="px-3 py-3 font-medium">Pelanggan</th>
+                  <th className="hidden md:table-cell px-3 py-3 font-medium">Paket</th>
+                  <th className="hidden md:table-cell px-3 py-3 font-medium">Area</th>
+                  <th className="px-3 py-3 font-medium">Status</th>
+                  <th className="hidden md:table-cell px-3 py-3 font-medium">Expired</th>
+                  <th className="px-3 py-3 font-medium text-right">Tagihan</th>
+                  <th className="px-3 py-3 font-medium text-center">Aksi</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {visible.map(u => (
+                  <Fragment key={u.id}>
+                    <tr className="hover:bg-accent/30 transition-colors">
+                      {/* Pelanggan */}
+                      <td className="px-3 py-3">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setExpandedUser(expandedUser === u.id ? null : u.id)}
+                            className="p-0.5 rounded hover:bg-muted"
+                          >
+                            <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform ${expandedUser === u.id ? 'rotate-180' : ''}`} />
+                          </button>
+                          <div className="min-w-0">
+                            <div className="font-semibold text-foreground truncate">{u.name}</div>
+                            <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                              <span className="font-mono">{u.customerId || u.username}</span>
+                              <span>·</span>
+                              <span className="flex items-center gap-0.5"><Phone className="w-3 h-3" />{u.phone || '-'}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      {/* Paket — hidden on mobile, shown in the expanded detail below instead */}
+                      <td className="hidden md:table-cell px-3 py-3">
+                        {u.profile ? (
+                          <div>
+                            <div className="text-xs font-medium text-foreground flex items-center gap-1">
+                              <Wifi className="w-3 h-3 text-muted-foreground" />
+                              {u.profile.name}
+                            </div>
+                            <div className="text-xs text-muted-foreground">{fmtRp(u.profile.price)}/bln</div>
+                          </div>
+                        ) : <span className="text-muted-foreground">-</span>}
+                      </td>
+                      {/* Area — hidden on mobile, shown in the expanded detail below instead */}
+                      <td className="hidden md:table-cell px-3 py-3">
+                        {u.area ? (
+                          <span className="text-xs text-muted-foreground flex items-center gap-1">
+                            <MapPin className="w-3 h-3" />
+                            {u.area.name}
+                          </span>
+                        ) : <span className="text-muted-foreground">-</span>}
+                      </td>
+                      {/* Status */}
+                      <td className="px-3 py-3">
+                        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                          u.status === 'active' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' :
+                          u.status === 'isolated' || u.status === 'suspended' ? 'bg-red-500/10 text-red-600 dark:text-red-400' :
+                          'bg-muted text-muted-foreground'
+                        }`}>
+                          {u.status === 'active' ? 'Aktif' : u.status === 'isolated' || u.status === 'suspended' ? 'Isolir' : u.status}
+                        </span>
+                      </td>
+                      {/* Expired — hidden on mobile, shown in the expanded detail below instead */}
+                      <td className="hidden md:table-cell px-3 py-3">
+                        <span className="text-xs text-muted-foreground flex items-center gap-1">
+                          <Calendar className="w-3 h-3" />
+                          {fmtDate(u.expiredAt)}
+                        </span>
+                      </td>
+                      {/* Tagihan */}
+                      <td className="px-3 py-3 text-right">
+                        {!u.is_paid ? (
+                          <div>
+                            <div className="text-sm font-bold text-orange-600 dark:text-orange-400">{fmtRp(u.unpaid_amount)}</div>
+                            <div className="text-xs text-muted-foreground">{u.unpaid_count} invoice</div>
+                          </div>
+                        ) : u.invoices?.length > 0 ? (
+                          <span className="text-xs text-emerald-600 dark:text-emerald-400 font-medium">Lunas</span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">-</span>
+                        )}
+                      </td>
+                      {/* Aksi */}
+                      <td className="px-3 py-3">
+                        <div className="flex items-center justify-center">
+                          <button
+                            onClick={() => setExpandedUser(expandedUser === u.id ? null : u.id)}
+                            className="text-xs text-emerald-600 dark:text-emerald-400 font-medium hover:underline"
+                          >
+                            {u.invoices?.length || 0} invoice
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                    {/* Expanded invoice rows */}
+                    {expandedUser === u.id && (
+                      <tr className="bg-accent/20">
+                        <td colSpan={7} className="px-3 py-3">
+                          {/* Customer detail */}
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3 text-xs">
+                            <div>
+                              <span className="text-muted-foreground">Username:</span>{' '}
+                              <span className="font-mono text-foreground">{u.username}</span>
+                            </div>
+                            {/* Paket/Area/Expired are their own columns on desktop (md:table-cell
+                                above); on mobile those columns are hidden, so surface them here
+                                instead of losing the information entirely. */}
+                            {u.profile && (
+                              <div className="md:hidden">
+                                <span className="text-muted-foreground">Paket:</span>{' '}
+                                <span className="text-foreground">{u.profile.name} ({fmtRp(u.profile.price)}/bln)</span>
+                              </div>
+                            )}
+                            {u.area && (
+                              <div className="md:hidden">
+                                <span className="text-muted-foreground">Area:</span>{' '}
+                                <span className="text-foreground">{u.area.name}</span>
+                              </div>
+                            )}
+                            <div className="md:hidden">
+                              <span className="text-muted-foreground">Expired:</span>{' '}
+                              <span className="text-foreground">{fmtDate(u.expiredAt)}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Tipe:</span>{' '}
+                              <span className="text-foreground">{u.subscriptionType === 'POSTPAID' ? 'Pascabayar' : 'Prabayar'}</span>
+                            </div>
+                            <div>
+                              <span className="text-muted-foreground">Koneksi:</span>{' '}
+                              <span className="text-foreground">{u.connectionType || 'PPPOE'}</span>
+                            </div>
+                            {u.router && (
+                              <div>
+                                <span className="text-muted-foreground">Router:</span>{' '}
+                                <span className="text-foreground">{u.router.name}</span>
+                              </div>
+                            )}
+                            {u.address && (
+                              <div className="col-span-2 md:col-span-4">
+                                <span className="text-muted-foreground">Alamat:</span>{' '}
+                                <span className="text-foreground">{u.address}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Invoice table */}
+                          {u.invoices && u.invoices.length > 0 ? (
+                            <div className="overflow-x-auto rounded-lg border border-border">
+                              <table className="w-full text-xs">
+                                <thead className="bg-card border-b border-border">
+                                  <tr className="text-left text-muted-foreground">
+                                    <th className="px-3 py-2 font-medium">No. Invoice</th>
+                                    <th className="px-3 py-2 font-medium">Jatuh Tempo</th>
+                                    <th className="px-3 py-2 font-medium">Status</th>
+                                    <th className="px-3 py-2 font-medium text-right">Jumlah</th>
+                                    <th className="px-3 py-2 font-medium text-center">Aksi</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-border">
+                                  {u.invoices.map((inv: any) => (
+                                    <tr key={inv.id} className="bg-card/50">
+                                      <td className="px-3 py-2 font-mono text-foreground">#{inv.invoiceNumber}</td>
+                                      <td className="px-3 py-2 text-muted-foreground">{fmtDate(inv.dueDate)}</td>
+                                      <td className="px-3 py-2">
+                                        {inv.status === 'PAID' ? (
+                                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">Lunas</span>
+                                        ) : (
+                                          <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-500/10 text-orange-600 dark:text-orange-400">{inv.status}</span>
+                                        )}
+                                      </td>
+                                      <td className="px-3 py-2 text-right font-bold text-foreground">{fmtRp(inv.amount)}</td>
+                                      <td className="px-3 py-2">
+                                        <div className="flex items-center justify-center gap-1">
+                                          {/* Unpaid: Cash + TF buttons */}
+                                          {inv.status !== 'PAID' && (
+                                            <>
+                                              <button
+                                                onClick={() => {
+                                                  setPayModal({ invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, amount: inv.amount, customerName: u.name });
+                                                  setPaymentMethod('cash');
+                                                  setProofPreview(null);
+                                                  setProofFile(null);
+                                                }}
+                                                className="px-3 py-2.5 min-h-[40px] text-xs rounded-lg bg-emerald-600 text-white font-medium hover:bg-emerald-700 transition-all flex items-center gap-1"
+                                                title="Bayar Tunai"
+                                              >
+                                                <Wallet className="w-3 h-3" />
+                                                Cash
+                                              </button>
+                                              <button
+                                                onClick={() => {
+                                                  setPayModal({ invoiceId: inv.id, invoiceNumber: inv.invoiceNumber, amount: inv.amount, customerName: u.name });
+                                                  setPaymentMethod('transfer');
+                                                  setProofPreview(null);
+                                                  setProofFile(null);
+                                                }}
+                                                className="px-3 py-2.5 min-h-[40px] text-xs rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700 transition-all flex items-center gap-1"
+                                                title="Upload Bukti Transfer"
+                                              >
+                                                <Upload className="w-3 h-3" />
+                                                TF
+                                              </button>
+                                              <button
+                                                onClick={() => openPromiseModal(u.id, inv.id, u.name)}
+                                                className="px-3 py-2.5 min-h-[40px] text-xs rounded-lg bg-amber-600 text-white font-medium hover:bg-amber-700 transition-all flex items-center gap-1"
+                                                title="Janji Bayar (dengan lokasi GPS)"
+                                              >
+                                                <CalendarClock className="w-3 h-3" />
+                                                Janji
+                                              </button>
+                                            </>
+                                          )}
+                                          {/* Paid: Print + WhatsApp buttons */}
+                                          {inv.status === 'PAID' && (
+                                            <>
+                                              <div className="relative" ref={showPrintMenu === inv.id ? printMenuRef : null}>
+                                                <button
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setShowPrintMenu(showPrintMenu === inv.id ? null : inv.id);
+                                                  }}
+                                                  disabled={actionLoading?.startsWith('a4-') && actionLoading === `a4-${inv.id}` || actionLoading?.startsWith('thermal-') && actionLoading === `thermal-${inv.id}` || actionLoading?.startsWith('bt-') && actionLoading === `bt-${inv.id}`}
+                                                  className="p-1 rounded text-muted-foreground hover:bg-accent transition-all"
+                                                  title="Cetak"
+                                                >
+                                                  {actionLoading === `a4-${inv.id}` || actionLoading === `thermal-${inv.id}` || actionLoading === `bt-${inv.id}` ? (
+                                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                  ) : (
+                                                    <Printer className="w-3.5 h-3.5" />
+                                                  )}
+                                                </button>
+                                                {showPrintMenu === inv.id && (
+                                                  <div className="absolute right-0 top-full mt-1 z-20 bg-card border border-border rounded-lg shadow-lg py-1 min-w-[180px]">
+                                                    <button
+                                                      onClick={(e) => { e.stopPropagation(); handlePrintA4(inv.id); }}
+                                                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-accent text-left"
+                                                    >
+                                                      <FileText className="w-3.5 h-3.5" />
+                                                      Cetak Invoice A4
+                                                    </button>
+                                                    <button
+                                                      onClick={(e) => { e.stopPropagation(); handlePrintThermal(inv.id); }}
+                                                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-accent text-left"
+                                                    >
+                                                      <Printer className="w-3.5 h-3.5" />
+                                                      Cetak Struk 80mm
+                                                    </button>
+                                                    <button
+                                                      onClick={(e) => { e.stopPropagation(); handlePrintBluetooth(inv.id); }}
+                                                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground hover:bg-accent text-left"
+                                                    >
+                                                      <Bluetooth className="w-3.5 h-3.5" />
+                                                      Cetak via Bluetooth
+                                                    </button>
+                                                  </div>
+                                                )}
+                                              </div>
+                                              <button
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleSendWhatsApp(inv.id, inv.invoiceNumber, u.name);
+                                                }}
+                                                disabled={actionLoading === `wa-${inv.id}`}
+                                                className="p-1 rounded text-muted-foreground hover:text-green-600 hover:bg-accent transition-all"
+                                                title="Kirim Bukti Lunas via WhatsApp"
+                                              >
+                                                {actionLoading === `wa-${inv.id}` ? (
+                                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                ) : (
+                                                  <MessageCircle className="w-3.5 h-3.5" />
+                                                )}
+                                              </button>
+                                            </>
+                                          )}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            <div className="text-xs text-muted-foreground text-center py-3">Tidak ada invoice</div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {visibleCount < filtered.length && (
+            <div className="text-center mt-4">
+              <button
+                onClick={() => setVisibleCount(c => c + PAGE_SIZE)}
+                className="px-6 py-2 rounded-lg border border-border text-sm font-medium hover:bg-accent flex items-center gap-2"
+              >
+                <ChevronDown className="w-4 h-4" /> Muat {Math.min(PAGE_SIZE, filtered.length - visibleCount)} lagi ({visibleCount}/{filtered.length})
+              </button>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Payment Modal */}
+      {payModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setPayModal(null)}>
+          <div className="bg-card border border-border rounded-xl p-6 max-w-sm w-full" onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-foreground mb-1">Konfirmasi Pembayaran</h3>
+            <p className="text-sm text-muted-foreground mb-4">Invoice #{payModal.invoiceNumber} - {payModal.customerName}</p>
+
+            <div className="bg-accent/30 rounded-lg p-3 mb-4">
+              <div className="text-xs text-muted-foreground">Jumlah Tagihan</div>
+              <div className="text-xl font-bold text-foreground">{fmtRp(payModal.amount)}</div>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-foreground mb-2">Metode Pembayaran</label>
+              <div className="flex gap-2">
+                {[
+                  { key: 'cash', label: 'Tunai', icon: Wallet },
+                  { key: 'transfer', label: 'Transfer', icon: Upload },
+                ].map(m => {
+                  const Icon = m.icon;
+                  return (
+                    <button
+                      key={m.key}
+                      onClick={() => { setPaymentMethod(m.key); if (m.key === 'cash') { setProofPreview(null); setProofFile(null); } }}
+                      className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-1.5 ${
+                        paymentMethod === m.key
+                          ? 'bg-emerald-600 text-white'
+                          : 'bg-accent text-muted-foreground hover:bg-accent/80'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4" />
+                      {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {paymentMethod === 'transfer' && (
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-foreground mb-2">Bukti Transfer</label>
+                {proofPreview ? (
+                  <div className="relative">
+                    <img src={proofPreview} alt="Bukti Transfer" className="w-full rounded-lg border border-border max-h-48 object-contain" />
+                    <button
+                      onClick={() => { setProofPreview(null); setProofFile(null); }}
+                      className="absolute top-2 right-2 bg-black/60 text-white rounded-full p-1 hover:bg-black/80"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                ) : (
+                  <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-border rounded-lg p-6 cursor-pointer hover:bg-accent/30 transition-all">
+                    <Upload className="w-8 h-8 text-muted-foreground" />
+                    <span className="text-sm text-muted-foreground">Klik untuk upload bukti transfer</span>
+                    <input type="file" accept="image/*" onChange={handleProofSelect} className="hidden" />
+                  </label>
+                )}
+              </div>
+            )}
+
+            <p className="text-xs text-muted-foreground mb-4">
+              Tindakan ini akan menandai invoice sebagai lunas dan tidak bisa dibatalkan. Bukti pembayaran akan dikirim ke pelanggan via WhatsApp.
+            </p>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setPayModal(null)}
+                className="flex-1 py-2 rounded-lg border border-border text-sm font-medium hover:bg-accent"
+              >
+                Batal
+              </button>
+              <button
+                onClick={handlePay}
+                disabled={payLoading}
+                className="flex-1 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {payLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                Konfirmasi
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Janji Bayar Modal */}
+      {promiseModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setPromiseModal(null)}>
+          <div className="bg-card border border-border rounded-xl p-6 max-w-sm w-full" onClick={e => e.stopPropagation()}>
+            <h3 className="text-lg font-bold text-foreground mb-1">Buat Janji Bayar</h3>
+            <p className="text-sm text-muted-foreground mb-4">{promiseModal.customerName}</p>
+
+            {/* GPS status — mandatory, proves the visit actually happened here */}
+            <div className={`rounded-lg p-3 mb-4 flex items-center gap-2 text-xs ${
+              gpsStatus === 'ok' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' :
+              gpsStatus === 'denied' ? 'bg-destructive/10 text-destructive' :
+              'bg-muted text-muted-foreground'
+            }`}>
+              {gpsStatus === 'capturing' && <Loader2 className="w-4 h-4 animate-spin shrink-0" />}
+              {gpsStatus === 'ok' && <LocateFixed className="w-4 h-4 shrink-0" />}
+              {gpsStatus === 'denied' && <MapPin className="w-4 h-4 shrink-0" />}
+              <div className="flex-1">
+                {gpsStatus === 'capturing' && 'Mendapatkan lokasi GPS...'}
+                {gpsStatus === 'ok' && gpsCoords && `Lokasi didapat (${gpsCoords.latitude.toFixed(5)}, ${gpsCoords.longitude.toFixed(5)})`}
+                {gpsStatus === 'denied' && 'Gagal mendapat lokasi. Aktifkan izin lokasi lalu coba lagi.'}
+              </div>
+              {gpsStatus === 'denied' && (
+                <button onClick={captureGps} className="shrink-0 text-xs font-semibold underline">Coba lagi</button>
+              )}
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium mb-1 text-foreground">Tanggal Janji Bayar *</label>
+                <input
+                  type="date"
+                  value={promiseDate}
+                  onChange={e => setPromiseDate(e.target.value)}
+                  min={new Date(Date.now() + 86400000).toISOString().slice(0, 10)}
+                  className="w-full px-3 py-2 text-sm bg-background border border-border rounded"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1 text-foreground">Catatan (opsional)</label>
+                <textarea
+                  value={promiseNotes}
+                  onChange={e => setPromiseNotes(e.target.value)}
+                  placeholder="Mis: Janji bayar tanggal gajian..."
+                  rows={3}
+                  className="w-full px-3 py-2 text-sm bg-background border border-border rounded"
+                />
+              </div>
+            </div>
+
+            <p className="text-xs text-muted-foreground mt-3 mb-4">
+              Lokasi GPS Anda saat ini akan dicatat sebagai bukti kunjungan. Akses internet pelanggan akan dibuka hingga tanggal janji.
+            </p>
+
+            <div className="flex gap-2">
+              <button onClick={() => setPromiseModal(null)} className="flex-1 py-2 rounded-lg border border-border text-sm font-medium hover:bg-accent">
+                Batal
+              </button>
+              <button
+                onClick={handleCreatePromise}
+                disabled={promiseLoading || gpsStatus !== 'ok'}
+                className="flex-1 py-2 rounded-lg bg-amber-600 text-white text-sm font-medium hover:bg-amber-700 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {promiseLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarClock className="w-4 h-4" />}
+                Simpan Janji
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

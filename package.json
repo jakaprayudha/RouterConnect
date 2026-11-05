@@ -1,0 +1,30 @@
+{
+  "name": "salfanet-radius",
+  "version": "5.22.0",
+  "private": true,
+  "description": "Salfanet Radius — ISP/RADIUS management system (monorepo)",
+  "scripts": {
+    "dev": "pnpm --filter frontend dev",
+    "dev:backend": "pnpm --filter backend dev",
+    "dev:all": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "build:frontend": "pnpm --filter frontend build",
+    "build:backend": "pnpm --filter backend build",
+    "build:shared": "pnpm --filter @salfanet/shared-types build",
+    "start": "pnpm --filter frontend start",
+    "start:backend": "pnpm --filter backend start",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r typecheck",
+    "clean": "pnpm -r --if-present clean && rm -rf node_modules",
+    "db:seed": "pnpm --filter backend db:seed",
+    "db:push": "pnpm --filter backend db:push",
+    "db:migrate": "pnpm --filter backend db:migrate",
+    "sync:readme-changelog": "pnpm --filter frontend sync:readme-changelog"
+  },
+  "engines": {
+    "node": ">=22.0.0",
+    "pnpm": ">=11.0.0"
+  },
+  "packageManager": "pnpm@11.21.0"
+}

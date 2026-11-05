@@ -1,0 +1,180 @@
+﻿import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/server/db/client';
+import { generateExcelBuffer, formatDateExport } from '@/lib/utils/export';
+import { checkAuth } from '@/server/middleware/api-auth';
+import { formatWIB } from '@/lib/timezone';
+
+export async function GET(req: NextRequest) {
+  const auth = await checkAuth();
+  if (!auth.authorized) {
+    return auth.response;
+  }
+
+  const { searchParams } = new URL(req.url);
+  const format = searchParams.get('format') || 'excel';
+  const profileId = searchParams.get('profileId');
+  const routerId = searchParams.get('routerId');
+  const status = searchParams.get('status');
+  const paymentStatus = searchParams.get('paymentStatus');
+  // P0 security: passwords are excluded by default. Admin must explicitly
+  // request includePassword=true for backup exports containing credentials.
+  const includePassword = searchParams.get('includePassword') === 'true';
+
+  try {
+    // Build query filters
+    const where: any = {};
+    
+    if (profileId) {
+      where.profileId = profileId;
+    }
+    
+    if (routerId) {
+      if (routerId === 'global') {
+        where.routerId = null;
+      } else {
+        where.routerId = routerId;
+      }
+    }
+    
+    if (status) {
+      where.status = status;
+    }
+
+    // Payment status filter via invoice join
+    if (paymentStatus === 'unpaid') {
+      where.invoices = { some: { status: { in: ['PENDING', 'OVERDUE'] } } };
+    } else if (paymentStatus === 'paid') {
+      where.NOT = { invoices: { some: { status: { in: ['PENDING', 'OVERDUE'] } } } };
+    } else if (paymentStatus === 'isolated') {
+      where.status = 'isolated';
+    }
+
+    // Fetch PPPoE users with relations
+    // P0 security: password is only fetched when includePassword=true
+    const users = await prisma.pppoeUser.findMany({
+      where,
+      select: {
+        id: true,
+        username: true,
+        password: includePassword, // Only select password when explicitly requested
+        name: true,
+        phone: true,
+        email: true,
+        address: true,
+        ipAddress: true,
+        macAddress: true,
+        billingDay: true,
+        expiredAt: true,
+        comment: true,
+        latitude: true,
+        longitude: true,
+        createdAt: true,
+        subscriptionType: true,
+        status: true,
+        customerId: true,
+        profile: { select: { name: true } },
+        router: { select: { id: true, name: true, nasname: true } },
+        area: { select: { name: true } }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (format === 'pdf') {
+      // Generate PDF data for client-side rendering
+      const headers = ['No', 'Username', 'Password', 'Nama', 'Phone', 'Profile', 'Status', 'Expired', 'Router'];
+      const rows = users.map((u, idx) => [
+        idx + 1,
+        u.username,
+        includePassword ? (u.password || '') : '••••••',
+        u.name,
+        u.phone,
+        u.profile?.name || 'Tanpa Paket',
+        u.status === 'active' ? 'Aktif' : u.status === 'isolated' ? 'Isolir' : u.status === 'blocked' ? 'Block' : 'Stop',
+        u.expiredAt ? formatDateExport(u.expiredAt) : '-',
+        u.router?.name || 'Global'
+      ]);
+
+      const summary = [
+        { label: 'Total Pelanggan', value: users.length.toString() },
+        { label: 'Aktif', value: users.filter(u => u.status === 'active').length.toString() },
+        { label: 'Isolir', value: users.filter(u => u.status === 'isolated').length.toString() },
+        { label: 'Block', value: users.filter(u => u.status === 'blocked').length.toString() },
+        { label: 'Stop', value: users.filter(u => u.status === 'stop').length.toString() }
+      ];
+
+      return NextResponse.json({
+        pdfData: {
+          title: 'Daftar Pelanggan PPPoE - SALFANET RADIUS',
+          headers,
+          rows,
+          summary,
+          generatedAt: formatWIB(new Date())
+        }
+      });
+    }
+
+    // Excel export
+    const columns = [
+      { key: 'no', header: 'No', width: 6 },
+      { key: 'customerId', header: 'ID Pelanggan', width: 14 },
+      { key: 'username', header: 'Username', width: 20 },
+      { key: 'password', header: 'Password', width: 20 },
+      { key: 'name', header: 'Nama', width: 25 },
+      { key: 'phone', header: 'Telepon', width: 15 },
+      { key: 'email', header: 'Email', width: 25 },
+      { key: 'address', header: 'Alamat', width: 35 },
+      { key: 'area', header: 'Area', width: 18 },
+      { key: 'profile', header: 'Profile', width: 15 },
+      { key: 'subscriptionType', header: 'Tipe Langganan', width: 15 },
+      { key: 'status', header: 'Status', width: 12 },
+      { key: 'ipAddress', header: 'IP Address', width: 15 },
+      { key: 'macAddress', header: 'MAC Address', width: 18 },
+      { key: 'billingDay', header: 'Hari Tagihan', width: 12 },
+      { key: 'expiredAt', header: 'Expired', width: 15 },
+      { key: 'comment', header: 'Komentar', width: 25 },
+      { key: 'router', header: 'Router', width: 15 },
+      { key: 'latitude', header: 'Latitude', width: 14 },
+      { key: 'longitude', header: 'Longitude', width: 14 },
+      { key: 'createdAt', header: 'Created', width: 15 }
+    ];
+
+    const data = users.map((u, idx) => ({
+      no: idx + 1,
+      customerId: (u as any).customerId || '',
+      username: u.username,
+      password: includePassword ? (u.password || '') : '',
+      name: u.name,
+      phone: u.phone,
+      email: u.email || '',
+      address: u.address || '',
+      area: (u as any).area?.name || '',
+      profile: u.profile?.name || 'Tanpa Paket',
+      subscriptionType: u.subscriptionType || 'POSTPAID',
+      status: u.status === 'active' ? 'Aktif' : u.status === 'isolated' ? 'Isolir' : u.status === 'blocked' ? 'Block' : 'Stop',
+      ipAddress: u.ipAddress || '',
+      macAddress: (u as any).macAddress || '',
+      billingDay: u.billingDay?.toString() || '',
+      expiredAt: u.expiredAt ? formatDateExport(u.expiredAt) : '',
+      comment: (u as any).comment || '',
+      router: u.router?.name || 'Global',
+      latitude: u.latitude?.toString() || '',
+      longitude: u.longitude?.toString() || '',
+      createdAt: formatDateExport(u.createdAt)
+    }));
+
+    const excelBuffer = await generateExcelBuffer(data, columns, 'PPPoE Users');
+
+    const filename = `PPPoE-Users-${new Date().toISOString().split('T')[0]}.xlsx`;
+    
+    return new NextResponse(Buffer.from(excelBuffer), {
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="${filename}"`
+      }
+    });
+
+  } catch (error) {
+    console.error('Export error:', error);
+    return NextResponse.json({ error: 'Export failed' }, { status: 500 });
+  }
+}

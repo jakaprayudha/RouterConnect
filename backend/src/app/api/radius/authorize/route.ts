@@ -1,0 +1,243 @@
+﻿import { NextRequest, NextResponse } from "next/server";
+import { rejectNonLocal } from '@/server/middleware/internal-only';
+import { prisma } from "@/server/db/client";
+import { nowWIB } from "@/lib/timezone";
+
+/**
+ * RADIUS Authorize Hook
+ * Called BEFORE authentication to check if voucher is allowed to login
+ *
+ * Queries DB langsung untuk PPPoE user status.
+ *
+ * Returns reject if:
+ * 1. Voucher is expired
+ * 2. Voucher status is EXPIRED
+ * 3. Voucher has expiresAt in the past
+ */
+export async function POST(request: NextRequest) {
+  const blocked = rejectNonLocal(request);
+  if (blocked) return blocked;
+
+  let username: string | undefined;
+  try {
+    // Read body as text first (can only read once in Next.js)
+    const rawBody = await request.text();
+    let body: any;
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      // FreeRADIUS REST module may send escaped quotes (\" instead of ")
+      // Cleanup and retry
+      const cleaned = rawBody.replace(/\\"/g, '"');
+      body = JSON.parse(cleaned);
+    }
+    username = body.username;
+
+    if (!username) {
+      // HTTP 204: no attributes to set, let FreeRADIUS continue
+      return new NextResponse(null, { status: 204 });
+    }
+
+    // Check if this is a hotspot voucher
+    const voucher = await prisma.hotspotVoucher.findUnique({
+      where: { code: username },
+      include: { profile: true },
+    });
+
+    // If not a voucher, check if it's a PPPoE user
+    if (!voucher) {
+      // ---- Query DB langsung untuk PPPoE user status ----
+      const pppoeUser = await prisma.pppoeUser.findUnique({
+        where: { username },
+        select: {
+          id: true,
+          username: true,
+          status: true,
+          expiredAt: true,
+          name: true,
+          autoIsolationEnabled: true,
+        },
+      });
+
+      // Check if PPPoE user is blocked, stopped, or expired
+      // NOTE: isolated users are NOT rejected - they login with restricted access
+      if (pppoeUser) {
+        const now = nowWIB();
+
+        if (pppoeUser.status === 'blocked' || pppoeUser.status === 'BLOCKED') {
+          const message = 'Akun Diblokir - Hubungi Admin';
+          console.log(`[AUTHORIZE] REJECT: PPPoE user ${username} is blocked`);
+          await logRejection(username, message);
+          return NextResponse.json({
+            "control:Auth-Type": "Reject",
+            "reply:Reply-Message": message
+          }, { status: 200 });
+        }
+
+        if (pppoeUser.status === 'stop' || pppoeUser.status === 'suspended' || pppoeUser.status === 'SUSPENDED') {
+          const message = 'Langganan Dihentikan - Hubungi Admin';
+          console.log(`[AUTHORIZE] REJECT: PPPoE user ${username} is stopped`);
+          await logRejection(username, message);
+          return NextResponse.json({
+            "control:Auth-Type": "Reject",
+            "reply:Reply-Message": message
+          }, { status: 200 });
+        }
+
+        // Izinkan user isolated untuk login dengan profile 'isolir' (redirect ke halaman bayar)
+        // radusergroup sudah di-set ke 'isolir' oleh auto-isolation job
+        if (pppoeUser.status === 'isolated' || pppoeUser.status === 'ISOLATED') {
+          console.log(`[AUTHORIZE] ALLOW (isolated): PPPoE user ${username} in isolir profile`);
+          // HTTP 204: pass-through, radusergroup in radcheck already enforces isolir profile
+          return new NextResponse(null, { status: 204 });
+        }
+
+        // Cek apakah masa aktif sudah habis (expiredAt lewat)
+        // If autoIsolationEnabled=false: allow expired user to stay connected (No Action)
+        // If autoIsolationEnabled=true: allow login (204) so radusergroup can apply isolir profile.
+        //   The cron will update status to 'isolated' and move radusergroup to 'isolir'.
+        //   Rejecting here would prevent the user from ever getting the isolir profile,
+        //   leaving them fully disconnected instead of isolated.
+        if (pppoeUser.expiredAt && now > new Date(pppoeUser.expiredAt)) {
+          if (pppoeUser.autoIsolationEnabled === false) {
+            console.log(`[AUTHORIZE] ALLOW (no-action): PPPoE user ${username} expired but autoIsolationEnabled=false`);
+            return new NextResponse(null, { status: 204 });
+          }
+          // autoIsolationEnabled=true: allow login so isolir profile can be applied
+          console.log(`[AUTHORIZE] ALLOW (expired): PPPoE user ${username} expired, isolir profile will be applied by radusergroup`);
+          return new NextResponse(null, { status: 204 });
+        }
+
+        // PPPoE user found and all status checks passed — allow to proceed to SQL/radcheck auth
+        console.log(`[AUTHORIZE] ALLOW: PPPoE user ${username} is valid (status: ${pppoeUser.status})`);
+        return new NextResponse(null, { status: 204 });
+      }
+
+      // PPPoE user not found in database — REJECT.
+      // Users not registered in the system (neither in pppoeUser nor hotspotVoucher)
+      // must not be allowed to authenticate.
+      console.log(`[AUTHORIZE] REJECT: User ${username} not found in database`);
+      await logRejection(username, 'User Tidak Terdaftar');
+      return NextResponse.json({
+        "control:Auth-Type": "Reject",
+        "reply:Reply-Message": "User Tidak Terdaftar"
+      }, { status: 200 });
+    }
+
+    const now = nowWIB();
+
+    // Check 1: Voucher status is EXPIRED
+    if (voucher.status === 'EXPIRED') {
+      console.log(`[AUTHORIZE] REJECT: Voucher ${username} is EXPIRED (status)`);
+      
+      // Log rejection to radpostauth with descriptive reply
+      await logRejection(username, 'Kode Voucher Kadaluarsa');
+      
+      // Return with control attributes for FreeRADIUS
+      return NextResponse.json({
+        "control:Auth-Type": "Reject",
+        "reply:Reply-Message": "Kode Voucher Kadaluarsa"
+      }, { status: 200 }); // Return 200 but with Reject auth type
+    }
+
+    // Check 2: Voucher has expiresAt in the past
+    if (voucher.expiresAt && now > voucher.expiresAt) {
+      console.log(`[AUTHORIZE] REJECT: Voucher ${username} expired at ${voucher.expiresAt.toISOString()}`);
+      
+      // Auto-update status to EXPIRED
+      await prisma.hotspotVoucher.update({
+        where: { id: voucher.id },
+        data: { status: "EXPIRED" },
+      });
+
+      // Log rejection to radpostauth with time info
+      await logRejection(username, 'Kode Voucher Kadaluarsa');
+      
+      return NextResponse.json({
+        "control:Auth-Type": "Reject",
+        "reply:Reply-Message": "Kode Voucher Kadaluarsa"
+      }, { status: 200 });
+    }
+
+    // Check 3: If voucher has active session and it's expired
+    // (Session timeout exceeded)
+    if (voucher.firstLoginAt && voucher.expiresAt) {
+      const activeSession = await prisma.radacct.findFirst({
+        where: {
+          username: voucher.code,
+          acctstoptime: null, // Still active
+        },
+        orderBy: { acctstarttime: 'desc' }
+      });
+
+      if (activeSession && now > voucher.expiresAt) {
+        console.log(`[AUTHORIZE] REJECT: Session for ${username} exceeded time limit`);
+        
+        // Log rejection to radpostauth
+        await logRejection(username, 'Waktu Habis - Voucher Kadaluarsa');
+        
+        return NextResponse.json({
+          "control:Auth-Type": "Reject",
+          "reply:Reply-Message": "Waktu Habis - Voucher Kadaluarsa"
+        }, { status: 200 });
+      }
+    }
+
+    // Voucher is valid, allow authentication to proceed
+    // Set Cleartext-Password = username so FreeRADIUS PAP/CHAP can verify
+    // (hotspot voucher code is used as BOTH username and password)
+    //
+    // Also send dynamic Session-Timeout based on remaining timeleft.
+    // This ensures that when a voucher reconnects (re-authenticates), RADIUS
+    // sends the correct remaining time — not a reset full validity duration.
+    // The radgroupreply Session-Timeout is also updated by hotspot_sync cronjob,
+    // but this REST response provides a real-time override at auth time.
+    console.log(`[AUTHORIZE] ALLOW: Voucher ${username} is valid (status: ${voucher.status})`);
+
+    const response: any = {
+      "control:Cleartext-Password": username,
+    };
+
+    // Calculate remaining timeleft for ACTIVE vouchers
+    if (voucher.expiresAt) {
+      const remainingMs = voucher.expiresAt.getTime() - now.getTime();
+      const remainingSec = Math.max(0, Math.floor(remainingMs / 1000));
+      if (remainingSec > 0) {
+        response["reply:Session-Timeout"] = remainingSec.toString();
+      }
+    }
+
+    return NextResponse.json(response);
+
+  } catch (error: any) {
+    console.error("[AUTHORIZE] Error:", error);
+    
+    // On error, allow FreeRADIUS to proceed to SQL/radcheck lookup.
+    // Do NOT set Cleartext-Password here — hotspot voucher passwords are stored
+    // in radcheck (via hotspot-sync), and PPPoE user passwords are in radcheck too.
+    // Setting username as Cleartext-Password would break PPPoE auth when username ≠ password.
+    // HTTP 204: let FreeRADIUS proceed to SQL/radcheck auth normally.
+    return new NextResponse(null, { status: 204 });
+  }
+}
+
+/**
+ * Log authentication rejection to radpostauth table
+ * This shows up in FreeRADIUS logs and can be queried
+ */
+async function logRejection(username: string, replyMessage: string) {
+  try {
+    await prisma.radpostauth.create({
+      data: {
+        username: username,
+        pass: replyMessage, // Store rejection reason in pass field
+        reply: 'Access-Reject',
+        authdate: nowWIB(),
+      },
+    });
+    
+    console.log(`[AUTHORIZE] Logged rejection for ${username}: ${replyMessage}`);
+  } catch (error) {
+    console.error('[AUTHORIZE] Failed to log rejection:', error);
+  }
+}

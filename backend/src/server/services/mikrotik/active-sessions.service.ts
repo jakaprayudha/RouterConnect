@@ -1,0 +1,242 @@
+import 'server-only'
+import { RouterOSAPI } from 'node-routeros'
+import { prisma } from '@/server/db/client'
+
+export interface MikrotikActiveSession {
+  username: string
+  ipAddress: string | null
+  macAddress: string | null
+  sessionId: string | null
+  uptime: string | null
+  sessionTimeLeft: string | null
+  rxBytes: number
+  txBytes: number
+  routerId: string
+  routerName: string
+  type: 'pppoe' | 'hotspot'
+}
+
+async function getRouterConfig(routerId: string) {
+  const router = await prisma.router.findUnique({
+    where: { id: routerId },
+    select: {
+      id: true,
+      name: true,
+      nasname: true,
+      ipAddress: true,
+      username: true,
+      password: true,
+      port: true,
+      authMode: true,
+    },
+  })
+  if (!router) return null
+  const host = router.ipAddress || router.nasname
+  if (!host || !router.username || !router.password) return null
+  return router
+}
+
+/**
+ * Safe wrapper for api.write print queries — handles node-routeros !empty bug.
+ */
+async function safePrint(api: any, path: string, args?: any[]): Promise<any[]> {
+  try {
+    return await api.write(path, args || [])
+  } catch (err: any) {
+    if (err?.errno === 'UNKNOWNREPLY' || String(err?.message || '').includes('!empty')) {
+      return []
+    }
+    throw err
+  }
+}
+
+/**
+ * Parse MikroTik uptime string (e.g. "1d2h3m4s", "2h15m", "30s") to seconds.
+ */
+function parseUptime(uptime: string | null | undefined): number {
+  if (!uptime) return 0
+  let total = 0
+  const weeks = uptime.match(/(\d+)w/)
+  const days = uptime.match(/(\d+)d/)
+  const hours = uptime.match(/(\d+)h/)
+  const mins = uptime.match(/(\d+)m/)
+  const secs = uptime.match(/(\d+)s/)
+  if (weeks) total += parseInt(weeks[1]) * 7 * 24 * 3600
+  if (days) total += parseInt(days[1]) * 24 * 3600
+  if (hours) total += parseInt(hours[1]) * 3600
+  if (mins) total += parseInt(mins[1]) * 60
+  if (secs) total += parseInt(secs[1])
+  return total
+}
+
+/**
+ * Fetch active PPPoE sessions from a MikroTik router (/ppp/active/print).
+ * Returns detailed session info (username, IP, MAC, uptime, bytes).
+ *
+ * Note: /ppp/active/print does NOT include byte counters (rx-byte/tx-byte).
+ * We fetch them separately from /interface/print?type=pppoe-in and merge
+ * by interface name (<pppoe-{session.name}>).
+ */
+export async function listPppActiveDetailed(routerId: string): Promise<MikrotikActiveSession[]> {
+  const router = await getRouterConfig(routerId)
+  if (!router) return []
+
+  const host = router.ipAddress || router.nasname
+  const apiPort = router.port || 8728
+  let api: any
+  try {
+    api = new RouterOSAPI({
+      host,
+      port: apiPort,
+      user: router.username || '',
+      password: router.password || '',
+      timeout: 15,
+    })
+    // See ppp-secret.service.ts's listPppActive for why this is required —
+    // node-routeros can emit a raw EventEmitter 'error' outside the promise
+    // chain, which otherwise crashes the whole process. This function is
+    // polled every 30s from the customer dashboard, making it a hot path.
+    api.on('error', (e: any) => console.error(`[ACTIVE_SESSIONS] RouterOSAPI socket error for ${host}:`, e?.message || e))
+    await Promise.race([
+      api.connect(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`connect timeout for ${host}:${apiPort} after 20s`)), 20000)
+      ),
+    ])
+    const active = await safePrint(api, '/ppp/active/print')
+
+    // Fetch byte counters from /interface/print — PPPoE interfaces have
+    // type="pppoe-in" and name="<pppoe-{username}>". We merge rx-byte/tx-byte
+    // by matching the username extracted from the interface name.
+    let byteMap = new Map<string, { rx: number; tx: number }>()
+    try {
+      const ifaces = await safePrint(api, '/interface/print')
+      for (const iface of ifaces) {
+        if (iface.type === 'pppoe-in' && iface.name) {
+          // RouterOS v6 uses "<pppoe-username>", v7 uses "pppoe-username"
+          // Support both formats for byte counter matching.
+          let match = iface.name.match(/^<pppoe-(.+)>$/)
+          if (!match) match = iface.name.match(/^pppoe-(.+)$/)
+          if (match) {
+            byteMap.set(match[1], {
+              rx: Number(iface['rx-byte'] || 0),
+              tx: Number(iface['tx-byte'] || 0),
+            })
+          }
+        }
+      }
+    } catch (e: any) {
+      console.error(`[MIKROTIK_SESSIONS] Interface byte fetch failed for ${router.name}:`, e?.message || e)
+    }
+
+    return active.map((s: any) => {
+      const sessionName = s.name || s.user || ''
+      const bytes = byteMap.get(sessionName)
+      return {
+        username: sessionName,
+        ipAddress: s.address || null,
+        macAddress: s['caller-id'] || s['mac-address'] || null,
+        sessionId: s['.id'] || null,
+        uptime: s.uptime || null,
+        sessionTimeLeft: null,
+        rxBytes: bytes?.rx ?? 0,
+        txBytes: bytes?.tx ?? 0,
+        routerId: router.id,
+        routerName: router.name,
+        type: 'pppoe' as const,
+      }
+    }).filter((s: MikrotikActiveSession) => s.username)
+  } catch (e: any) {
+    console.error(`[MIKROTIK_SESSIONS] listPppActiveDetailed for ${router.name}:`, e?.message || e)
+    return []
+  } finally {
+    try { if (api) await api.close() } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Fetch active Hotspot sessions from a MikroTik router (/ip/hotspot/active/print).
+ */
+export async function listHotspotActiveDetailed(routerId: string): Promise<MikrotikActiveSession[]> {
+  const router = await getRouterConfig(routerId)
+  if (!router) return []
+
+  const host = router.ipAddress || router.nasname
+  const apiPort = router.port || 8728
+  let api: any
+  try {
+    api = new RouterOSAPI({
+      host,
+      port: apiPort,
+      user: router.username || '',
+      password: router.password || '',
+      timeout: 15,
+    })
+    api.on('error', (e: any) => console.error(`[ACTIVE_SESSIONS] RouterOSAPI socket error for ${host}:`, e?.message || e))
+    await Promise.race([
+      api.connect(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`connect timeout for ${host}:${apiPort} after 20s`)), 20000)
+      ),
+    ])
+    const active = await safePrint(api, '/ip/hotspot/active/print')
+    return active.map((s: any) => ({
+      username: s.user || s.name || '',
+      ipAddress: s.address || null,
+      macAddress: s['mac-address'] || s['caller-id'] || null,
+      sessionId: s['.id'] || null,
+      uptime: s.uptime || null,
+      sessionTimeLeft: s['session-time-left'] || null,
+      rxBytes: Number(s['bytes-in'] || s['rx-byte'] || 0),
+      txBytes: Number(s['bytes-out'] || s['tx-byte'] || 0),
+      routerId: router.id,
+      routerName: router.name,
+      type: 'hotspot' as const,
+    })).filter((s: MikrotikActiveSession) => s.username)
+  } catch (e: any) {
+    console.error(`[MIKROTIK_SESSIONS] listHotspotActiveDetailed for ${router.name}:`, e?.message || e)
+    return []
+  } finally {
+    try { if (api) await api.close() } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Batch fetch active sessions from multiple MikroTik routers.
+ * Fetches from ALL routers with API credentials, regardless of authMode.
+ * MikroTik API is accessible for both local and radius auth modes.
+ *
+ * @param routers - Array of router objects with id, authMode
+ * @param type - 'pppoe' | 'hotspot' | null (both)
+ * @returns Array of MikrotikActiveSession
+ */
+export async function batchFetchMikrotikActiveSessions(
+  routers: Array<{ id: string; authMode?: string | null }>,
+  type?: 'pppoe' | 'hotspot' | null
+): Promise<MikrotikActiveSession[]> {
+  // Fetch from ALL routers — MikroTik API works regardless of authMode
+  const routerIds = routers.map(r => r.id)
+
+  if (routerIds.length === 0) return []
+
+  const tasks: Promise<MikrotikActiveSession[]>[] = []
+  for (const id of routerIds) {
+    if (!type || type === 'pppoe') {
+      tasks.push(listPppActiveDetailed(id))
+    }
+    if (!type || type === 'hotspot') {
+      tasks.push(listHotspotActiveDetailed(id))
+    }
+  }
+
+  const results = await Promise.allSettled(tasks)
+  const sessions: MikrotikActiveSession[] = []
+  for (const r of results) {
+    if (r.status === 'fulfilled') {
+      sessions.push(...r.value)
+    }
+  }
+  return sessions
+}
+
+export { parseUptime }

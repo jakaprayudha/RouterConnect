@@ -1,0 +1,893 @@
+'use client';
+
+import { useState, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
+import { useTranslation } from '@/hooks/useTranslation';
+import { Ticket, MessageSquare, Filter, Search, TrendingUp, Clock, CheckCircle, AlertCircle, Users, Send, X, ChevronDown, Loader2, MapPin, Navigation, Upload, FileText, Ticket as TicketIcon } from 'lucide-react';
+import { formatWIB } from '@/lib/timezone';
+import { showSuccess, showError } from '@/lib/sweetalert';
+import { apiAdmin } from '@/lib/api';
+import { useApiQuery, useQueryClient, buildQueryKey } from '@/lib/api/hooks';
+
+type TicketStatus = 'OPEN' | 'IN_PROGRESS' | 'WAITING_CUSTOMER' | 'RESOLVED' | 'CLOSED';
+type TicketPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+
+interface TicketItem {
+  id: string;
+  ticketNumber: string;
+  subject: string;
+  customerName: string;
+  status: TicketStatus;
+  priority: TicketPriority;
+  createdAt: string;
+  assignedToId?: string;
+  assignedToType?: string;
+  category?: {
+    name: string;
+    color: string;
+  };
+  _count: {
+    messages: number;
+  };
+}
+
+interface Stats {
+  total: number;
+  byStatus: {
+    open: number;
+    inProgress: number;
+    waitingCustomer: number;
+    resolved: number;
+    closed: number;
+  };
+  byPriority: {
+    low: number;
+    medium: number;
+    high: number;
+    urgent: number;
+  };
+  unassigned: number;
+  avgResponseTimeHours: number;
+}
+
+interface DispatchFormData {
+  customerId: string | null;
+  customerName: string;
+  customerPhone: string;
+  customerAddress: string;
+  subject: string;
+  description: string;
+  categoryId: string;
+  priority: string;
+  routerId: string;
+  oltId: string;
+  odcId: string;
+  odpId: string;
+  latitude: string;
+  longitude: string;
+}
+
+interface DispatchDataResult {
+  technicians: { id: string; name: string; phoneNumber: string }[];
+  categories: { id: string; name: string; color: string | null }[];
+  routers: { id: string; name: string; nasname: string | null }[];
+  olts: { id: string; name: string; ipAddress: string }[];
+  odcs: { id: string; name: string; oltId: string }[];
+  odps: { id: string; name: string; odcId: string | null; portCount: number }[];
+  customers: { id: string; username: string; name: string | null; phone: string | null; address: string | null; latitude?: number | null; longitude?: number | null; odpAssignment: { odpId: string; odp: { id: string; name: string } } | null; _source?: 'pppoe' | 'billing' }[];
+}
+
+interface DispatchResponse {
+  ticket: { ticketNumber: string };
+  notified: number;
+}
+
+export default function AdminTicketsPage() {
+  const { t } = useTranslation();
+  const router = useRouter();
+  const queryClient = useQueryClient();
+  const [filters, setFilters] = useState({ status: '', priority: '', search: '' });
+
+  // Dispatch modal state
+  const [showDispatch, setShowDispatch] = useState(false);
+  const [dispatchLoading, setDispatchLoading] = useState(false);
+  const [dispatchData, setDispatchData] = useState<DispatchDataResult | null>(null);
+  const [dispatchDataLoading, setDispatchDataLoading] = useState(false);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [customerSearchLoading, setCustomerSearchLoading] = useState(false);
+  const [customerLockedIn, setCustomerLockedIn] = useState(false);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [form, setForm] = useState<DispatchFormData>({
+    customerId: null, customerName: '', customerPhone: '', customerAddress: '',
+    subject: '', description: '', categoryId: '', priority: 'MEDIUM',
+    routerId: '', oltId: '', odcId: '', odpId: '',
+    latitude: '', longitude: '',
+  });
+  const [uploadedFiles, setUploadedFiles] = useState<{ url: string; name: string; type: string }[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [gpsLoading, setGpsLoading] = useState(false);
+
+  const ticketsQueryKey = buildQueryKey('/api/tickets', { status: filters.status, priority: filters.priority, search: filters.search });
+  const statsQueryKey = buildQueryKey('/api/tickets/stats');
+
+  // ─── React Query: Tickets list (auto-refetches on filter change) ──────────────
+  const { data: ticketsData, isLoading: loading } = useApiQuery<TicketItem[]>('/api/tickets', {
+    params: { status: filters.status, priority: filters.priority, search: filters.search },
+  });
+  const tickets = ticketsData || [];
+
+  // ─── React Query: Ticket stats ────────────────────────────────────────────────
+  const { data: stats } = useApiQuery<Stats>('/api/tickets/stats', {
+    staleTime: 30000,
+  });
+
+  const loadDispatchData = useCallback(async (search = '') => {
+    setDispatchDataLoading(true);
+    try {
+      const data = await apiAdmin<DispatchDataResult>(`/api/tickets/dispatch-data${search ? `?customerSearch=${encodeURIComponent(search)}` : ''}`);
+      setDispatchData(data);
+    } catch (e: unknown) { /* ignore - non-critical dispatch data load */ console.warn('Failed to load dispatch data:', e); } finally {
+      setDispatchDataLoading(false);
+    }
+  }, []);
+
+  const handleCustomerSearchChange = useCallback((value: string) => {
+    setCustomerSearch(value);
+    setCustomerLockedIn(false);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    if (!value.trim()) {
+      // Clear customer list when search is empty
+      setDispatchData(prev => prev ? { ...prev, customers: [] } : prev);
+      setCustomerSearchLoading(false);
+      return;
+    }
+    setCustomerSearchLoading(true);
+    searchDebounceRef.current = setTimeout(async () => {
+      try {
+        const data = await apiAdmin<DispatchDataResult>(`/api/tickets/dispatch-data?customerSearch=${encodeURIComponent(value)}`);
+        setDispatchData(data);
+      } catch (e: unknown) { /* ignore - non-critical customer search */ console.warn('Failed to search customers:', e); } finally {
+        setCustomerSearchLoading(false);
+      }
+    }, 400);
+  }, []);
+
+  const openDispatch = () => {
+    setShowDispatch(true);
+    if (!dispatchData) loadDispatchData();
+  };
+
+  const selectCustomer = (c: DispatchDataResult['customers'][0]) => {
+    setForm(f => ({
+      ...f,
+      // customerId must reference pppoeUser.id - billing customers don't have one
+      customerId: c._source === 'billing' ? null : c.id,
+      customerName: c.name || c.username,
+      customerPhone: c.phone || '',
+      customerAddress: c.address || '',
+      odpId: c.odpAssignment?.odpId || f.odpId,
+      latitude: c.latitude != null ? c.latitude.toFixed(6) : '',
+      longitude: c.longitude != null ? c.longitude.toFixed(6) : '',
+    }));
+    setCustomerSearch(c.name || c.username);
+    setCustomerLockedIn(true);
+  };
+
+  const handleGetGPS = () => {
+    if (!navigator.geolocation) {
+      showError('GPS tidak didukung', 'Browser tidak mendukung GPS');
+      return;
+    }
+    setGpsLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setForm(f => ({
+          ...f,
+          latitude: pos.coords.latitude.toFixed(6),
+          longitude: pos.coords.longitude.toFixed(6),
+        }));
+        setGpsLoading(false);
+      },
+      () => {
+        showError('Gagal GPS', 'Gagal mendapatkan lokasi GPS. Pastikan izin lokasi diaktifkan.');
+        setGpsLoading(false);
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        const formDataObj = new FormData();
+        formDataObj.append('file', file);
+
+        const res = await fetch('/api/tickets/upload', {
+          method: 'POST',
+          credentials: 'include',
+          body: formDataObj,
+        });
+
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          showError('Gagal upload', data.error || `Gagal upload ${file.name}`);
+          continue;
+        }
+
+        setUploadedFiles(prev => [...prev, { url: data.url, name: file.name, type: data.fileType }]);
+      }
+    } catch {
+      showError('Gagal upload', 'Gagal mengupload file');
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
+  };
+
+  const handleRemoveFile = (index: number) => {
+    setUploadedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleDispatch = async () => {
+    if (!form.customerName || !form.customerPhone || !form.subject || !form.description) {
+      showError('Lengkapi data', 'Nama pelanggan, telepon, subjek, dan deskripsi wajib diisi');
+      return;
+    }
+    setDispatchLoading(true);
+    try {
+      const payload = {
+        ...form,
+        attachments: uploadedFiles.length > 0 ? uploadedFiles.map(f => f.url) : undefined,
+      };
+      const data = await apiAdmin<DispatchResponse>('/api/tickets/dispatch', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      showSuccess('Tiket Terkirim', `#${data.ticket.ticketNumber} dikirim ke ${data.notified} teknisi`);
+      setShowDispatch(false);
+      setForm({ customerId: null, customerName: '', customerPhone: '', customerAddress: '', subject: '', description: '', categoryId: '', priority: 'MEDIUM', routerId: '', oltId: '', odcId: '', odpId: '', latitude: '', longitude: '' });
+      setUploadedFiles([]);
+      setCustomerSearch('');
+      setCustomerLockedIn(false);
+      setCustomerSearchLoading(false);
+      queryClient.invalidateQueries({ queryKey: ticketsQueryKey });
+      queryClient.invalidateQueries({ queryKey: statsQueryKey });
+    } catch (e: unknown) {
+      showError('Gagal kirim tiket', e instanceof Error ? e.message : String(e));
+    } finally {
+      setDispatchLoading(false);
+    }
+  };
+
+  const getStatusColor = (status: TicketStatus) => {
+    const colors = {
+      OPEN: 'bg-info/10 text-info',
+      IN_PROGRESS: 'bg-primary/10 text-primary',
+      WAITING_CUSTOMER: 'bg-warning/10 text-warning',
+      RESOLVED: 'bg-success/10 text-success',
+      CLOSED: 'bg-muted text-muted-foreground',
+    };
+    return colors[status] || colors.OPEN;
+  };
+
+  const getPriorityColor = (priority: TicketPriority) => {
+    const colors = {
+      LOW: 'bg-muted text-muted-foreground',
+      MEDIUM: 'bg-primary/10 text-primary',
+      HIGH: 'bg-warning/10 text-warning',
+      URGENT: 'bg-destructive/10 text-destructive',
+    };
+    return colors[priority] || colors.MEDIUM;
+  };
+
+  return (
+    <div className="bg-background relative">
+      {/* Neon Cyberpunk Background */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-0 left-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-primary/10 rounded-full blur-3xl"></div>
+        <div className="absolute top-1/3 right-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-brand-500/20 rounded-full blur-3xl"></div>
+        <div className="absolute bottom-0 left-1/2 w-48 h-48 sm:w-96 sm:h-96 bg-pink-500/20 rounded-full blur-3xl"></div>
+        <div className="hidden dark:block absolute inset-0 bg-[linear-gradient(rgba(139,92,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(139,92,246,0.03)_1px,transparent_1px)] bg-[size:50px_50px]"></div>
+      </div>
+      
+      <div className="relative z-10 space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+        <div className="min-w-0 flex items-center gap-2">
+          <TicketIcon className="w-5 h-5 sm:w-6 sm:h-6 text-brand-500 shrink-0" />
+          <h1 className="text-xl sm:text-2xl font-bold text-foreground dark:text-transparent dark:bg-clip-text dark:bg-gradient-to-r dark:from-brand-500 dark:via-white dark:to-pink-500 dark:drop-">
+            {t('ticket.tickets')}
+          </h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-1">
+            {t('ticket.manageAllTickets')}
+          </p>
+        </div>
+        <button
+          onClick={openDispatch}
+          className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-brand-500 hover:bg-brand-600 text-white rounded-xl shadow-sm hover:shadow-md transition-all"
+        >
+          <Send className="w-4 h-4" />
+          Kirim ke Teknisi
+        </button>
+      </div>
+
+      {/* Stats Cards */}
+      {stats && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 sm:gap-3 mb-4">
+          <div className="bg-card rounded-xl border border-border p-3  hover:border-border transition-all">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <div className="min-w-0">
+                <p className="text-[10px] sm:text-xs text-brand-500 uppercase tracking-wide truncate">{t('ticket.totalTickets')}</p>
+                <p className="text-lg sm:text-xl font-bold text-foreground mt-1">{stats.total}</p>
+              </div>
+              <Ticket className="text-brand-500 h-5 w-5 sm:h-6 sm:w-6 drop- flex-shrink-0" />
+            </div>
+          </div>
+
+          <div className="bg-card rounded-xl border border-border p-3  hover:border-border transition-all">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <div className="min-w-0">
+                <p className="text-[10px] sm:text-xs text-brand-500 uppercase tracking-wide truncate">{t('ticket.openTickets')}</p>
+                <p className="text-lg sm:text-xl font-bold text-foreground mt-1">{stats.byStatus.open}</p>
+              </div>
+              <TrendingUp className="text-brand-500 h-5 w-5 sm:h-6 sm:w-6 drop- flex-shrink-0" />
+            </div>
+          </div>
+
+          <div className="bg-card rounded-xl border border-border p-3  hover:border-border transition-all">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <div className="min-w-0">
+                <p className="text-[10px] sm:text-xs text-brand-500 uppercase tracking-wide truncate">{t('ticket.urgentTickets')}</p>
+                <p className="text-lg sm:text-xl font-bold text-foreground mt-1">{stats.byPriority.urgent}</p>
+              </div>
+              <AlertCircle className="text-red-400 h-5 w-5 sm:h-6 sm:w-6 drop-shadow-md shadow-red-500/40 flex-shrink-0" />
+            </div>
+          </div>
+
+          <div className="bg-card rounded-xl border border-border p-3  hover:border-border transition-all">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <div className="min-w-0">
+                <p className="text-[10px] sm:text-xs text-brand-500 uppercase tracking-wide truncate">{t('ticket.unassigned')}</p>
+                <p className="text-lg sm:text-xl font-bold text-foreground mt-1">{stats.unassigned}</p>
+              </div>
+              <Users className="text-amber-400 h-5 w-5 sm:h-6 sm:w-6 drop- flex-shrink-0" />
+            </div>
+          </div>
+
+          <div className="bg-card rounded-xl border border-border p-3  hover:border-border transition-all">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <div className="min-w-0">
+                <p className="text-[10px] sm:text-xs text-brand-500 uppercase tracking-wide truncate">{t('ticket.inProgress')}</p>
+                <p className="text-lg sm:text-xl font-bold text-foreground mt-1">{stats.byStatus.inProgress}</p>
+              </div>
+              <Clock className="text-amber-400 h-5 w-5 sm:h-6 sm:w-6 drop- flex-shrink-0" />
+            </div>
+          </div>
+
+          <div className="bg-card rounded-xl border border-border p-3  hover:border-border transition-all">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <div className="min-w-0">
+                <p className="text-[10px] sm:text-xs text-brand-500 uppercase tracking-wide truncate">{t('ticket.resolved')}</p>
+                <p className="text-lg sm:text-xl font-bold text-foreground mt-1">{stats.byStatus.resolved}</p>
+              </div>
+              <CheckCircle className="text-green-400 h-5 w-5 sm:h-6 sm:w-6 drop- flex-shrink-0" />
+            </div>
+          </div>
+
+          <div className="col-span-2 sm:col-span-1 bg-card rounded-xl border border-border p-3  hover:border-border transition-all">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <div className="min-w-0">
+                <p className="text-[10px] sm:text-xs text-brand-500 uppercase tracking-wide truncate">{t('ticket.avgResponseTime')}</p>
+                <p className="text-lg sm:text-xl font-bold text-foreground mt-1">
+                  {stats.avgResponseTimeHours.toFixed(1)} {t('ticket.hours')}
+                </p>
+              </div>
+              <Clock className="text-brand-500 h-5 w-5 sm:h-6 sm:w-6 drop- flex-shrink-0" />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="bg-card rounded-lg shadow-sm border border-border p-3 mb-4">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2 sm:gap-3">
+          <Filter className="h-4 w-4 text-muted-foreground hidden sm:block" />
+          
+          <div className="flex-1 min-w-0 sm:min-w-[180px]">
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 transform -translate-y-1/2 text-muted-foreground h-4 w-4" />
+              <input
+                type="text"
+                value={filters.search}
+                onChange={(e) => setFilters({ ...filters, search: e.target.value })}
+                placeholder={t('ticket.searchPlaceholder')}
+                className="w-full pl-8 pr-3 py-1.5 text-sm border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent bg-background text-foreground"
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <select
+              value={filters.status}
+              onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+              className="flex-1 sm:flex-initial border border-border rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-primary focus:border-transparent bg-background text-foreground"
+            >
+              <option value="">{t('ticket.allStatus')}</option>
+              <option value="OPEN">{t('ticket.status_OPEN')}</option>
+              <option value="IN_PROGRESS">{t('ticket.status_IN_PROGRESS')}</option>
+              <option value="WAITING_CUSTOMER">{t('ticket.status_WAITING_CUSTOMER')}</option>
+              <option value="RESOLVED">{t('ticket.status_RESOLVED')}</option>
+              <option value="CLOSED">{t('ticket.status_CLOSED')}</option>
+            </select>
+
+            <select
+              value={filters.priority}
+              onChange={(e) => setFilters({ ...filters, priority: e.target.value })}
+              className="flex-1 sm:flex-initial border border-border rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-primary focus:border-transparent bg-background text-foreground"
+            >
+              <option value="">{t('ticket.allPriority')}</option>
+              <option value="LOW">{t('ticket.priority_LOW')}</option>
+              <option value="MEDIUM">{t('ticket.priority_MEDIUM')}</option>
+              <option value="HIGH">{t('ticket.priority_HIGH')}</option>
+              <option value="URGENT">{t('ticket.priority_URGENT')}</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {/* Tickets Table */}
+      <div className="bg-card rounded-lg shadow-sm border border-border overflow-hidden">
+        {loading ? (
+          <div className="text-center py-8">
+            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary mx-auto"></div>
+            <p className="text-xs text-muted-foreground mt-2">{t('ticket.loading')}</p>
+          </div>
+        ) : tickets.length === 0 ? (
+          <div className="text-center py-8">
+            <Ticket className="h-10 w-10 text-muted-foreground mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground">{t('ticket.noTicketsFound')}</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="overflow-x-auto hidden md:block">
+              <table className="w-full">
+              <thead className="bg-muted border-b border-border">
+                <tr>
+                  <th className="px-3 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    {t('ticket.ticketNumber')}
+                  </th>
+                  <th className="px-3 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    {t('ticket.customer')}
+                  </th>
+                  <th className="px-3 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    {t('ticket.subject')}
+                  </th>
+                  <th className="px-3 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    {t('ticket.status')}
+                  </th>
+                  <th className="px-3 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+                    {t('ticket.priority')}
+                  </th>
+                  <th className="px-3 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase tracking-wider hidden lg:table-cell">
+                    {t('ticket.messages')}
+                  </th>
+                  <th className="px-3 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase tracking-wider hidden lg:table-cell">
+                    {t('ticket.created')}
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {tickets.map((ticket) => (
+                  <tr
+                    key={ticket.id}
+                    onClick={() => router.push(`/admin/tickets/${ticket.id}`)}
+                    className="hover:bg-muted cursor-pointer"
+                  >
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <span className="text-xs font-mono font-medium text-primary">
+                        #{ticket.ticketNumber}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <span className="text-xs text-foreground">
+                        {ticket.customerName}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-foreground line-clamp-2">
+                          {ticket.subject}
+                        </span>
+                        {ticket.category && (
+                          <span
+                            className="px-1.5 py-0.5 rounded text-[10px] font-medium text-foreground whitespace-nowrap truncate overflow-hidden"
+                            style={{ backgroundColor: ticket.category.color }}
+                          >
+                            {ticket.category.name}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${getStatusColor(ticket.status)}`}>
+                        {t(`ticket.status_${ticket.status}`)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${getPriorityColor(ticket.priority)}`}>
+                        {t(`ticket.priority_${ticket.priority}`)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap hidden lg:table-cell">
+                      <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <MessageSquare className="h-3 w-3" />
+                        {ticket._count.messages}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-muted-foreground hidden lg:table-cell">
+                      {formatWIB(ticket.createdAt, 'd MMM yyyy')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              </table>
+            </div>
+
+            {/* Mobile Card View */}
+            <div className="block md:hidden divide-y divide-border">
+              {tickets.map((ticket) => (
+                <div
+                  key={ticket.id}
+                  onClick={() => router.push(`/admin/tickets/${ticket.id}`)}
+                  className="p-3 hover:bg-muted/50 cursor-pointer transition-colors active:bg-muted"
+                >
+                  <div className="flex items-start justify-between gap-2 min-w-0 mb-1.5">
+                    <div className="min-w-0">
+                      <span className="text-[11px] font-mono font-medium text-primary">
+                        #{ticket.ticketNumber}
+                      </span>
+                      <p className="text-xs font-medium text-foreground mt-0.5 line-clamp-2">{ticket.subject}</p>
+                    </div>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap truncate overflow-hidden flex-shrink-0 ${getPriorityColor(ticket.priority)}`}>
+                      {t(`ticket.priority_${ticket.priority}`)}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap mt-2">
+                    <span className="text-[11px] text-muted-foreground">{ticket.customerName}</span>
+                    <span className="text-[9px] text-muted-foreground/50">•</span>
+                    <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-medium ${getStatusColor(ticket.status)}`}>
+                      {t(`ticket.status_${ticket.status}`)}
+                    </span>
+                    {ticket.category && (
+                      <>
+                        <span className="text-[9px] text-muted-foreground/50">•</span>
+                        <span
+                          className="px-1.5 py-0.5 rounded text-[9px] font-medium text-foreground"
+                          style={{ backgroundColor: ticket.category.color }}
+                        >
+                          {ticket.category.name}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between mt-2">
+                    <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                      <MessageSquare className="h-3 w-3" />
+                      {ticket._count.messages}
+                    </div>
+                    <span className="text-[10px] text-muted-foreground">
+                      {formatWIB(ticket.createdAt, 'd MMM yyyy')}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+      </div>
+
+      {/* Dispatch Modal */}
+      {showDispatch && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4" onClick={() => !dispatchLoading && setShowDispatch(false)}>
+          <div className="bg-card border border-border rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl" onClick={e => e.stopPropagation()}>
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+              <div>
+                <h2 className="text-base font-bold text-foreground flex items-center gap-2">
+                  <Send className="w-4 h-4 text-primary" />
+                  Kirim Tiket ke Semua Teknisi
+                </h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Tiket akan dikirim ke {dispatchData?.technicians.length ?? 0} teknisi aktif via WA & notifikasi
+                </p>
+              </div>
+              <button onClick={() => !dispatchLoading && setShowDispatch(false)} className="p-1.5 hover:bg-muted rounded-lg transition">
+                <X className="w-5 h-5 text-muted-foreground" />
+              </button>
+            </div>
+
+            {dispatchDataLoading && !dispatchData ? (
+              <div className="flex items-center justify-center py-16">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
+              </div>
+            ) : (
+              <div className="p-5 space-y-4">
+
+                {/* Customer Section */}
+                <div className="bg-muted/40 rounded-xl p-4 space-y-3">
+                  <p className="text-xs font-semibold text-foreground uppercase tracking-wide">Data Pelanggan</p>
+
+                  {/* Customer search */}
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">Cari Pelanggan</label>
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                      <input
+                        value={customerSearch}
+                        onChange={e => handleCustomerSearchChange(e.target.value)}
+                        placeholder="Nama, username, atau telepon..."
+                        className="w-full pl-9 pr-8 py-2 text-xs bg-background border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:ring-1 focus:ring-primary/40 outline-none"
+                        autoComplete="off"
+                      />
+                      {customerSearchLoading && (
+                        <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 animate-spin text-muted-foreground" />
+                      )}
+                    </div>
+                    {dispatchData?.customers && dispatchData.customers.length > 0 && customerSearch && !customerLockedIn && (
+                      <div className="mt-1 bg-background border border-border rounded-lg max-h-44 overflow-y-auto shadow-lg z-10">
+                        {dispatchData.customers.map(c => (
+                          <button key={c.id} onClick={() => selectCustomer(c)} className="w-full text-left px-3 py-2.5 text-xs hover:bg-muted transition flex items-center justify-between gap-2 min-w-0">
+                            <div className="flex flex-col gap-0.5 min-w-0">
+                              <span className="font-medium text-foreground truncate">{c.name || c.username}</span>
+                              <span className="text-muted-foreground">{c.phone} {c.username && c._source === 'pppoe' ? `· @${c.username}` : ''}</span>
+                            </div>
+                            <span className={`shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                              c._source === 'billing' ? 'bg-amber-500/20 text-amber-400' : 'bg-brand-500/15 text-brand-500'
+                            }`}>{c._source === 'billing' ? 'Pelanggan' : 'PPPoE'}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {customerSearch && !customerLockedIn && !customerSearchLoading && dispatchData?.customers?.length === 0 && (
+                      <p className="mt-1 text-xs text-muted-foreground px-1">Tidak ada pelanggan ditemukan untuk &quot;{customerSearch}&quot;</p>
+                    )}
+                    {customerLockedIn && (
+                      <button onClick={() => { setForm(f => ({ ...f, customerId: null })); setCustomerLockedIn(false); setCustomerSearch(''); }} className="mt-1 text-[10px] text-primary hover:underline">
+                        Ganti pelanggan
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Nama <span className="text-red-400">*</span></label>
+                      <input value={form.customerName} onChange={e => setForm(f => ({ ...f, customerName: e.target.value }))} placeholder="Nama pelanggan" className="w-full px-3 py-2 text-xs bg-background border border-border rounded-lg text-foreground focus:ring-1 focus:ring-primary/40 outline-none" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Telepon <span className="text-red-400">*</span></label>
+                      <input value={form.customerPhone} onChange={e => setForm(f => ({ ...f, customerPhone: e.target.value }))} placeholder="08xx..." className="w-full px-3 py-2 text-xs bg-background border border-border rounded-lg text-foreground focus:ring-1 focus:ring-primary/40 outline-none" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">Alamat</label>
+                    <input value={form.customerAddress} onChange={e => setForm(f => ({ ...f, customerAddress: e.target.value }))} placeholder="Alamat pelanggan" className="w-full px-3 py-2 text-xs bg-background border border-border rounded-lg text-foreground focus:ring-1 focus:ring-primary/40 outline-none" />
+                  </div>
+
+                  {/* Coordinates */}
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block flex items-center gap-1">
+                      <MapPin className="w-3 h-3" /> Koordinat Lokasi
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={form.latitude}
+                        onChange={e => setForm(f => ({ ...f, latitude: e.target.value }))}
+                        placeholder="Latitude (-5.14...)"
+                        className="w-full px-3 py-2 text-xs bg-background border border-border rounded-lg text-foreground focus:ring-1 focus:ring-primary/40 outline-none"
+                      />
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={form.longitude}
+                        onChange={e => setForm(f => ({ ...f, longitude: e.target.value }))}
+                        placeholder="Longitude (119.4...)"
+                        className="w-full px-3 py-2 text-xs bg-background border border-border rounded-lg text-foreground focus:ring-1 focus:ring-primary/40 outline-none"
+                      />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                      <button
+                        type="button"
+                        onClick={handleGetGPS}
+                        disabled={gpsLoading}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 text-[10px] rounded-lg border border-brand-500/40 text-brand-500 bg-brand-500/10 hover:bg-brand-500/20 transition-all disabled:opacity-50"
+                      >
+                        {gpsLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Navigation className="w-3 h-3" />}
+                        Ambil GPS
+                      </button>
+                      {form.latitude && form.longitude && (
+                        <a
+                          href={`https://maps.google.com/?q=${form.latitude},${form.longitude}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-[10px] text-brand-500 hover:underline"
+                        >
+                          Lihat di Maps
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* File Upload Section */}
+                <div className="bg-muted/40 rounded-xl p-4 space-y-3">
+                  <p className="text-xs font-semibold text-foreground uppercase tracking-wide flex items-center gap-1">
+                    <Upload className="w-3 h-3" /> Lampiran (Foto / Dokumen)
+                  </p>
+                  <label
+                    className={`flex flex-col items-center justify-center w-full border-2 border-dashed rounded-lg px-4 py-5 cursor-pointer transition-all ${
+                      uploading
+                        ? 'border-border bg-primary/10 opacity-70'
+                        : 'border-border hover:border-border hover:bg-primary/10'
+                    }`}
+                  >
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/jpeg,image/png,image/webp,application/pdf"
+                      onChange={handleFileUpload}
+                      disabled={uploading}
+                      className="hidden"
+                    />
+                    {uploading ? (
+                      <div className="flex flex-col items-center gap-1.5">
+                        <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                        <span className="text-[10px] text-primary">Mengupload...</span>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center gap-1">
+                        <Upload className="w-5 h-5 text-muted-foreground" />
+                        <span className="text-xs text-muted-foreground">Klik untuk pilih file</span>
+                        <span className="text-[10px] text-muted-foreground/70">JPG, PNG, WebP, PDF - maks 10MB</span>
+                      </div>
+                    )}
+                  </label>
+                  {uploadedFiles.length > 0 && (
+                    <div className="space-y-1.5">
+                      {uploadedFiles.map((file, index) => (
+                        <div key={index} className="flex items-center gap-2 p-2 rounded-lg bg-background border border-border">
+                          {file.type === 'pdf' ? (
+                            <FileText className="w-4 h-4 text-red-400 flex-shrink-0" />
+                          ) : (
+                            <img src={file.url} alt={file.name} className="w-8 h-8 object-cover rounded border border-border flex-shrink-0" />
+                          )}
+                          <span className="text-xs text-foreground truncate flex-1">{file.name}</span>
+                          <button type="button" onClick={() => handleRemoveFile(index)} className="p-1 hover:bg-destructive/10 rounded text-muted-foreground hover:text-destructive flex-shrink-0">
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Infrastructure Section */}
+                <div className="bg-muted/40 rounded-xl p-4 space-y-3">
+                  <p className="text-xs font-semibold text-foreground uppercase tracking-wide">Infrastruktur Jaringan</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Router/NAS</label>
+                      <div className="relative">
+                        <select value={form.routerId} onChange={e => setForm(f => ({ ...f, routerId: e.target.value }))} className="w-full appearance-none px-3 py-2 text-xs bg-background border border-border rounded-lg text-foreground focus:ring-1 focus:ring-primary/40 outline-none pr-8">
+                          <option value="">- Pilih Router -</option>
+                          {dispatchData?.routers.map(r => <option key={r.id} value={r.id}>{r.name}{r.nasname ? ` (${r.nasname})` : ''}</option>)}
+                        </select>
+                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">OLT</label>
+                      <div className="relative">
+                        <select value={form.oltId} onChange={e => setForm(f => ({ ...f, oltId: e.target.value, odcId: '', odpId: '' }))} className="w-full appearance-none px-3 py-2 text-xs bg-background border border-border rounded-lg text-foreground focus:ring-1 focus:ring-primary/40 outline-none pr-8">
+                          <option value="">- Pilih OLT -</option>
+                          {dispatchData?.olts.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                        </select>
+                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">ODC</label>
+                      <div className="relative">
+                        <select value={form.odcId} onChange={e => setForm(f => ({ ...f, odcId: e.target.value, odpId: '' }))} className="w-full appearance-none px-3 py-2 text-xs bg-background border border-border rounded-lg text-foreground focus:ring-1 focus:ring-primary/40 outline-none pr-8">
+                          <option value="">- Pilih ODC -</option>
+                          {(dispatchData?.odcs ?? []).filter(o => !form.oltId || o.oltId === form.oltId).map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                        </select>
+                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">ODP</label>
+                      <div className="relative">
+                        <select value={form.odpId} onChange={e => setForm(f => ({ ...f, odpId: e.target.value }))} className="w-full appearance-none px-3 py-2 text-xs bg-background border border-border rounded-lg text-foreground focus:ring-1 focus:ring-primary/40 outline-none pr-8">
+                          <option value="">- Pilih ODP -</option>
+                          {(dispatchData?.odps ?? []).filter(o => !form.odcId || o.odcId === form.odcId).map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                        </select>
+                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Ticket Info Section */}
+                <div className="bg-muted/40 rounded-xl p-4 space-y-3">
+                  <p className="text-xs font-semibold text-foreground uppercase tracking-wide">Detail Tiket</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Kategori</label>
+                      <div className="relative">
+                        <select value={form.categoryId} onChange={e => setForm(f => ({ ...f, categoryId: e.target.value }))} className="w-full appearance-none px-3 py-2 text-xs bg-background border border-border rounded-lg text-foreground focus:ring-1 focus:ring-primary/40 outline-none pr-8">
+                          <option value="">- Pilih Kategori -</option>
+                          {dispatchData?.categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Prioritas</label>
+                      <div className="relative">
+                        <select value={form.priority} onChange={e => setForm(f => ({ ...f, priority: e.target.value }))} className="w-full appearance-none px-3 py-2 text-xs bg-background border border-border rounded-lg text-foreground focus:ring-1 focus:ring-primary/40 outline-none pr-8">
+                          <option value="LOW">🟢 Rendah</option>
+                          <option value="MEDIUM">🟡 Sedang</option>
+                          <option value="HIGH">🟠 Tinggi</option>
+                          <option value="URGENT">🔴 Urgent</option>
+                        </select>
+                        <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground pointer-events-none" />
+                      </div>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">Subjek <span className="text-red-400">*</span></label>
+                    <input value={form.subject} onChange={e => setForm(f => ({ ...f, subject: e.target.value }))} placeholder="Ringkasan masalah" className="w-full px-3 py-2 text-xs bg-background border border-border rounded-lg text-foreground focus:ring-1 focus:ring-primary/40 outline-none" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground mb-1 block">Deskripsi <span className="text-red-400">*</span></label>
+                    <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="Detail masalah yang perlu ditangani teknisi..." rows={4} className="w-full px-3 py-2 text-xs bg-background border border-border rounded-lg text-foreground focus:ring-1 focus:ring-primary/40 outline-none resize-none" />
+                  </div>
+                </div>
+
+                {/* Technician List */}
+                {dispatchData && dispatchData.technicians.length > 0 && (
+                  <div className="bg-muted/30 rounded-xl p-3">
+                    <p className="text-xs font-medium text-muted-foreground mb-2">Akan dikirim ke {dispatchData.technicians.length} teknisi aktif:</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {dispatchData.technicians.map(t => (
+                        <span key={t.id} className="px-2 py-0.5 text-[10px] bg-primary/10 text-primary border border-border rounded-full">{t.name}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Footer buttons */}
+                <div className="flex gap-3 pt-1">
+                  <button onClick={() => !dispatchLoading && setShowDispatch(false)} disabled={dispatchLoading} className="flex-1 py-2.5 text-sm font-semibold bg-muted text-foreground border border-border rounded-xl hover:bg-muted/80 transition disabled:opacity-50">
+                    Batal
+                  </button>
+                  <button onClick={handleDispatch} disabled={dispatchLoading} className="flex-[2] py-2.5 text-sm font-semibold bg-gradient-to-r from-primary to-[#9b10d6] text-white rounded-xl  hover: transition disabled:opacity-50 flex items-center justify-center gap-2">
+                    {dispatchLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                    {dispatchLoading ? 'Mengirim...' : `Kirim ke ${dispatchData?.technicians.length ?? 0} Teknisi`}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

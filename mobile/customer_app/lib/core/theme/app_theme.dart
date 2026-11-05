@@ -1,0 +1,282 @@
+import 'package:flutter/material.dart';
+
+/// Fallback brand color, matching --color-brand-500 in the web app.
+///
+/// Only used when the operator's logo can't be read or turns out to be
+/// greyscale (see BrandThemeProvider). Also the fixed brand color of the
+/// invoice PDF, which has no theme to inherit from.
+const Color kBrandSeed = Color(0xFF465FFF);
+
+/// Plus Jakarta Sans, bundled rather than fetched at runtime because
+/// customers open this app on the connection they are complaining about.
+/// Chosen as Jakarta's city-identity typeface (an Indonesian voice for
+/// Indonesian subscribers) with numerals that stay distinct at small sizes,
+/// which is most of what this app displays: rupiah, due dates, days left.
+const String kFontFamily = 'PlusJakartaSans';
+
+/// Radius as a hierarchy tool, not one value everywhere: the bigger the
+/// radius, the higher the element sits in the page's order of importance.
+class AppRadius {
+  AppRadius._();
+
+  /// The single status card that owns the top of the dashboard.
+  static const double hero = 24;
+
+  /// Content cards and menu tiles.
+  static const double card = 16;
+
+  /// Buttons, inputs, sheets.
+  static const double control = 12;
+
+  /// Status badges only, where the pill shape is the badge's own language.
+  static const double pill = 999;
+}
+
+class AppTheme {
+  AppTheme._();
+
+  /// [derived] comes from the operator's logo when one could be read.
+  static ThemeData light([ColorScheme? derived]) => _base(derived ?? schemeFor(kBrandSeed, Brightness.light));
+
+  static ThemeData dark([ColorScheme? derived]) => _base(derived ?? schemeFor(kBrandSeed, Brightness.dark));
+
+  /// The brand color as the operator chose it, on neutral grey surfaces.
+  ///
+  /// Material's default tonal-spot scheme mutes the seed (brand blue came
+  /// out as a dusty slate indigo) and tints every surface with it, which is
+  /// the lavender wash that makes stock Material 3 apps look alike. Fidelity
+  /// keeps the seed's own chroma for primary; the surfaces are then replaced
+  /// with plain greys so the brand color is the only color on a screen that
+  /// is not a category or status hue.
+  static ColorScheme schemeFor(Color seed, Brightness brightness) {
+    final light = brightness == Brightness.light;
+    final scheme = ColorScheme.fromSeed(
+      seedColor: seed,
+      brightness: brightness,
+      dynamicSchemeVariant: DynamicSchemeVariant.fidelity,
+    );
+    return light
+        ? scheme.copyWith(
+            surface: const Color(0xFFF4F5F7),
+            onSurface: const Color(0xFF111827),
+            onSurfaceVariant: const Color(0xFF4B5563),
+            surfaceContainerLowest: const Color(0xFFFFFFFF),
+            surfaceContainerLow: const Color(0xFFFFFFFF),
+            surfaceContainer: const Color(0xFFF0F2F5),
+            surfaceContainerHigh: const Color(0xFFE9ECF0),
+            surfaceContainerHighest: const Color(0xFFE2E6EB),
+            surfaceTint: Colors.transparent,
+            outline: const Color(0xFF8A93A3),
+            outlineVariant: const Color(0xFFDDE1E7),
+          )
+        : scheme.copyWith(
+            surface: const Color(0xFF0F1115),
+            onSurface: const Color(0xFFE8EAED),
+            onSurfaceVariant: const Color(0xFFA9B1BD),
+            surfaceContainerLowest: const Color(0xFF0B0D10),
+            surfaceContainerLow: const Color(0xFF171A20),
+            surfaceContainer: const Color(0xFF1C2027),
+            surfaceContainerHigh: const Color(0xFF242932),
+            surfaceContainerHighest: const Color(0xFF2C323C),
+            surfaceTint: Colors.transparent,
+            outline: const Color(0xFF6E7785),
+            outlineVariant: const Color(0xFF2E343E),
+          );
+  }
+
+  static ThemeData _base(ColorScheme scheme) {
+    final base = ThemeData(useMaterial3: true, colorScheme: scheme, fontFamily: kFontFamily);
+
+    return base.copyWith(
+      scaffoldBackgroundColor: scheme.surface,
+
+      // Values carry the weight, labels stay quiet: the repeated typographic
+      // gesture behind every stat block in the app.
+      textTheme: base.textTheme.copyWith(
+        headlineMedium: base.textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -0.5),
+        headlineSmall: base.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800, letterSpacing: -0.4),
+        titleLarge: base.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700, letterSpacing: -0.2),
+        titleMedium: base.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+        titleSmall: base.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+        bodyLarge: base.textTheme.bodyLarge?.copyWith(height: 1.4),
+        bodyMedium: base.textTheme.bodyMedium?.copyWith(height: 1.4),
+        labelLarge: base.textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+        labelSmall: base.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w500, letterSpacing: 0.1),
+      ),
+
+      appBarTheme: AppBarTheme(
+        backgroundColor: scheme.surface,
+        foregroundColor: scheme.onSurface,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        centerTitle: false,
+        titleTextStyle: TextStyle(
+          fontFamily: kFontFamily,
+          fontSize: 19,
+          fontWeight: FontWeight.w700,
+          letterSpacing: -0.2,
+          color: scheme.onSurface,
+        ),
+      ),
+
+      // Cards sit one step above the page instead of floating on a shadow, so
+      // the eye reads depth from the surface ladder, not from blur.
+      cardTheme: CardThemeData(
+        elevation: 0,
+        color: scheme.surfaceContainerLow,
+        margin: EdgeInsets.zero,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.card),
+          side: BorderSide(color: scheme.outlineVariant),
+        ),
+      ),
+
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          minimumSize: const Size.fromHeight(50),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.control)),
+          textStyle: const TextStyle(fontFamily: kFontFamily, fontSize: 15, fontWeight: FontWeight.w700),
+        ),
+      ),
+
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          minimumSize: const Size.fromHeight(48),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.control)),
+          side: BorderSide(color: scheme.outline),
+          textStyle: const TextStyle(fontFamily: kFontFamily, fontSize: 15, fontWeight: FontWeight.w600),
+        ),
+      ),
+
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          textStyle: const TextStyle(fontFamily: kFontFamily, fontWeight: FontWeight.w600),
+        ),
+      ),
+
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: scheme.surfaceContainerHigh.withValues(alpha: 0.6),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppRadius.control),
+          borderSide: BorderSide.none,
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppRadius.control),
+          borderSide: BorderSide(color: scheme.outlineVariant),
+        ),
+        // A 2px focused border so keyboard and switch-access users can see
+        // which field they are in, in both themes.
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppRadius.control),
+          borderSide: BorderSide(color: scheme.primary, width: 2),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppRadius.control),
+          borderSide: BorderSide(color: scheme.error, width: 1.5),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppRadius.control),
+          borderSide: BorderSide(color: scheme.error, width: 2),
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+        // Each of these defaults to a different implicit colour if left unset,
+        // which is how a form ends up with four slightly different greys.
+        labelStyle: TextStyle(color: scheme.onSurfaceVariant),
+        floatingLabelStyle: TextStyle(color: scheme.primary, fontWeight: FontWeight.w600),
+        hintStyle: TextStyle(color: scheme.onSurfaceVariant.withValues(alpha: 0.7)),
+        prefixStyle: TextStyle(color: scheme.onSurface, fontWeight: FontWeight.w600),
+        suffixStyle: TextStyle(color: scheme.onSurfaceVariant),
+        helperStyle: TextStyle(color: scheme.onSurfaceVariant, fontSize: 11.5),
+        errorStyle: TextStyle(color: scheme.error, fontSize: 11.5),
+      ),
+
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: scheme.surface,
+        surfaceTintColor: Colors.transparent,
+        indicatorColor: scheme.primaryContainer,
+        elevation: 0,
+        height: 68,
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+        labelTextStyle: WidgetStateProperty.resolveWith((states) => TextStyle(
+              fontFamily: kFontFamily,
+              fontSize: 11.5,
+              fontWeight: states.contains(WidgetState.selected) ? FontWeight.w700 : FontWeight.w500,
+              color: states.contains(WidgetState.selected) ? scheme.onSurface : scheme.onSurfaceVariant,
+            )),
+      ),
+
+      listTileTheme: ListTileThemeData(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.control)),
+        titleTextStyle: TextStyle(
+          fontFamily: kFontFamily,
+          fontSize: 15,
+          fontWeight: FontWeight.w600,
+          color: scheme.onSurface,
+        ),
+        subtitleTextStyle: TextStyle(fontFamily: kFontFamily, fontSize: 12.5, color: scheme.onSurfaceVariant),
+      ),
+
+      dividerTheme: DividerThemeData(color: scheme.outlineVariant.withValues(alpha: 0.6), thickness: 1, space: 1),
+
+      snackBarTheme: SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.control)),
+        contentTextStyle: const TextStyle(fontFamily: kFontFamily),
+      ),
+
+      dialogTheme: DialogThemeData(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        titleTextStyle: TextStyle(
+          fontFamily: kFontFamily,
+          fontSize: 18,
+          fontWeight: FontWeight.w700,
+          color: scheme.onSurface,
+        ),
+      ),
+
+      bottomSheetTheme: const BottomSheetThemeData(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      ),
+
+      // Chip label colour must be stated outright: a ChipThemeData.labelStyle
+      // replaces the Material default wholesale rather than merging into it,
+      // so leaving colour null drops the label onto whatever ambient text
+      // colour happens to be in scope.
+      chipTheme: ChipThemeData(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.pill)),
+        backgroundColor: scheme.surfaceContainerHigh,
+        selectedColor: scheme.primaryContainer,
+        labelStyle: TextStyle(
+          fontFamily: kFontFamily,
+          fontSize: 12.5,
+          fontWeight: FontWeight.w600,
+          color: scheme.onSurface,
+        ),
+        secondaryLabelStyle: TextStyle(
+          fontFamily: kFontFamily,
+          fontSize: 12.5,
+          fontWeight: FontWeight.w600,
+          color: scheme.onPrimaryContainer,
+        ),
+        side: BorderSide(color: scheme.outlineVariant),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      ),
+
+      // The tab bar sits on the app bar's surface colour, not on a primary
+      // header, so its own colours have to be pinned to that surface.
+      tabBarTheme: TabBarThemeData(
+        labelColor: scheme.primary,
+        unselectedLabelColor: scheme.onSurfaceVariant,
+        indicatorColor: scheme.primary,
+        dividerColor: scheme.outlineVariant.withValues(alpha: 0.5),
+        labelStyle: const TextStyle(fontFamily: kFontFamily, fontSize: 14, fontWeight: FontWeight.w700),
+        unselectedLabelStyle: const TextStyle(fontFamily: kFontFamily, fontSize: 14, fontWeight: FontWeight.w600),
+      ),
+
+      progressIndicatorTheme: ProgressIndicatorThemeData(color: scheme.primary),
+    );
+  }
+}

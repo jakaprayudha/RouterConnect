@@ -1,0 +1,1053 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
+import { showSuccess, showError, showConfirm } from '@/lib/sweetalert';
+import { useToast } from '@/components/cyberpunk/CyberToast';
+import { useTranslation } from '@/hooks/useTranslation';
+import { Server, Plus, Trash2, Edit, CheckCircle, XCircle, Copy, Loader2, Shield, Radio, Wifi, Activity, RefreshCw, X, ChevronDown, ChevronUp, Info, ArrowRightCircle, RefreshCcw } from 'lucide-react';
+import { apiAdmin } from '@/lib/api';
+import { pppoeApi } from '@/lib/api/pppoe';
+import { useApiQuery, useApiMutation, useQueryClient, buildQueryKey } from '@/lib/api/hooks';
+
+interface Router {
+  id: string
+  name: string
+  nasname: string
+  shortname: string
+  type: string
+  authMode: string
+  ipAddress: string
+  username?: string
+  password?: string
+  port: number
+  secret: string
+  ports: number
+  server?: string
+  community?: string
+  description?: string
+  vpnClientId?: string
+  vpnClient?: {
+    id: string
+    name: string
+    vpnIp: string
+  }
+  isActive: boolean
+  createdAt: string
+}
+
+interface RouterStatus {
+  online: boolean
+  identity?: string
+  uptime?: string
+}
+
+interface VpnClient {
+  id: string
+  name: string
+  vpnIp: string
+  isRadiusServer: boolean
+  apiUsername?: string | null
+  apiPassword?: string | null
+  nasSecret?: string | null
+  resolvedUsername?: string | null
+  resolvedPassword?: string | null
+}
+
+interface RoutersListResponse {
+  routers: Router[]
+  vpnClients: VpnClient[]
+}
+
+interface ScriptConfig {
+  radiusServer: string;
+  connectionType: string;
+  authPort: number | string;
+  acctPort: number | string;
+  coaPort: number | string;
+  radiusSecret: string;
+}
+
+interface RoutersStatusResponse {
+  statusMap: Record<string, RouterStatus>
+}
+
+interface RouterSaveResponse {
+  router?: { id: string }
+}
+
+interface RadiusSetupResponse {
+  script: string
+  scriptRos6?: string
+  scriptRos7?: string
+  config: ScriptConfig
+}
+
+export default function RouterPage() {
+  const { t } = useTranslation()
+  const { addToast } = useToast();
+  const queryClient = useQueryClient()
+  const routersQuery = useApiQuery<RoutersListResponse>('/api/network/routers')
+  const routers = routersQuery.data?.routers || []
+  const vpnClients = routersQuery.data?.vpnClients || []
+  const loading = routersQuery.isLoading
+  const [statusMap, setStatusMap] = useState<Record<string, RouterStatus>>({})
+  const [showModal, setShowModal] = useState(false)
+  const [editingRouter, setEditingRouter] = useState<Router | null>(null)
+  const [formData, setFormData] = useState({
+    name: '',
+    nasname: '',
+    shortname: '',
+    type: 'mikrotik',
+    authMode: 'radius',
+    ipAddress: '',
+    username: '',
+    password: '',
+    port: '8728',
+    secret: '',
+    ports: '1812',
+    server: '',
+    community: '',
+    description: '',
+    vpnClientId: '',
+  })
+  const [useVpnClient, setUseVpnClient] = useState(false)
+  const [testResult, setTestResult] = useState<{
+    success: boolean
+    message: string
+    identity?: string
+  } | null>(null)
+  const [testing, setTesting] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [settingUpRadius, setSettingUpRadius] = useState<string | null>(null)
+  const [migratingRouter, setMigratingRouter] = useState<string | null>(null)
+  const [syncingRadius, setSyncingRadius] = useState<string | null>(null)
+  const [showScriptModal, setShowScriptModal] = useState(false)
+  const [showTutorial, setShowTutorial] = useState(true)
+  const [scriptModalData, setScriptModalData] = useState<{ script: string; scriptRos6?: string; scriptRos7?: string; config: ScriptConfig } | null>(null)
+  const [scriptRosTab, setScriptRosTab] = useState<6 | 7>(7)
+
+  // Mutations: create / update
+  const createMutation = useApiMutation<RouterSaveResponse>('/api/network/routers', {
+    method: 'POST',
+    invalidateQueries: [buildQueryKey('/api/network/routers')],
+  })
+  const updateMutation = useApiMutation<RouterSaveResponse>('/api/network/routers', {
+    method: 'PUT',
+    invalidateQueries: [buildQueryKey('/api/network/routers')],
+  })
+
+  // Generate random RADIUS secret (16 chars alphanumeric)
+  const generateSecret = () => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+    let secret = ''
+    for (let i = 0; i < 16; i++) {
+      secret += chars.charAt(Math.floor(Math.random() * chars.length))
+    }
+    return secret
+  }
+
+  // Check router status when list data arrives
+  useEffect(() => {
+    if (routersQuery.data?.routers && routersQuery.data.routers.length > 0) {
+      checkRoutersStatus(routersQuery.data.routers.map((r) => r.id))
+    }
+  }, [routersQuery.data])
+
+  const checkRoutersStatus = async (routerIds: string[]) => {
+    try {
+      const data = await apiAdmin<RoutersStatusResponse>('/api/network/routers/status', {
+        method: 'POST',
+        body: JSON.stringify({ routerIds }),
+      })
+      setStatusMap(data.statusMap || {})
+    } catch (error: unknown) {
+      console.error('Check status error:', error)
+    }
+  }
+
+  const handleVpnClientChange = (vpnClientId: string) => {
+    if (vpnClientId) {
+      const vpnClient = vpnClients.find(v => v.id === vpnClientId)
+      if (vpnClient) {
+        setFormData(prev => ({
+          ...prev,
+          vpnClientId,
+          ipAddress: vpnClient.vpnIp,
+          nasname: vpnClient.vpnIp,
+          // Auto-fill API credentials from VPN client
+          username: vpnClient.resolvedUsername || prev.username,
+          password: vpnClient.resolvedPassword || prev.password,
+          // Auto-fill RADIUS secret from NAS entry linked to this VPN client
+          secret: vpnClient.nasSecret || prev.secret || generateSecret(),
+        }))
+      }
+    } else {
+      // VPN client dihapus - kosongkan IP agar user isi manual
+      setFormData(prev => ({ ...prev, vpnClientId: '', ipAddress: '', nasname: '' }))
+    }
+  }
+
+  const handleTestConnection = async () => {
+    const isGateway = formData.type === 'gateway' || formData.name.toLowerCase().includes('gateway')
+
+    if (!isGateway && (!formData.ipAddress || !formData.username || !formData.password)) {
+      showError(t('network.fillIpUsernamePassword'))
+      return
+    }
+
+    if (isGateway && !formData.ipAddress) {
+      showError(t('network.fillIpAddress'))
+      return
+    }
+
+    setTesting(true)
+    setTestResult(null)
+
+    try {
+      if (isGateway) {
+        const result = await apiAdmin<{ success: boolean; message: string; identity?: string; usedPort?: number; diagnosis?: string }>('/api/network/routers/test-gateway', {
+          method: 'POST',
+          body: JSON.stringify({ ipAddress: formData.ipAddress }),
+        })
+
+        setTestResult(result)
+
+        if (result.success) {
+          showSuccess(t('network.gatewayReachableMsg').replace('{message}', result.message))
+        } else {
+          showError(result.message)
+        }
+        return
+      }
+
+      // Jika menggunakan VPN client, lakukan ping test terlebih dahulu
+      // API test mungkin gagal jika MikroTik belum mengizinkan koneksi API dari VPN
+      if (formData.vpnClientId) {
+        const pingResult = await apiAdmin<{ success: boolean; message: string; identity?: string; usedPort?: number; diagnosis?: string }>('/api/network/routers/test-gateway', {
+          method: 'POST',
+          body: JSON.stringify({ ipAddress: formData.ipAddress }),
+        })
+        if (!pingResult.success) {
+          setTestResult({ success: false, message: `VPN tidak terhubung: ${pingResult.message}` })
+          showError(`VPN tidak terhubung ke ${formData.ipAddress}`)
+          return
+        }
+        // Ping berhasil - lanjut test API, tapi error API tidak memblokir simpan
+      }
+
+      const result = await apiAdmin<{ success: boolean; message: string; identity?: string; usedPort?: number; diagnosis?: string }>('/api/network/routers/test', {
+        method: 'POST',
+        body: JSON.stringify({
+          ipAddress: formData.ipAddress,
+          username: formData.username,
+          password: formData.password,
+          port: parseInt(formData.port) || 8728,
+        }),
+      })
+
+      if (result.success) {
+        setTestResult(result)
+        const portInfo = ` (port ${result.usedPort})`
+        showSuccess(t('network.connectionSuccessfulTo').replace('{identity}', result.identity ?? '') + portInfo)
+      } else if (formData.vpnClientId) {
+        // VPN client: ping sudah berhasil, API gagal = MikroTik firewall memblokir
+        const apiPort = parseInt(formData.port) || 8728
+        const firewallCmd = `/ip firewall filter add chain=input src-address=172.16.212.1 protocol=tcp dst-port=${apiPort} action=accept place-before=0 comment="Allow VPS API"`
+        setTestResult({ success: true, message: result.message, identity: 'VPN (ping OK, API pending)' })
+        showSuccess(`VPN terhubung ✓\n\nAPI port ${apiPort} diblokir firewall MikroTik. Jalankan perintah ini di terminal MikroTik:\n\n${firewallCmd}`)
+      } else {
+        setTestResult(result)
+        const diagMsg = result.diagnosis === 'port_refused'
+          ? `${result.message}\n\nPort ditolak (ECONNREFUSED) - pastikan /ip service api sudah enabled dan port benar.`
+          : result.diagnosis === 'auth_failed'
+          ? `${result.message}\n\nUsername/password salah - cek credentials di /ip service.`
+          : result.diagnosis === 'firewall_block'
+          ? `${result.message}\n\nKoneksi timeout - firewall memblokir port ini.`
+          : result.message
+        showError(diagMsg)
+      }
+    } catch (error: unknown) {
+      showError((error instanceof Error ? error.message : String(error)) || t('network.failedTestConnection'))
+      setTestResult({ success: false, message: (error instanceof Error ? error.message : String(error)) || t('network.failedTestConnection') })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    if (!editingRouter && !testResult?.success) {
+      showError(t('network.testConnectionFirst'))
+      return
+    }
+
+    setCreating(true)
+
+    try {
+      const body = editingRouter ? { ...formData, id: editingRouter.id } : formData
+      const mutation = editingRouter ? updateMutation : createMutation
+
+      const data = await mutation.mutateAsync(body)
+
+      showSuccess(editingRouter ? t('network.routerUpdated') : t('network.routerCreated'))
+      setShowModal(false)
+      setEditingRouter(null)
+      resetForm()
+      // Auto-tampilkan RADIUS script yang sudah di-update
+      const savedRouterId = data.router?.id || (editingRouter?.id)
+      if (savedRouterId) {
+        handleSetupRadius(savedRouterId)
+      }
+    } catch (error: unknown) {
+      showError((error instanceof Error ? error.message : String(error)) || t('network.failedSaveRouter'))
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const resetForm = () => {
+    setFormData({
+      name: '', nasname: '', shortname: '', type: 'mikrotik', authMode: 'radius',
+      ipAddress: '', username: '', password: '',
+      port: '8728', secret: generateSecret(), ports: '1812', server: '', community: '', description: '', vpnClientId: '',
+    })
+    setTestResult(null)
+    setUseVpnClient(false)
+  }
+
+  const handleEdit = (routerData: Router) => {
+    setEditingRouter(routerData)
+    setFormData({
+      name: routerData.name, nasname: routerData.nasname, shortname: routerData.shortname, type: routerData.type,
+      authMode: routerData.authMode || 'radius',
+      ipAddress: routerData.ipAddress, username: routerData.username || '', password: routerData.password || '',
+      port: routerData.port.toString(), secret: routerData.secret,
+      ports: routerData.ports.toString(), server: routerData.server || '', community: routerData.community || '',
+      description: routerData.description || '', vpnClientId: routerData.vpnClientId || '',
+    })
+    setUseVpnClient(!!routerData.vpnClientId)
+    setTestResult(null)
+    setShowModal(true)
+  }
+
+  const handleDelete = async (id: string, name: string) => {
+    const confirmed = await showConfirm(t('network.deleteRouterConfirm', { name }), t('network.deleteRouter'))
+
+    if (!confirmed) return
+
+    try {
+      await apiAdmin(`/api/network/routers?id=${id}`, { method: 'DELETE' })
+      showSuccess(t('network.routerDeleted'))
+      queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/routers') })
+    } catch (error: unknown) {
+      showError((error instanceof Error ? error.message : String(error)) || t('network.failedDeleteRouter'))
+    }
+  }
+
+
+
+  const handleSetupRadius = async (routerId: string) => {
+    setSettingUpRadius(routerId)
+
+    try {
+      const result = await apiAdmin<RadiusSetupResponse>(`/api/network/routers/${routerId}/setup-radius`, { method: 'POST' })
+
+      setScriptModalData({ script: result.script, scriptRos6: result.scriptRos6, scriptRos7: result.scriptRos7, config: result.config })
+      setScriptRosTab(7)
+      setShowScriptModal(true)
+    } catch (error: unknown) {
+      console.error('Setup RADIUS error:', error)
+      showError((error instanceof Error ? error.message : String(error)) || t('network.failedGenerateRadiusScript'))
+    } finally {
+      setSettingUpRadius(null)
+    }
+  }
+
+  const handleMigrateToRadius = async (routerId: string, routerName: string) => {
+    const confirmed = await showConfirm(
+      `Migrasi router "${routerName}" dari LOCAL ke RADIUS auth?`,
+      'Migrasi ke RADIUS',
+      'Semua pelanggan akan di-sync ke tabel RADIUS (radcheck/radusergroup/radreply), PPP secret di MikroTik di-disable (sebagai backup), dan sesi aktif akan di-kick untuk re-auth via RADIUS. Pastikan MikroTik sudah dikonfigurasi sebagai RADIUS client (jalankan Setup RADIUS terlebih dahulu).'
+    );
+    if (!confirmed) return;
+    setMigratingRouter(routerId);
+    try {
+      const result = await pppoeApi.migrateToRadius(routerId);
+      await showSuccess(result.message);
+      // Refresh router list to reflect authMode change
+      queryClient.invalidateQueries({ queryKey: buildQueryKey('routers') });
+    } catch (error: unknown) {
+      console.error('Migrate to RADIUS error:', error);
+      showError((error instanceof Error ? error.message : String(error)) || 'Gagal migrasi ke RADIUS');
+    } finally {
+      setMigratingRouter(null);
+    }
+  };
+
+  const handleBulkSyncRadius = async (routerId: string, routerName: string) => {
+    const confirmed = await showConfirm(
+      `Re-sync semua pelanggan router "${routerName}" ke RADIUS?`,
+      'Sync RADIUS',
+      'Ini akan memperbarui semua entri RADIUS (radcheck/radusergroup/radreply) untuk pelanggan pada router ini. Berguna jika data RADIUS tidak sinkron dengan database. Tidak mengubah authMode router.'
+    );
+    if (!confirmed) return;
+    setSyncingRadius(routerId);
+    try {
+      const result = await pppoeApi.bulkSyncRadius(routerId);
+      await showSuccess(result.message);
+    } catch (error: unknown) {
+      console.error('Bulk sync RADIUS error:', error);
+      showError((error instanceof Error ? error.message : String(error)) || 'Gagal sync RADIUS');
+    } finally {
+      setSyncingRadius(null);
+    }
+  };
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text)
+    showSuccess(t('network.copiedToClipboard').replace('{label}', label))
+  }
+
+  // Stats
+  const totalRouters = routers.length;
+  const onlineRouters = Object.values(statusMap).filter(s => s.online).length;
+  const mikrotikRouters = routers.filter(r => r.type === 'mikrotik').length;
+  const vpnRouters = routers.filter(r => r.vpnClientId).length;
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+          <div className="absolute top-1/4 left-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-primary/10 rounded-full blur-3xl animate-pulse"></div>
+          <div className="absolute bottom-1/4 right-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-brand-500/20 rounded-full blur-3xl animate-pulse delay-1000"></div>
+        </div>
+        <div className="relative z-10 flex flex-col items-center gap-4">
+          <Loader2 className="w-12 h-12 animate-spin text-brand-500 dark:text-brand-500 dark:drop-" />
+          <p className="text-brand-500 font-medium animate-pulse">{t('network.loadingRouters')}</p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      {showScriptModal && scriptModalData && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={() => setShowScriptModal(false)}>
+          <div className="bg-[#1e1b2e] border border-border rounded-xl w-full max-w-2xl mx-4 max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-4 border-b border-border">
+              <h2 className="font-bold text-brand-500">{t('network.radiusScriptGenerated')}</h2>
+              <button onClick={() => setShowScriptModal(false)} className="text-muted-foreground hover:text-foreground"><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-4 overflow-y-auto flex-1">
+              <p className="text-sm text-muted-foreground mb-3">{t('network.copyScriptBelow')}</p>
+              {scriptModalData.scriptRos6 && scriptModalData.scriptRos7 && (
+                <div className="flex gap-1 mb-3 bg-[#0f0a1e] rounded-lg p-1 border border-[#334155]">
+                  <button
+                    onClick={() => setScriptRosTab(6)}
+                    className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-colors ${
+                      scriptRosTab === 6 ? 'bg-amber-500 text-black' : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >RouterOS 6.x</button>
+                  <button
+                    onClick={() => setScriptRosTab(7)}
+                    className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-colors ${
+                      scriptRosTab === 7 ? 'bg-brand-500 text-black' : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >RouterOS 7.x</button>
+                </div>
+              )}
+              <pre className="bg-[#0f0a1e] border border-[#334155] rounded-lg p-4 text-green-400 text-xs font-mono overflow-auto max-h-64 whitespace-pre-wrap break-words">{
+                scriptRosTab === 6 && scriptModalData.scriptRos6
+                  ? scriptModalData.scriptRos6
+                  : (scriptModalData.scriptRos7 || scriptModalData.script)
+              }</pre>
+              <div className="mt-4 bg-[#0f0a1e] border border-[#334155] rounded-lg p-3 text-sm">
+                <div className="font-semibold text-brand-500 mb-2">{t('network.configuration')}:</div>
+                <div className="text-gray-400 space-y-1">
+                  <div>{t('network.server')}: <b className="text-foreground">{scriptModalData.config.radiusServer}</b> ({scriptModalData.config.connectionType})</div>
+                  <div>{t('network.authAcct')}: <b className="text-foreground">{scriptModalData.config.authPort}/{scriptModalData.config.acctPort}</b></div>
+                  <div>{t('network.coa')}: <b className="text-foreground">{scriptModalData.config.coaPort}</b></div>
+                  <div>{t('network.secret')}: <b className="text-foreground">{scriptModalData.config.radiusSecret}</b></div>
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-2 p-4 border-t border-border">
+              <button onClick={() => setShowScriptModal(false)} className="flex-1 px-4 py-2 text-sm border border-gray-600 rounded-lg text-muted-foreground hover:text-foreground">{t('network.close')}</button>
+              <button onClick={() => {
+                const toCopy = scriptRosTab === 6 && scriptModalData.scriptRos6
+                  ? scriptModalData.scriptRos6
+                  : (scriptModalData.scriptRos7 || scriptModalData.script);
+                navigator.clipboard.writeText(toCopy);
+                addToast({ type: 'success', title: `Script ROS ${scriptRosTab}.x disalin!` });
+              }} className="flex-1 px-4 py-2 text-sm font-bold bg-brand-500 text-muted rounded-lg">{t('network.copyScript')} (ROS {scriptRosTab})</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+      <main className="bg-background relative">
+        {/* Animated Background */}
+        <div className="absolute inset-0 overflow-hidden pointer-events-none dark:block hidden">
+          <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-primary/10 rounded-full blur-[120px] animate-pulse"></div>
+          <div className="absolute top-1/3 right-1/4 w-[400px] h-[400px] bg-brand-500/15 rounded-full blur-[100px] animate-pulse delay-700"></div>
+          <div className="absolute bottom-0 left-1/2 w-[600px] h-[400px] bg-pink-500/10 rounded-full blur-[150px] animate-pulse delay-1000"></div>
+          <div className="hidden dark:block absolute inset-0 bg-[linear-gradient(rgba(139,92,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(139,92,246,0.03)_1px,transparent_1px)] bg-[size:60px_60px]"></div>
+        </div>
+
+        <div className="max-w-7xl mx-auto relative z-10 p-6 lg:p-8">
+          {/* Header Section */}
+          <div className="mb-8">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="p-2.5 bg-gradient-to-br from-brand-500 to-primary rounded-xl  flex items-center justify-center">
+                    <Server className="w-6 h-6 text-white" />
+                  </div>
+                  <h1 className="text-3xl lg:text-4xl font-bold text-foreground dark:text-transparent dark:bg-clip-text dark:bg-gradient-to-r dark:from-brand-500 dark:via-white dark:to-pink-500">
+                    {t('network.routerManagement')}
+                  </h1>
+                </div>
+                <p className="text-muted-foreground ml-14">
+                  {t('network.routerManagementDesc')}
+                </p>
+              </div>
+              <button
+                onClick={() => { setEditingRouter(null); resetForm(); setShowModal(true) }}
+                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-brand-500 to-[#00d4e6] text-black font-bold rounded-xl hover: transition-all duration-300 transform hover:scale-105"
+              >
+                <Plus className="w-5 h-5" />
+                {t('network.addRouter')}
+              </button>
+            </div>
+          </div>
+
+          {/* ── Tutorial / Flow Banner ───────────────────────────────── */}
+          <div className="mb-8">
+            <div className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border border-brand-500/20 rounded-2xl overflow-hidden">
+              <button
+                onClick={() => setShowTutorial(!showTutorial)}
+                className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-brand-500/5 transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-1.5 bg-brand-500/20 rounded-lg flex items-center justify-center">
+                    <Info className="w-4 h-4 text-brand-500" />
+                  </div>
+                  <span className="text-sm font-bold text-brand-500 uppercase tracking-wider">Cara Penggunaan - Alur NAS / Router</span>
+                </div>
+                {showTutorial ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+              </button>
+              {showTutorial && (
+                <div className="px-6 pb-6 border-t border-brand-500/10">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-5">
+                    {[
+                      { step: 1, icon: '🔌', color: 'border-border bg-primary/10', title: 'Sambungkan VPN', desc: 'Pastikan NAS/router sudah tersambung ke VPN (L2TP, WireGuard, atau SSTP) melalui menu VPN Client.', link: '/admin/network/vpn-client', linkLabel: '→ Menu VPN Client' },
+                      { step: 2, icon: '➕', color: 'border-brand-500/40 bg-brand-500/5', title: 'Tambah NAS/Router', desc: 'Klik "+ Tambah Router/NAS". Isi Nama, IP VPN NAS (mis. 10.20.30.10), username & password Winbox/API MikroTik.', link: null, linkLabel: null },
+                      { step: 3, icon: '', color: 'border-green-500/40 bg-green-500/5', title: 'Test & Simpan', desc: 'Klik "Test Koneksi" untuk verifikasi API MikroTik dapat diakses. Simpan jika berhasil. NAS terdaftar sebagai RADIUS client.', link: null, linkLabel: null },
+                      { step: 4, icon: '📜', color: 'border-amber-500/40 bg-amber-500/5', title: 'Generate RADIUS Script', desc: 'Klik "RADIUS Script" pada kartu NAS. Copy script RouterOS yang dihasilkan dan paste di terminal/WinBox MikroTik NAS tersebut.', link: null, linkLabel: null },
+                    ].map(item => (
+                      <div key={item.step} className={`rounded-xl border ${item.color} p-4`}>
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-xl">{item.icon}</span>
+                          <span className="text-xs font-bold text-muted-foreground bg-muted/50 dark:bg-slate-800/80 px-2 py-0.5 rounded-full">Step {item.step}</span>
+                        </div>
+                        <p className="text-sm font-bold text-foreground mb-1">{item.title}</p>
+                        <p className="text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
+                        {item.link && (
+                          <a href={item.link} className="inline-block mt-2 text-xs font-medium text-brand-500 hover:underline">{item.linkLabel}</a>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 p-3 rounded-xl border border-brand-500/20 bg-brand-500/5">
+                    <p className="text-xs text-brand-500/80"><span className="font-bold">ℹ️ Tentang NAS/Router:</span> NAS (Network Access Server) adalah MikroTik router di lokasi pelanggan yang menangani autentikasi PPPoE atau Hotspot. Setiap NAS harus terdaftar di sini agar RADIUS server dapat mengenali request autentikasi dari NAS tersebut.</p>
+                  </div>
+
+                  {/* Troubleshooting: unknown client */}
+                  <div className="mt-3 p-4 rounded-xl border border-amber-500/30 bg-amber-500/5">
+                    <p className="text-xs font-bold text-amber-400 mb-2">Troubleshooting - FreeRADIUS: &quot;unknown client&quot;</p>
+                    <p className="text-xs text-muted-foreground mb-3">Jika FreeRADIUS menolak request NAS dengan error <code className="bg-slate-800 px-1 rounded text-amber-300">Ignoring request from unknown client X.X.X.X</code>, lakukan langkah berikut:</p>
+                    <ol className="text-xs text-muted-foreground space-y-1.5 list-decimal list-inside">
+                      <li>Pastikan NAS sudah ditambahkan lewat halaman ini (bukan langsung ke database). Jika baru saja di-INSERT manual ke DB, hapus dan tambah ulang via UI.</li>
+                      <li>Cek IP di kolom <span className="text-foreground font-medium">IP NAS</span> sesuai dengan IP yang dikirim router ke FreeRADIUS (bisa berupa IP VPN atau IP LAN).</li>
+                      <li>Klik <span className="text-amber-400 font-medium">RADIUS Script</span> → copy script → paste di terminal MikroTik NAS. Pastikan <code className="bg-slate-800 px-1 rounded text-green-400">src-address</code> pada script sama dengan IP NAS yang terdaftar.</li>
+                      <li>Cek Log FreeRADIUS di menu <a href="/admin/freeradius/logs" className="text-brand-500 underline">FreeRADIUS → Log Langsung</a>. Error &quot;unknown client&quot; berarti IP pengirim tidak cocok dengan nasname di DB.</li>
+                      <li>Jika NAS menggunakan VPN, pastikan VPN Client sudah terhubung dan IP VPN-nya terdaftar. Cek di menu <a href="/admin/network/vpn-client" className="text-brand-500 underline">VPN Client</a>.</li>
+                    </ol>
+                    <p className="text-xs text-muted-foreground mt-2 border-t border-amber-500/20 pt-2">
+                      Setelah memperbaiki, FreeRADIUS akan otomatis sinkronisasi dalam maks. <span className="text-foreground font-medium">5 menit</span> (cron interval). Untuk sinkronisasi segera, restart FreeRADIUS via menu <a href="/admin/freeradius" className="text-brand-500 underline">FreeRADIUS → Status</a>.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Stats Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+            <div className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 rounded-2xl border border-border p-5 hover:border-border transition-all group">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-muted-foreground text-sm mb-1">{t('common.totalRouters')}</p>
+                  <p className="text-3xl font-bold text-foreground">{totalRouters}</p>
+                </div>
+                <div className="p-3 bg-primary/10 rounded-xl group-hover:bg-primary/10 transition-colors flex items-center justify-center">
+                  <Server className="w-6 h-6 text-primary" />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 rounded-2xl border border-green-500/30 p-5 hover:border-green-500/50 transition-all group">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-muted-foreground text-sm mb-1">{t('network.online')}</p>
+                  <p className="text-3xl font-bold text-green-400">{onlineRouters}</p>
+                </div>
+                <div className="p-3 bg-green-500/20 rounded-xl group-hover:bg-green-500/30 transition-colors flex items-center justify-center">
+                  <Wifi className="w-6 h-6 text-green-400" />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 rounded-2xl border border-brand-500/30 p-5 hover:border-brand-500/50 transition-all group">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-muted-foreground text-sm mb-1">MikroTik</p>
+                  <p className="text-3xl font-bold text-brand-500">{mikrotikRouters}</p>
+                </div>
+                <div className="p-3 bg-brand-500/20 rounded-xl group-hover:bg-brand-500/30 transition-colors flex items-center justify-center">
+                  <Activity className="w-6 h-6 text-brand-500" />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 rounded-2xl border border-border p-5 hover:border-border transition-all group">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-muted-foreground text-sm mb-1">{t('common.viaVpn')}</p>
+                  <p className="text-3xl font-bold text-primary">{vpnRouters}</p>
+                </div>
+                <div className="p-3 bg-primary/10 rounded-xl group-hover:bg-primary/10 transition-colors flex items-center justify-center">
+                  <Shield className="w-6 h-6 text-primary" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Router List */}
+          {routers.length === 0 ? (
+            <div className="bg-gradient-to-br from-slate-800/60 to-slate-900/60 rounded-3xl border-2 border-dashed border-border p-16 text-center">
+              <div className="w-20 h-20 mx-auto mb-6 bg-gradient-to-br from-primary/20 to-brand-500/20 rounded-2xl flex items-center justify-center">
+                <Server className="w-10 h-10 text-primary" />
+              </div>
+              <h3 className="text-lg sm:text-2xl font-bold text-foreground mb-3">{t('network.noRoutersYet')}</h3>
+              <p className="text-muted-foreground mb-8 max-w-md mx-auto">
+                {t('network.noRoutersDesc')}
+              </p>
+              <button
+                onClick={() => { setEditingRouter(null); resetForm(); setShowModal(true) }}
+                className="inline-flex items-center gap-2 px-8 py-4 bg-gradient-to-r from-brand-500 to-[#00d4e6] text-black font-bold rounded-xl hover: transition-all duration-300 transform hover:scale-105"
+              >
+                <Plus className="w-5 h-5" />
+                {t('network.addFirstRouter')}
+              </button>
+            </div>
+          ) : (
+            <div className="grid gap-6">
+              {routers.map((routerData) => {
+                const status = statusMap[routerData.id]
+                return (
+                  <div
+                    key={routerData.id}
+                    className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border border-border rounded-2xl overflow-hidden hover:border-brand-500/50 hover: transition-all duration-300 group"
+                  >
+                    {/* Router Header */}
+                    <div className="p-6 border-b border-border">
+                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                        <div className="flex items-center gap-4">
+                          <div className="p-3 bg-gradient-to-br from-primary/30 to-brand-500/30 rounded-xl group-hover:from-primary/40 group-hover:to-brand-500/40 transition-colors flex items-center justify-center">
+                            <Server className="w-7 h-7 text-brand-500" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-3">
+                              <h3 className="text-xl font-bold text-foreground group-hover:text-brand-500 transition-colors">{routerData.name}</h3>
+                              {status?.online ? (
+                                <span className="px-3 py-1 text-xs font-bold rounded-lg bg-green-500/20 border border-green-500/40 text-green-400 ">
+                                  {t('network.online')}
+                                </span>
+                              ) : (
+                                <span className="px-3 py-1 text-xs font-bold rounded-lg bg-red-500/20 border border-red-500/40 text-red-400">
+                                  {t('network.offline')}
+                                </span>
+                              )}
+                              {routerData.vpnClient && (
+                                <span className="px-3 py-1 text-xs font-bold rounded-lg bg-primary/10 border border-border text-primary">
+                                  via VPN: {routerData.vpnClient.name}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-muted-foreground text-sm mt-0.5">{routerData.type} • {routerData.nasname}</p>
+                          </div>
+                        </div>
+
+                        {/* Quick Actions */}
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleSetupRadius(routerData.id)}
+                            disabled={settingUpRadius === routerData.id}
+                            className="p-2.5 bg-brand-500/10 border border-brand-500/30 text-brand-500 rounded-xl hover:bg-brand-500/20 transition-all disabled:opacity-50"
+                            title="Setup RADIUS Client"
+                          >
+                            <Radio className="w-5 h-5" />
+                          </button>
+                          {(routerData.authMode === 'local') && (
+                            <button
+                              onClick={() => handleMigrateToRadius(routerData.id, routerData.name)}
+                              disabled={migratingRouter === routerData.id}
+                              className="p-2.5 bg-amber-500/10 border border-amber-500/30 text-amber-500 rounded-xl hover:bg-amber-500/20 transition-all disabled:opacity-50"
+                              title="Migrasi dari Local ke RADIUS Auth"
+                            >
+                              {migratingRouter === routerData.id ? <Loader2 className="w-5 h-5 animate-spin" /> : <ArrowRightCircle className="w-5 h-5" />}
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleBulkSyncRadius(routerData.id, routerData.name)}
+                            disabled={syncingRadius === routerData.id}
+                            className="p-2.5 bg-cyan-500/10 border border-cyan-500/30 text-cyan-500 rounded-xl hover:bg-cyan-500/20 transition-all disabled:opacity-50"
+                            title="Re-sync semua pelanggan ke RADIUS"
+                          >
+                            {syncingRadius === routerData.id ? <Loader2 className="w-5 h-5 animate-spin" /> : <RefreshCcw className="w-5 h-5" />}
+                          </button>
+                          <button
+                            onClick={() => handleEdit(routerData)}
+                            className="p-2.5 bg-muted border border-border text-foreground rounded-xl hover:bg-accent transition-all"
+                            title="Edit Router"
+                          >
+                            <Edit className="w-5 h-5" />
+                          </button>
+                          <button
+                            onClick={() => handleDelete(routerData.id, routerData.name)}
+                            className="p-2.5 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl hover:bg-red-500/20 transition-all"
+                            title="Hapus Router"
+                          >
+                            <Trash2 className="w-5 h-5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Router Details */}
+                    <div className="p-6">
+                      <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
+                        <div>
+                          <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.nasName')}</p>
+                          <div className="flex items-center gap-2">
+                            <code className="font-mono text-sm text-foreground">{routerData.nasname}</code>
+                            <button
+                              onClick={() => copyToClipboard(routerData.nasname, 'NAS Name')}
+                              className="text-muted-foreground/40 hover:text-brand-500 transition-colors"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.shortName')}</p>
+                          <p className="font-mono text-sm text-foreground">{routerData.shortname}</p>
+                        </div>
+                        <div>
+                          <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('common.type')}</p>
+                          <p className="font-mono text-sm text-foreground">{routerData.type}</p>
+                        </div>
+                        <div>
+                          <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">Auth Mode</p>
+                          <p className="font-mono text-sm text-foreground">{routerData.authMode || 'radius'}</p>
+                        </div>
+                        <div>
+                          <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.apiPort')}</p>
+                          <p className="font-mono text-sm text-foreground">{routerData.port}</p>
+                        </div>
+                        <div>
+                          <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.radiusPort')}</p>
+                          <p className="font-mono text-sm text-foreground">{routerData.ports}</p>
+                        </div>
+                        <div>
+                          <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.radiusSecret')}</p>
+                          <div className="flex items-center gap-2">
+                            <code className="font-mono text-sm text-foreground">{'*'.repeat(8)}</code>
+                            <button
+                              onClick={() => copyToClipboard(routerData.secret, 'RADIUS Secret')}
+                              className="text-muted-foreground/40 hover:text-brand-500 transition-colors"
+                            >
+                              <Copy className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Status Info */}
+                      {status && (status.identity || status.uptime) && (
+                        <div className="mt-4 pt-4 border-t border-border grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          {status.identity && (
+                            <div>
+                              <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.routerIdentityLabel')}</p>
+                              <p className="font-mono text-sm text-foreground">{status.identity}</p>
+                            </div>
+                          )}
+                          {status.uptime && (
+                            <div>
+                              <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.uptimeLabel')}</p>
+                              <p className="font-mono text-sm text-foreground">{status.uptime}</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {routerData.description && (
+                        <p className="text-xs sm:text-sm text-muted-foreground mt-4">{routerData.description}</p>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Add/Edit Modal */}
+        {showModal && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-2.5 sm:p-4">
+            <div className="bg-gradient-to-br from-slate-800 to-slate-900 border border-border rounded-2xl max-w-[calc(100%-2rem)] sm:max-w-lg w-full p-4 sm:p-6  max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 bg-gradient-to-br from-brand-500 to-primary rounded-lg flex items-center justify-center">
+                  <Server className="w-5 h-5 text-white" />
+                </div>
+                <h2 className="text-xl font-bold text-foreground">
+                  {editingRouter ? t('network.editRouter') : t('network.addNewRouter')}
+                </h2>
+              </div>
+
+              <form onSubmit={handleSubmit} className="space-y-4">
+                {/* Router Name */}
+                <div>
+                  <label className="block text-sm font-medium text-brand-500 mb-2">{t('network.routerName')} *</label>
+                  <input
+                    type="text"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    className="w-full px-4 py-3 bg-input border border-border rounded-xl text-foreground placeholder-gray-500 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all"
+                    placeholder={t('network.mainRouterPlaceholder')}
+                    required
+                  />
+                </div>
+
+                {/* Router Type */}
+                <div>
+                  <label className="block text-sm font-medium text-brand-500 mb-2">{t('network.routerType')} *</label>
+                  <select
+                    value={formData.type}
+                    onChange={(e) => setFormData({ ...formData, type: e.target.value })}
+                    className="w-full px-4 py-3 bg-input border border-border rounded-xl text-foreground focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all"
+                    required
+                  >
+                    <option value="mikrotik" className="bg-background dark:bg-slate-800">{t('network.mikrotikRouter')}</option>
+                    <option value="gateway" className="bg-background dark:bg-slate-800">{t('network.gatewayVps')}</option>
+                    <option value="other" className="bg-background dark:bg-slate-800">{t('network.other')}</option>
+                  </select>
+                </div>
+
+                {/* Authentication Mode - only for MikroTik */}
+                {formData.type === 'mikrotik' && (
+                <div>
+                  <label className="block text-sm font-medium text-brand-500 mb-2">Authentication Mode *</label>
+                  <select
+                    value={formData.authMode}
+                    onChange={(e) => setFormData({ ...formData, authMode: e.target.value })}
+                    className="w-full px-4 py-3 bg-input border border-border rounded-xl text-foreground focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all"
+                    required
+                  >
+                    <option value="radius" className="bg-background dark:bg-slate-800">RADIUS Only - Semua auth via FreeRADIUS</option>
+                    <option value="local" className="bg-background dark:bg-slate-800">Local Only - Auth via database lokal MikroTik</option>
+                  </select>
+                  <p className="text-xs text-muted-foreground mt-1.5">
+                    {formData.authMode === 'radius' && 'Semua user autentikasi melalui FreeRADIUS server.'}
+                    {formData.authMode === 'local' && 'User autentikasi via database lokal MikroTik (tidak butuh RADIUS).'}
+                  </p>
+                </div>
+                )}
+
+                {/* VPN Client Toggle */}
+                <div className="p-4 bg-brand-500/10 border border-brand-500/30 rounded-xl">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={useVpnClient}
+                      onChange={(e) => {
+                        setUseVpnClient(e.target.checked)
+                        if (!e.target.checked) setFormData({ ...formData, vpnClientId: '' })
+                      }}
+                      className="w-5 h-5 rounded border-border bg-background dark:bg-slate-900 text-brand-500"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-foreground">{t('network.connectViaVpn')}</span>
+                      <p className="text-xs text-muted-foreground mt-0.5">{t('network.useVpnClientIp')}</p>
+                    </div>
+                  </label>
+                </div>
+
+                {/* VPN Client Selector */}
+                {useVpnClient && (
+                  <div>
+                    <label className="block text-sm font-medium text-brand-500 mb-2">{t('network.vpnClient')} *</label>
+                    <select
+                      value={formData.vpnClientId}
+                      onChange={(e) => handleVpnClientChange(e.target.value)}
+                      className="w-full px-4 py-3 bg-input border border-border rounded-xl text-foreground focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all"
+                      required={useVpnClient}
+                    >
+                      <option value="" className="bg-background dark:bg-slate-800">{t('network.selectVpnClient')}</option>
+                      {vpnClients.map((vpn) => (
+                        <option key={vpn.id} value={vpn.id} className="bg-background dark:bg-slate-800">
+                          {vpn.name} ({vpn.vpnIp}) {vpn.isRadiusServer ? '★' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* IP Address */}
+                <div>
+                  <label className="block text-sm font-medium text-brand-500 mb-2">{t('network.ipAddress')} *</label>
+                  <input
+                    type="text"
+                    value={formData.ipAddress}
+                    onChange={(e) => setFormData({ ...formData, ipAddress: e.target.value, nasname: e.target.value })}
+                    className="w-full px-4 py-3 bg-input border border-border rounded-xl text-foreground placeholder-gray-500 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all disabled:opacity-50"
+                    placeholder="192.168.88.1"
+                    required
+                    disabled={useVpnClient && !!formData.vpnClientId}
+                  />
+                </div>
+
+                {/* API Port - only show for MikroTik routers, not gateway/VPS */}
+                {formData.type === 'mikrotik' && (
+                <div>
+                  <label className="block text-sm font-medium text-brand-500 mb-2">{t('network.apiPort')}</label>
+                  <input
+                    type="number"
+                    value={formData.port}
+                    onChange={(e) => setFormData({ ...formData, port: e.target.value })}
+                    className="w-full px-4 py-3 bg-input border border-border rounded-xl text-foreground focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all"
+                    placeholder="8728"
+                  />
+                </div>
+                )}
+
+                {/* Credentials - only for MikroTik */}
+                {formData.type === 'mikrotik' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-brand-500 mb-2">{t('network.username')} *</label>
+                      <input
+                        type="text"
+                        value={formData.username}
+                        onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+                        className="w-full px-4 py-3 bg-input border border-border rounded-xl text-foreground placeholder-gray-500 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all"
+                        placeholder="admin"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-brand-500 mb-2">{t('network.password')} *</label>
+                      <input
+                        type="password"
+                        value={formData.password}
+                        onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                        className="w-full px-4 py-3 bg-input border border-border rounded-xl text-foreground placeholder-gray-500 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all"
+                        placeholder="********"
+                        required={!editingRouter}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* RADIUS Secret - auto-generated */}
+                <div>
+                  <label className="block text-sm font-medium text-brand-500 mb-2">{t('network.radiusSecret')} (Auto-generated)</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={formData.secret}
+                      readOnly
+                      className="flex-1 px-4 py-3 bg-input border border-border rounded-xl text-foreground font-mono text-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all cursor-not-allowed opacity-80"
+                      placeholder="Auto-generated"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, secret: generateSecret() })}
+                      className="px-4 py-3 bg-primary/10 border border-border text-primary rounded-xl hover:bg-primary/10 transition-all font-medium whitespace-nowrap truncate overflow-hidden"
+                      title="Generate new secret"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1.5">Secret di-generate otomatis. Copy paste ke MikroTik saat setup RADIUS.</p>
+                </div>
+
+                {/* Test Connection - only for MikroTik */}
+                {!editingRouter && formData.type === 'mikrotik' && (
+                  <div className="p-4 bg-primary/10 border border-border rounded-xl">
+                    <div className="flex items-center justify-between mb-3 min-w-0">
+                      <span className="text-sm font-medium text-foreground">{t('network.testConnection')}</span>
+                      <button
+                        type="button"
+                        onClick={handleTestConnection}
+                        disabled={testing}
+                        className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-brand-500 to-[#00d4e6] text-black font-bold rounded-lg hover: transition-all disabled:opacity-50 text-sm"
+                      >
+                        {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                        {testing ? t('network.testing') : t('common.test')}
+                      </button>
+                    </div>
+                    {testResult && (
+                      <div className={`p-3 rounded-lg ${testResult.success ? 'bg-green-500/10 border border-green-500/30' : 'bg-red-500/10 border border-red-500/30'}`}>
+                        <div className="flex items-center gap-2">
+                          {testResult.success ? <CheckCircle className="w-5 h-5 text-green-400" /> : <XCircle className="w-5 h-5 text-red-400" />}
+                          <div>
+                            <p className={`text-sm font-medium ${testResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                              {testResult.message}
+                            </p>
+                            {testResult.identity && <p className="text-xs text-green-400 mt-1">{t('network.routerPrefix')}: {testResult.identity}</p>}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div className="flex gap-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => { setShowModal(false); setEditingRouter(null); resetForm() }}
+                    className="flex-1 px-4 py-3 bg-muted border border-border text-foreground rounded-xl hover:bg-accent transition-all font-medium"
+                  >
+                    {t('common.cancel')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={creating}
+                    className="flex-1 px-4 py-3 bg-gradient-to-r from-brand-500 to-[#00d4e6] text-black font-bold rounded-xl hover: transition-all disabled:opacity-50"
+                  >
+                    {creating ? t('common.saving') : (editingRouter ? t('network.updateRouter') : t('network.addRouter'))}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+      </main>
+    </>
+  )
+}

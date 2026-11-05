@@ -1,0 +1,148 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
+import dynamic from 'next/dynamic';
+import { useTranslation } from '@/hooks/useTranslation';
+import { 
+  Settings as SettingsIcon,
+  MessageSquare,
+  FileText,
+  History,
+  Send,
+  Smartphone,
+  Loader2
+} from 'lucide-react';
+
+// Dynamic imports for better performance
+const ProvidersPageContent = dynamic(() => import('@/app/admin/whatsapp/providers/page'), {
+  loading: () => <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>
+});
+const TemplatesPageContent = dynamic(() => import('@/app/admin/whatsapp/templates/page'), {
+  loading: () => <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>
+});
+const NotificationsPageContent = dynamic(() => import('@/app/admin/whatsapp/notifications/page'), {
+  loading: () => <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>
+});
+const SendPageContent = dynamic(() => import('@/app/admin/whatsapp/send/page'), {
+  loading: () => <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>
+});
+const HistoryPageContent = dynamic(() => import('@/app/admin/whatsapp/history/page'), {
+  loading: () => <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>
+});
+
+export default function WhatsAppSettingsPage() {
+  const { t } = useTranslation();
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const tabParam = searchParams.get('tab') as 'providers' | 'templates' | 'notifications' | 'send' | 'history' | null;
+  const [activeTab, setActiveTab] = useState<'providers' | 'templates' | 'notifications' | 'send' | 'history'>(tabParam || 'providers');
+
+  useEffect(() => {
+    if (tabParam && ['providers', 'templates', 'notifications', 'send', 'history'].includes(tabParam)) {
+      setActiveTab(tabParam);
+    }
+  }, [tabParam]);
+
+  const handleTabChange = (tab: 'providers' | 'templates' | 'notifications' | 'send' | 'history') => {
+    setActiveTab(tab);
+    router.push(`/admin/settings/whatsapp?tab=${tab}`, { scroll: false });
+  };
+
+  return (
+    <div className="bg-background relative">
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-0 left-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-primary/10 rounded-full blur-3xl"></div>
+        <div className="absolute top-1/3 right-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-brand-500/20 rounded-full blur-3xl"></div>
+        <div className="absolute bottom-0 left-1/2 w-48 h-48 sm:w-96 sm:h-96 bg-pink-500/20 rounded-full blur-3xl"></div>
+        <div className="hidden dark:block absolute inset-0 bg-[linear-gradient(rgba(139,92,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(139,92,246,0.03)_1px,transparent_1px)] bg-[size:50px_50px]"></div>
+      </div>
+      <div className="relative z-10 space-y-6">
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold text-foreground dark:text-transparent dark:bg-clip-text dark:bg-gradient-to-r dark:from-brand-500 dark:via-white dark:to-pink-500 dark:drop- flex items-center gap-2">
+            <MessageSquare className="w-6 h-6 text-brand-500" />
+            {t('whatsapp.settings')}
+          </h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-1">
+            {t('whatsapp.settingsDesc')}
+          </p>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="border-b border-border">
+        <div className="flex flex-wrap gap-1 sm:gap-2">
+          <button
+            onClick={() => handleTabChange('providers')}
+            className={`pb-2 px-2 sm:px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'providers'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Smartphone className="w-3.5 h-3.5 sm:w-4 sm:h-4 inline mr-1" />
+            {t('whatsapp.providers')}
+          </button>
+          <button
+            onClick={() => handleTabChange('templates')}
+            className={`pb-2 px-2 sm:px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'templates'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <FileText className="w-3.5 h-3.5 sm:w-4 sm:h-4 inline mr-1" />
+            {t('whatsapp.templates')}
+          </button>
+          <button
+            onClick={() => handleTabChange('notifications')}
+            className={`pb-2 px-2 sm:px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'notifications'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <SettingsIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 inline mr-1" />
+            {t('whatsapp.reminderSettings')}
+          </button>
+          <button
+            onClick={() => handleTabChange('send')}
+            className={`pb-2 px-2 sm:px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'send'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4 inline mr-1" />
+            {t('whatsapp.sendMessage')}
+          </button>
+          <button
+            onClick={() => handleTabChange('history')}
+            className={`pb-2 px-2 sm:px-3 text-xs sm:text-sm font-medium border-b-2 transition-colors ${
+              activeTab === 'history'
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            <History className="w-3.5 h-3.5 sm:w-4 sm:h-4 inline mr-1" />
+            {t('common.history')}
+          </button>
+        </div>
+      </div>
+
+      {/* Tab Content */}
+      <div className="mt-4">
+        {activeTab === 'providers' && <ProvidersPageContent />}
+        {activeTab === 'templates' && <TemplatesPageContent />}
+        {activeTab === 'notifications' && <NotificationsPageContent />}
+        {activeTab === 'send' && <SendPageContent />}
+        {activeTab === 'history' && <HistoryPageContent />}
+      </div>
+    </div>
+    </div>
+    </div>
+  );
+}

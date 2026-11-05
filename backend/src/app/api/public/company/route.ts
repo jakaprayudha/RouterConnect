@@ -1,0 +1,57 @@
+﻿import { NextResponse } from 'next/server';
+import { prisma } from '@/server/db/client';
+
+// Always fetch fresh company data from DB (not cached at build time)
+export const dynamic = 'force-dynamic';
+
+export async function GET() {
+  try {
+    const company = await prisma.company.findFirst({
+      select: {
+        name: true,
+        logo: true,
+        phone: true,
+        poweredBy: true,
+        footerAdmin: true,
+        footerCustomer: true,
+        footerTechnician: true,
+        footerAgent: true,
+        footerCollector: true,
+        timezone: true,
+      }
+    });
+
+    return NextResponse.json({
+      success: true,
+      company: {
+        name: company?.name || '',
+        logo: company?.logo || null,
+        phone: company?.phone || null,
+        poweredBy: company?.poweredBy || '',
+        footerAdmin: company?.footerAdmin || null,
+        footerCustomer: company?.footerCustomer || null,
+        footerTechnician: company?.footerTechnician || null,
+        footerAgent: company?.footerAgent || null,
+        footerCollector: company?.footerCollector || null,
+        timezone: company?.timezone || 'Asia/Jakarta',
+      }
+    });
+  } catch (error: any) {
+    console.error('Get company error:', error);
+    return NextResponse.json({
+      success: true,
+      company: {
+        name: '',
+        logo: null,
+        phone: null,
+        poweredBy: '',
+        footerAdmin: null,
+        footerCustomer: null,
+        footerTechnician: null,
+        footerAgent: null,
+        footerCollector: null,
+        timezone: 'Asia/Jakarta',
+      }
+    });
+  }
+}

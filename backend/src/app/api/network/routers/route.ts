@@ -1,0 +1,501 @@
+﻿import { NextRequest, NextResponse } from 'next/server';
+import { reloadFreeRadius } from '@/server/services/radius/freeradius.service';
+import { logActivity } from '@/server/services/activity-log.service';
+import { requirePermission } from '@/server/middleware/api-auth';
+import crypto from 'crypto';
+import os from 'os';
+const RouterOSAPI = require('node-routeros').RouterOSAPI;
+import { prisma } from '@/server/db/client';
+import { cacheAside, invalidateKey, CACHE_KEYS, CACHE_TTL } from '@/server/cache/redis';
+
+// Auto-detect server IP from network interfaces
+const getServerIp = (): string => {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name] || []) {
+      // Skip internal (loopback) and non-IPv4 addresses
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return '127.0.0.1';
+};
+
+// RADIUS Server IP - prioritas: ENV > auto-detect
+const getRadiusServerIp = () => process.env.RADIUS_SERVER_IP || process.env.VPS_IP || getServerIp();
+
+// GET - Load all routers
+export async function GET() {
+  const authCheck = await requirePermission('routers.view');
+  if (!authCheck.authorized) return authCheck.response;
+  try {
+    const radiusServerIp = getRadiusServerIp();
+
+    // Cache routers + vpnClients (static data, rarely changes)
+    const cached = await cacheAside(
+      CACHE_KEYS.routers,
+      CACHE_TTL.static,
+      async () => {
+        const routers = await prisma.router.findMany({
+          include: {
+            vpnClient: {
+              select: {
+                id: true,
+                name: true,
+                vpnIp: true,
+              }
+            }
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        // Load VPN clients
+        const vpnClients = await prisma.vpnClient.findMany({
+          select: {
+            id: true,
+            name: true,
+            vpnIp: true,
+            isRadiusServer: true,
+            apiUsername: true,
+            apiPassword: true,
+          },
+          orderBy: { name: 'asc' },
+        });
+
+        // Attach nasSecret + credentials from linked router (NAS) entry
+        const clientIds = vpnClients.map((c: { id: string }) => c.id)
+        const nasEntries = clientIds.length > 0
+          ? await prisma.router.findMany({
+              where: { vpnClientId: { in: clientIds } },
+              select: { vpnClientId: true, secret: true, username: true, password: true },
+            })
+          : []
+        type NasEntry = { vpnClientId: string | null; secret: string; username: string | null; password: string | null }
+        const nasMap = new Map(nasEntries.map((n: NasEntry) => [n.vpnClientId, n]))
+        const vpnClientsWithSecret = vpnClients.map((c: { id: string; name: string; vpnIp: string; isRadiusServer: boolean; apiUsername: string | null; apiPassword: string | null }) => {
+          const nas = nasMap.get(c.id)
+          return {
+            ...c,
+            nasSecret: nas?.secret ?? null,
+            resolvedUsername: c.apiUsername ?? nas?.username ?? null,
+            resolvedPassword: c.apiPassword ?? nas?.password ?? null,
+          }
+        })
+
+        const routersWithServer = routers.map(router => ({
+          ...router,
+          ports: router.ports || 1812,
+        }));
+
+        return { routers: routersWithServer, vpnClients: vpnClientsWithSecret };
+      }
+    );
+
+    // Add radiusServerIp (computed, not cached — may change based on network)
+    const routersWithServerIp = cached.routers.map(router => ({
+      ...router,
+      radiusServerIp: radiusServerIp,
+    }));
+
+    return NextResponse.json({ routers: routersWithServerIp, vpnClients: cached.vpnClients, radiusServerIp });
+  } catch (error) {
+    console.error('Load routers error:', error);
+    return NextResponse.json({ error: 'Failed to load routers' }, { status: 500 });
+  }
+}
+
+// POST - Add new router
+export async function POST(request: NextRequest) {
+  const authCheck = await requirePermission('routers.manage');
+  if (!authCheck.authorized) return authCheck.response;
+  const session = authCheck.session;
+  try {
+    const body = await request.json();
+    const { name, ipAddress, nasIpAddress, username, password, port, secret, latitude, longitude, vpnClientId, type, authMode } = body;
+
+    // Basic validation
+    if (!name || !ipAddress) {
+      return NextResponse.json(
+        { error: 'Name and IP address are required' },
+        { status: 400 }
+      );
+    }
+
+    // For mikrotik type, require username and password
+    const isMikrotik = type !== 'gateway' && type !== 'other';
+    if (isMikrotik && (!username || !password)) {
+      return NextResponse.json(
+        { error: 'Username and password are required for MikroTik routers' },
+        { status: 400 }
+      );
+    }
+
+    // Parse integers
+    const portInt = parseInt(port) || 8728;
+
+    // Auto-generate secret if not provided
+    const finalSecret = secret || crypto.randomBytes(12).toString('hex');
+
+    // Generate shortname from name (remove spaces, lowercase)
+    const shortname = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    
+    // nasname = IP yang digunakan FreeRADIUS untuk autentikasi (IP publik/VPN source)
+    // ipAddress = IP untuk koneksi API MikroTik
+    // Jika nasIpAddress tidak diisi, gunakan ipAddress sebagai default
+    const nasname = nasIpAddress || ipAddress;
+
+    // Check if router with same nasname+port+secret already exists
+    const existingRouter = await prisma.router.findFirst({
+      where: {
+        nasname,
+        ports: 1812,
+        secret: finalSecret,
+      },
+    });
+
+    if (existingRouter) {
+      return NextResponse.json(
+        { 
+          error: 'Router dengan kombinasi IP, Port RADIUS, dan Secret yang sama sudah ada. Gunakan port atau secret berbeda.',
+          details: `Existing router: ${existingRouter.name}`
+        },
+        { status: 409 }
+      );
+    }
+
+    // Test connection to MikroTik (skip for gateway/other type AND skip when vpnClientId is set)
+    if (isMikrotik && !vpnClientId) {
+      try {
+        const conn = new RouterOSAPI({
+          host: ipAddress,
+          user: username,
+          password: password,
+          port: portInt,
+          timeout: 5,
+          tls: false,
+        });
+
+        await conn.connect();
+      
+        // Get router identity
+        const _identity = await conn.write('/system/identity/print');
+        
+        conn.close();
+      } catch (apiError: any) {
+        return NextResponse.json(
+          { error: `Failed to connect to router: ${apiError.message}` },
+          { status: 400 }
+        );
+      }
+    }
+
+    // Save to database
+    const router = await prisma.router.create({
+      data: {
+        id: crypto.randomUUID(),
+        name,
+        nasname,           // IP untuk FreeRADIUS client (IP publik/VPN)
+        shortname,
+        type: type || 'mikrotik',
+        authMode: authMode || 'radius',
+        ipAddress,         // IP untuk koneksi API MikroTik
+        username: username || null,
+        password: password || null,
+        port: portInt,
+        secret: finalSecret,
+        ports: 1812, // RADIUS auth port
+        description: type === 'gateway' ? `Gateway - ${name}` : `MikroTik Router - ${name}`,
+        latitude: latitude ? parseFloat(latitude) : null,
+        longitude: longitude ? parseFloat(longitude) : null,
+        vpnClientId: vpnClientId || null,
+        isActive: true,
+      },
+    });
+
+    // Restart FreeRADIUS to reload NAS table
+    await reloadFreeRadius();
+
+    // Log activity
+    try {
+      await logActivity({
+        userId: authCheck.userId,
+        username: (session?.user as any)?.username || 'Admin',
+        userRole: (session?.user as any)?.role,
+        action: 'ADD_ROUTER',
+        description: `Added new router: ${name}`,
+        module: 'network',
+        status: 'success',
+        request,
+        metadata: {
+          routerId: router.id,
+          routerName: name,
+          ipAddress,
+          nasIpAddress: nasname,
+        },
+      });
+    } catch (logError) {
+      console.error('Activity log error:', logError);
+    }
+
+    await invalidateKey(CACHE_KEYS.routers);
+
+    return NextResponse.json({
+      success: true,
+      router,
+      message: type === 'gateway' ? 'Gateway added successfully' : 'Router added and connection test successful',
+    });
+  } catch (error) {
+    console.error('Add router error:', error);
+    return NextResponse.json({ error: 'Failed to add router' }, { status: 500 });
+  }
+}
+
+// PUT - Update router
+export async function PUT(request: NextRequest) {
+  const authCheck = await requirePermission('routers.manage');
+  if (!authCheck.authorized) return authCheck.response;
+  const session = authCheck.session;
+  try {
+    const body = await request.json();
+    const { id, name, type, authMode, ipAddress, nasIpAddress, nasname: nasnameFromBody, username, password, port, secret, isActive, latitude, longitude, vpnClientId } = body;
+
+    if (!id) {
+      return NextResponse.json({ error: 'Router ID is required' }, { status: 400 });
+    }
+
+    // Generate shortname from name if name is provided
+    const shortname = name ? name.toLowerCase().replace(/[^a-z0-9]/g, '') : undefined;
+    
+    // nasname = IP untuk FreeRADIUS (IP publik/VPN)
+    const nasname = nasIpAddress || nasnameFromBody || ipAddress || undefined;
+
+    // Determine router type
+    const currentRouter = await prisma.router.findUnique({ where: { id } });
+    if (!currentRouter) {
+      return NextResponse.json({ error: 'Router not found' }, { status: 404 });
+    }
+    const effectiveType = type || currentRouter.type;
+    const isMikrotik = effectiveType !== 'gateway' && effectiveType !== 'other';
+
+    // Test connection only for MikroTik routers with changed credentials
+    const effectiveVpnClientId = vpnClientId !== undefined ? vpnClientId : currentRouter.vpnClientId
+    if (isMikrotik && !effectiveVpnClientId && (username || password || port)) {
+      try {
+        const conn = new RouterOSAPI({
+          host: ipAddress || currentRouter.ipAddress,
+          user: username || currentRouter.username || '',
+          password: password || currentRouter.password || '',
+          port: port || currentRouter.port || 8728,
+          timeout: 5,
+          tls: false,
+        });
+
+        await conn.connect();
+        conn.close();
+      } catch (connError: any) {
+        return NextResponse.json(
+          { 
+            error: 'Failed to connect with new credentials', 
+            details: connError.message 
+          },
+          { status: 400 }
+        );
+      }
+    }
+
+    const router = await prisma.router.update({
+      where: { id },
+      data: {
+        ...(name && { name }),
+        ...(shortname && { shortname }),
+        ...(type && { type }),
+        ...(authMode && { authMode }),
+        ...(nasname && { nasname }),
+        ...(ipAddress && { ipAddress }),
+        ...(username !== undefined && { username: username || null }),
+        ...(password !== undefined && { password: password || null }),
+        ...(port && { port: parseInt(port.toString()) }),
+        ...(secret && { secret }),
+        ...(isActive !== undefined && { isActive }),
+        ...(latitude !== undefined && { latitude: latitude ? parseFloat(latitude) : null }),
+        ...(longitude !== undefined && { longitude: longitude ? parseFloat(longitude) : null }),
+        ...(vpnClientId !== undefined && { vpnClientId: vpnClientId || null }),
+        // server: NULL - untuk FreeRADIUS virtual_server name
+      },
+    });
+
+    // Detect authMode change for MikroTik routers — trigger bulk sync of existing customers
+    const authModeChanged = isMikrotik && authMode && currentRouter.authMode && authMode !== currentRouter.authMode;
+    let migrationSummary: { triggered: boolean; mode: string; usersAffected: number } | null = null;
+
+    if (authModeChanged) {
+      try {
+        const { enqueueTask } = await import('@/server/services/external-task.service');
+        const { getMikrotikProfileName } = await import('@/server/services/mikrotik/ppp-secret.service');
+
+        // Get all active/isolated PPPoE users on this router (PPPoE connection type only)
+        const users = await prisma.pppoeUser.findMany({
+          where: {
+            routerId: id,
+            status: { in: ['active', 'isolated'] },
+            connectionType: 'PPPOE',
+          },
+          select: { id: true, username: true, password: true, profileId: true, status: true },
+        });
+
+        if (authMode === 'local') {
+          // radius → local: create/enable PPP secrets (MikroTik becomes primary auth)
+          // Use sync_mikrotik_create (idempotent upsert) — works even if secret was never created in radius mode
+          for (const u of users) {
+            const mtProfile = u.profileId ? await getMikrotikProfileName(u.profileId) : null;
+            const disabled = u.status === 'isolated';
+            await enqueueTask(prisma, 'pppoe_user', u.id, 'sync_mikrotik_create', {
+              routerId: id,
+              username: u.username,
+              password: u.password,
+              profile: mtProfile || undefined,
+              disabled,
+              comment: `Salfanet-${u.id.slice(0, 8)}`,
+            });
+            // CoA disconnect: kick active RADIUS session so user re-auth via MikroTik local
+            await enqueueTask(prisma, 'pppoe_user', u.id + '_coa', 'coa_disconnect', {
+              username: u.username,
+            });
+          }
+          migrationSummary = { triggered: true, mode: 'radius→local', usersAffected: users.length };
+          console.log(`[ROUTER_UPDATE] authMode radius→local: enqueued ${users.length} sync_mikrotik_create + coa_disconnect tasks for router ${id}`);
+        } else if (authMode === 'radius') {
+          // local → radius: disable PPP secrets (RADIUS becomes primary, secret = backup)
+          // Use sync_mikrotik_create (idempotent upsert) with disabled=true
+          for (const u of users) {
+            const mtProfile = u.profileId ? await getMikrotikProfileName(u.profileId) : null;
+            await enqueueTask(prisma, 'pppoe_user', u.id, 'sync_mikrotik_create', {
+              routerId: id,
+              username: u.username,
+              password: u.password,
+              profile: mtProfile || undefined,
+              disabled: true,  // disable secret — RADIUS is now primary
+              comment: `Salfanet-${u.id.slice(0, 8)}`,
+            });
+            // CoA disconnect: kick active local session so user re-auth via RADIUS
+            await enqueueTask(prisma, 'pppoe_user', u.id + '_coa', 'coa_disconnect', {
+              username: u.username,
+            });
+          }
+          migrationSummary = { triggered: true, mode: 'local→radius', usersAffected: users.length };
+          console.log(`[ROUTER_UPDATE] authMode local→radius: enqueued ${users.length} sync_mikrotik_create (disabled) + coa_disconnect tasks for router ${id}`);
+        }
+      } catch (migrateError) {
+        console.error('[ROUTER_UPDATE] authMode migration sync error:', migrateError);
+        // Non-fatal — DB update already succeeded, sync can be retried via migrate-local-auth endpoint
+      }
+    }
+
+    // Restart FreeRADIUS to reload NAS table
+    await reloadFreeRadius();
+
+    // Log activity
+    try {
+      await logActivity({
+        userId: authCheck.userId,
+        username: (session?.user as any)?.username || 'Admin',
+        userRole: (session?.user as any)?.role,
+        action: 'UPDATE_ROUTER',
+        description: `Updated router: ${router.name}`,
+        module: 'network',
+        status: 'success',
+        request,
+        metadata: {
+          routerId: router.id,
+          routerName: router.name,
+          changes: {
+            name: name || undefined,
+            ipAddress: ipAddress || undefined,
+            nasIpAddress: nasIpAddress || undefined,
+            isActive: isActive !== undefined ? isActive : undefined,
+            authModeChanged: authModeChanged || undefined,
+            authModeMigration: migrationSummary || undefined,
+          },
+        },
+      });
+    } catch (logError) {
+      console.error('Activity log error:', logError);
+    }
+
+    // Return updated router with vpnClient included for frontend RADIUS script refresh
+    const updatedRouter = await prisma.router.findUnique({
+      where: { id },
+      include: { vpnClient: { select: { id: true, name: true, vpnIp: true } } },
+    });
+    await invalidateKey(CACHE_KEYS.routers);
+    return NextResponse.json({
+      success: true,
+      router: updatedRouter ?? router,
+      vpnClientChanged: vpnClientId !== undefined,
+      authModeMigration: migrationSummary,
+    });
+  } catch (error) {
+    console.error('Update router error:', error);
+    return NextResponse.json({ error: 'Failed to update router' }, { status: 500 });
+  }
+}
+
+// DELETE - Remove router
+export async function DELETE(request: NextRequest) {
+  const authCheck = await requirePermission('routers.manage');
+  if (!authCheck.authorized) return authCheck.response;
+  const session = authCheck.session;
+  try {
+    const { searchParams } = new URL(request.url);
+    const id = searchParams.get('id');
+
+    if (!id) {
+      return NextResponse.json({ error: 'Router ID is required' }, { status: 400 });
+    }
+
+    // Get router details before deletion
+    const router = await prisma.router.findUnique({
+      where: { id },
+      select: { id: true, name: true, ipAddress: true },
+    });
+
+    if (!router) {
+      return NextResponse.json({ error: 'Router not found' }, { status: 404 });
+    }
+
+    await prisma.router.delete({
+      where: { id },
+    });
+
+    // Restart FreeRADIUS to reload NAS table
+    await reloadFreeRadius();
+
+    // Log activity
+    try {
+      await logActivity({
+        userId: authCheck.userId,
+        username: (session?.user as any)?.username || 'Admin',
+        userRole: (session?.user as any)?.role,
+        action: 'DELETE_ROUTER',
+        description: `Deleted router: ${router.name}`,
+        module: 'network',
+        status: 'success',
+        request,
+        metadata: {
+          routerId: router.id,
+          routerName: router.name,
+          ipAddress: router.ipAddress,
+        },
+      });
+    } catch (logError) {
+      console.error('Activity log error:', logError);
+    }
+
+    await invalidateKey(CACHE_KEYS.routers);
+    return NextResponse.json({ success: true, message: 'Router deleted successfully' });
+  } catch (error) {
+    console.error('Delete router error:', error);
+    return NextResponse.json({ error: 'Failed to delete router' }, { status: 500 });
+  }
+}

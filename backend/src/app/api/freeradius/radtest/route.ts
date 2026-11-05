@@ -1,0 +1,110 @@
+﻿import { NextResponse } from 'next/server';
+import { requirePermission } from '@/server/middleware/api-auth';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import net from 'net';
+
+const execFileAsync = promisify(execFile);
+
+// NAS host: IPv4/IPv6 literal or a plain hostname (letters/digits/dot/hyphen only — no shell metacharacters).
+const HOSTNAME_RE = /^[a-zA-Z0-9.-]+$/;
+
+function isValidNasHost(host: string): boolean {
+    return net.isIP(host) !== 0 || HOSTNAME_RE.test(host);
+}
+
+export async function POST(req: Request) {
+    const authCheck = await requirePermission('settings.edit');
+    if (!authCheck.authorized) return authCheck.response;
+    try {
+        const { username, password, nasIP, nasPort, secret } = await req.json();
+
+        if (!username || !password || typeof username !== 'string' || typeof password !== 'string') {
+            return NextResponse.json(
+                { success: false, error: 'Username and password are required' },
+                { status: 400 }
+            );
+        }
+
+        const host = nasIP ? String(nasIP) : '127.0.0.1';
+        if (!isValidNasHost(host)) {
+            return NextResponse.json(
+                { success: false, error: 'Invalid nasIP' },
+                { status: 400 }
+            );
+        }
+
+        const port = nasPort !== undefined && nasPort !== null ? Number(nasPort) : 1812;
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+            return NextResponse.json(
+                { success: false, error: 'Invalid nasPort' },
+                { status: 400 }
+            );
+        }
+
+        const radiusSecret = secret !== undefined && secret !== null ? String(secret) : 'testing123';
+
+        // Execute radtest command — execFile with an argument array, no shell involved.
+        const startTime = Date.now();
+        let stdout = '';
+        let stderr = '';
+
+        try {
+            const result = await execFileAsync('radtest', [username, password, host, String(port), radiusSecret]);
+            stdout = result.stdout;
+            stderr = result.stderr;
+        } catch (error: any) {
+            // radtest might return non-zero exit code on Access-Reject, which throws an error
+            // We still want to parse the output
+            stdout = error.stdout || '';
+            stderr = error.stderr || '';
+        }
+
+        const duration = Date.now() - startTime;
+        const rawOutput = stdout + stderr;
+
+        // Parse output
+        const isAccessAccept = rawOutput.includes('Access-Accept');
+        const isAccessReject = rawOutput.includes('Access-Reject');
+        const responseType = isAccessAccept ? 'Access-Accept' : (isAccessReject ? 'Access-Reject' : 'Unknown');
+        const responseCode = isAccessAccept ? '200' : '401'; // Simplified code
+
+        // Parse attributes
+        const attributes: { name: string; value: string }[] = [];
+        const lines = rawOutput.split('\n');
+        let parsingAttributes = false;
+
+        for (const line of lines) {
+            if (line.includes('Received Access-Accept') || line.includes('Received Access-Reject')) {
+                parsingAttributes = true;
+                continue;
+            }
+
+            if (parsingAttributes) {
+                const match = line.match(/^\s*([^=\s]+)\s*=\s*(.+)$/);
+                if (match) {
+                    attributes.push({ name: match[1], value: match[2].trim() });
+                }
+            }
+        }
+
+        return NextResponse.json({
+            success: true,
+            result: {
+                success: isAccessAccept,
+                responseCode,
+                responseType,
+                duration,
+                attributes,
+                rawOutput
+            }
+        });
+
+    } catch (error: any) {
+        console.error('Error running radtest:', error);
+        return NextResponse.json(
+            { success: false, error: error.message || 'Failed to run radtest' },
+            { status: 500 }
+        );
+    }
+}

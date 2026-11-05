@@ -1,0 +1,1877 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { showSuccess, showError, showConfirm } from '@/lib/sweetalert';
+import { useTranslation } from '@/hooks/useTranslation';
+import { Shield, Plus, Trash2, Eye, Loader2, Users, Copy, CheckCircle, XCircle, Wifi, Radio, Terminal, ChevronDown, ChevronUp, Route, Zap, Info, Key, Settings } from 'lucide-react';
+import { apiAdmin } from '@/lib/api';
+import { useApiQuery, useQueryClient, buildQueryKey } from '@/lib/api/hooks';
+
+interface VpnClient {
+  id: string
+  name: string
+  vpnServerId: string
+  vpnIp: string
+  username: string
+  password: string
+  vpnType: string
+  description?: string
+  winboxPort?: number
+  apiUsername?: string
+  apiPassword?: string
+  clientPublicKey?: string | null
+  clientPrivateKey?: string | null
+  isActive: boolean
+  isRadiusServer: boolean
+  createdAt: string
+  vpnServer?: VpnServer
+  nasSecret?: string | null
+}
+
+interface VpnServer {
+  id: string
+  host: string
+  name: string
+  subnet: string
+  l2tpEnabled?: boolean
+  sstpEnabled?: boolean
+  pptpEnabled?: boolean
+  wgPublicKey?: string | null
+  wgPort?: number | null
+  wgEnabled?: boolean
+}
+
+interface Credentials {
+  server: string
+  username: string
+  password: string
+  vpnIp: string
+  winboxPort?: number
+  winboxRemote?: string
+  apiUsername?: string
+  apiPassword?: string
+  vpnType?: string
+  nasSecret?: string        // RADIUS shared secret for this NAS
+  radiusServerIp?: string  // RADIUS server VPN IP
+  ipsecPsk?: string                 // IPsec pre-shared key for L2TP
+  clientPrivateKey?: string | null  // WireGuard private key
+  serverPublicKey?: string | null   // WireGuard server public key
+  wgPort?: number | null            // WireGuard listen port
+  serverHost?: string               // VPN server host (for WG endpoint)
+  wgSubnet?: string                 // WireGuard VPN subnet e.g. 10.200.0.0/24
+  wgGatewayIp?: string              // VPS tunnel gateway IP e.g. 10.200.0.1
+  nasName?: string                  // Display name of the NAS (used for interface naming)
+}
+
+interface WgPeerInfo {
+  publicKey: string;
+  endpoint?: string;
+  allowedIps?: string;
+  lastHandshake?: string;
+}
+
+interface VpsWgServerInfoResponse {
+  installed: boolean;
+  publicIp?: string;
+  publicKey?: string;
+  listenPort?: number;
+  subnet?: string;
+  poolStart?: number | string;
+  poolEnd?: number | string;
+  gatewayIp?: string;
+  peers?: WgPeerInfo[];
+  message?: string;
+}
+
+interface VpsWgPeerMutateResponse {
+  success: boolean;
+  error?: string;
+  vpnIp?: string;
+  vpnSubnet?: string;
+  serverEndpoint?: string;
+  clientPrivateKey?: string;
+  serverPublicKey?: string;
+  wgPort?: number;
+  gatewayIp?: string;
+  allowedIps?: string;
+  nasSecret?: string;
+  apiUsername?: string;
+  apiPassword?: string;
+  routerosScript?: string;
+  poolStart?: number | string;
+  poolEnd?: number | string;
+  subnet?: string;
+}
+
+interface VpsL2tpInfoResponse {
+  installed: boolean;
+  publicIp?: string;
+  ipsecPsk?: string;
+  subnet?: string;
+  localIp?: string;
+  poolStart?: number | string;
+  poolEnd?: number | string;
+  gateway?: string;
+}
+
+interface VpsL2tpPeerMutateResponse {
+  success: boolean;
+  error?: string;
+  ipsecPsk?: string;
+  apiPassword?: string;
+  username?: string;
+  password?: string;
+  vpnIp?: string;
+  nasSecret?: string;
+  routerosScript?: string;
+  poolStart?: number | string;
+  poolEnd?: number | string;
+  gateway?: string;
+}
+
+interface VpnClientListResponse {
+  clients: VpnClient[];
+  vpnServers: VpnServer[];
+}
+
+interface VpnClientCreateResponse {
+  success: boolean;
+  credentials?: Credentials;
+  error?: string;
+}
+
+interface VpnClientPatchResponse {
+  success: boolean;
+  newIp?: string;
+  error?: string;
+}
+
+interface VpnRoutingResponse {
+  success: boolean;
+  output?: string;
+  message?: string;
+}
+
+/** Convert a NAS name to a safe MikroTik interface name segment (max 12 chars, alphanumeric + dash) */
+function toSafeIfaceName(prefix: string, name: string): string {
+  const safe = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 12)
+  return `${prefix}-${safe || 'vpn'}`
+}
+
+/** Extract error message from unknown catch value */
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/** @deprecated panel redundansi dihapus */
+function _RedundancyInfoPanel(_props: Record<string, unknown>) {
+  return null;
+}
+
+
+
+export default function VpnClientPage() {
+  const { t } = useTranslation();
+  const [showModal, setShowModal] = useState(false);
+  const [showCredentials, setShowCredentials] = useState(false);
+  const [credentials, setCredentials] = useState<Credentials | null>(null);
+  const [selectedVpnType, setSelectedVpnType] = useState<'l2tp' | 'pptp' | 'sstp' | 'wireguard'>('l2tp');
+  const [creating, setCreating] = useState(false);
+  const [expandedRoutingPanels, setExpandedRoutingPanels] = useState<Set<string>>(new Set());
+  const [showApplyRoutingModal, setShowApplyRoutingModal] = useState(false);
+  const [applyRoutingClient, setApplyRoutingClient] = useState<VpnClient | null>(null);
+  const [applyRoutingForm, setApplyRoutingForm] = useState({ host: '', port: '22', username: 'root', password: '' });
+  const [applyRoutingOutput, setApplyRoutingOutput] = useState('');
+  const [applyRoutingRunning, setApplyRoutingRunning] = useState(false);
+  // Edit IP state
+  const [editingIpClientId, setEditingIpClientId] = useState<string | null>(null);
+  const [editingIpValue, setEditingIpValue] = useState('');
+  const [editingIpLoading, setEditingIpLoading] = useState(false);
+  const [formData, setFormData] = useState({
+    name: '',
+    description: '',
+    vpnServerId: '',
+    vpnType: 'l2tp' as 'l2tp' | 'pptp' | 'sstp' | 'wireguard',
+    customVpnIp: '',
+    localNetworks: '', // IP lokal di balik NAS (misal: 192.168.75.0/24,136.1.1.100/32)
+  });
+  // WireGuard NAS Peers (VPS as WG server)
+  const [_wgPeers, setWgPeers] = useState<{ publicKey: string; endpoint?: string; allowedIps?: string; lastHandshake?: string }[]>([]);
+  const [_wgLoading, _setWgLoading] = useState(false);
+  const [_wgAddingPeer, setWgAddingPeer] = useState(false);
+  const [wgNewPeerName, setWgNewPeerName] = useState('');
+  const [_wgGeneratedScript, setWgGeneratedScript] = useState<string | null>(null);
+  const [_showWgSection, setShowWgSection] = useState(false);
+  // VPS Pool Config edit states
+  const [wgPoolEdit, setWgPoolEdit] = useState(false);
+  const [wgPoolForm, setWgPoolForm] = useState({ poolStart: '', poolEnd: '', gatewayIp: '' });
+  const [wgPoolSaving, setWgPoolSaving] = useState(false);
+  const [l2tpPoolEdit, setL2tpPoolEdit] = useState(false);
+  const [l2tpPoolForm, setL2tpPoolForm] = useState({ poolStart: '', poolEnd: '', gateway: '' });
+  const [l2tpPoolSaving, setL2tpPoolSaving] = useState(false);
+  // VPS Settings panel toggle
+  const [showVpsSettings, setShowVpsSettings] = useState(false);
+  // Tutorial toggle
+  const [showTutorial, setShowTutorial] = useState(true);
+
+  // ── React Query data loading ──────────────────────────────────────────────
+  const queryClient = useQueryClient();
+  const clientsQuery = useApiQuery<VpnClientListResponse>('/api/network/vpn-client', { staleTime: 30000 });
+  const wgQuery = useApiQuery<VpsWgServerInfoResponse>('/api/network/vps-wg-peer', { staleTime: 30000 });
+  const l2tpQuery = useApiQuery<VpsL2tpInfoResponse>('/api/network/vps-l2tp-info', { staleTime: 30000 });
+
+  const clients = clientsQuery.data?.clients || [];
+  const vpnServers = clientsQuery.data?.vpnServers || [];
+  const loading = clientsQuery.isLoading;
+  // VPS WireGuard server info (fetched from vps-wg-peer GET)
+  const wgServerInfo = wgQuery.error
+    ? { installed: false }
+    : wgQuery.data
+      ? (wgQuery.data.installed
+        ? {
+            installed: true,
+            publicIp: wgQuery.data.publicIp,
+            publicKey: wgQuery.data.publicKey,
+            listenPort: wgQuery.data.listenPort,
+            subnet: wgQuery.data.subnet,
+            poolStart: wgQuery.data.poolStart,
+            poolEnd: wgQuery.data.poolEnd,
+            gatewayIp: wgQuery.data.gatewayIp,
+          }
+        : { installed: false })
+      : null;
+  const wgServerInfoLoading = wgQuery.isLoading;
+  // VPS L2TP/IPsec server info
+  const l2tpServerInfo = l2tpQuery.error
+    ? { installed: false }
+    : l2tpQuery.data
+      ? (l2tpQuery.data.installed
+        ? {
+            installed: true,
+            publicIp: l2tpQuery.data.publicIp,
+            ipsecPsk: l2tpQuery.data.ipsecPsk,
+            subnet: l2tpQuery.data.subnet,
+            localIp: l2tpQuery.data.localIp,
+            poolStart: l2tpQuery.data.poolStart,
+            poolEnd: l2tpQuery.data.poolEnd,
+            gateway: l2tpQuery.data.gateway,
+          }
+        : { installed: false })
+      : null;
+  const l2tpServerInfoLoading = l2tpQuery.isLoading;
+
+  // Sync WG peers from query data
+  useEffect(() => {
+    if (wgQuery.data?.installed) {
+      setWgPeers(wgQuery.data.peers || []);
+    }
+  }, [wgQuery.data]);
+
+  useEffect(() => {
+    // Restore saved routing SSH credentials from localStorage
+    try {
+      const saved = localStorage.getItem('routing_ssh_credentials');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        setApplyRoutingForm(prev => ({ ...prev, ...parsed }));
+      }
+    } catch (e: unknown) { /* ignore - localStorage may be unavailable */ console.warn('Failed to restore routing SSH credentials from localStorage:', e); }
+  }, []);
+
+  const toggleRoutingPanel = (clientId: string) => {
+    setExpandedRoutingPanels(prev => {
+      const next = new Set(prev);
+      if (next.has(clientId)) next.delete(clientId);
+      else next.add(clientId);
+      return next;
+    });
+  };
+
+  const handleApplyRouting = async (client: VpnClient) => {
+    setApplyRoutingClient(client);
+    setApplyRoutingOutput('');
+    setShowApplyRoutingModal(true);
+  };
+
+  const executeApplyRouting = async () => {
+    if (!applyRoutingClient) return;
+    const { host, port, username, password } = applyRoutingForm;
+    if (!host || !username || !password) { showError('SSH credentials wajib diisi'); return; }
+    // Persist credentials for next time
+    try {
+      localStorage.setItem('routing_ssh_credentials', JSON.stringify({ host, port, username }));
+    } catch (e: unknown) { /* ignore - localStorage may be unavailable */ console.warn('Failed to persist routing SSH credentials:', e); }
+    setApplyRoutingRunning(true);
+    setApplyRoutingOutput('Menjalankan routing script...\n');
+    try {
+      const script = generateVpsRoutingScript(applyRoutingClient);
+      const result = await apiAdmin<VpnRoutingResponse>('/api/network/vpn-routing', {
+        method: 'POST',
+        body: JSON.stringify({ host, port: parseInt(port) || 22, username, password, script }),
+      });
+      if (result.success) {
+        setApplyRoutingOutput(result.output || 'Selesai!');
+        showSuccess('Routing script berhasil diterapkan!');
+      } else {
+        setApplyRoutingOutput('Error: ' + (result.message || 'Gagal'));
+        showError(result.message || 'Gagal menerapkan routing');
+      }
+    } catch (e: unknown) {
+      setApplyRoutingOutput('Error: ' + errMsg(e));
+      showError('Gagal: ' + errMsg(e));
+    } finally {
+      setApplyRoutingRunning(false);
+    }
+  };
+
+  // ── WireGuard NAS Peer handlers (VPS as WG server) ─────────────────────
+  const _handleWgAddPeer = async () => {
+    if (!wgNewPeerName.trim()) { showError('Nama NAS wajib diisi'); return; }
+    setWgAddingPeer(true);
+    try {
+      const data = await apiAdmin<VpsWgPeerMutateResponse>('/api/network/vps-wg-peer', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'add', nasName: wgNewPeerName.trim() }),
+      });
+      if (!data.success) throw new Error(data.error || 'Gagal tambah peer');
+      const script = `# WireGuard NAS Client Setup - ${wgNewPeerName.trim()}
+# Generated: ${new Date().toISOString().split('T')[0]}
+# Paste script ini ke terminal MikroTik (RouterOS 7+)
+# ──────────────────────────────────────────────────
+# NAS VPN IP  : ${data.vpnIp}
+# VPN Subnet  : ${data.vpnSubnet || '10.200.0.0/24'}
+# VPS Endpoint: ${data.serverEndpoint}
+# ──────────────────────────────────────────────────
+
+# 1. Buat WireGuard interface dengan private key NAS
+/interface/wireguard/add name=${toSafeIfaceName('wg', wgNewPeerName.trim())} private-key="${data.clientPrivateKey || '<PRIVATE_KEY>'}"
+
+# 2. Tambah peer - allowed-address = seluruh subnet VPN (bukan hanya gateway)
+/interface/wireguard/peers/add interface=${toSafeIfaceName('wg', wgNewPeerName.trim())} \\
+  public-key="${data.serverPublicKey}" \\
+  endpoint-address="${data.serverEndpoint?.split(':')[0]}" \\
+  endpoint-port=${data.wgPort} \\
+  allowed-address="${data.vpnSubnet || '10.200.0.0/24'}" \\
+  persistent-keepalive=25
+
+# 3. Assign IP address NAS ke interface WireGuard
+/ip/address/remove [find where interface=${toSafeIfaceName('wg', wgNewPeerName.trim())}]
+/ip/address/add address=${data.vpnIp}/32 interface=${toSafeIfaceName('wg', wgNewPeerName.trim())}
+
+# 4. Route seluruh subnet VPN melalui WireGuard
+/ip/route/remove [find where comment="SALFANET-VPN"]
+/ip/route/add dst-address=${data.vpnSubnet || '10.200.0.0/24'} gateway=${toSafeIfaceName('wg', wgNewPeerName.trim())} comment="SALFANET-VPN"
+
+# 5. RADIUS via WireGuard (server = VPS gateway IP di subnet VPN)
+/radius/remove [find where comment~"SALFANET"]
+/radius/add address=${data.gatewayIp || data.allowedIps?.split('/')[0]} \\
+  secret=<RADIUS_SECRET> \\
+  service=ppp,hotspot \\
+  src-address=${data.vpnIp} \\
+  authentication-port=1812 \\
+  accounting-port=1813 \\
+  timeout=3s \\
+  comment="SALFANET RADIUS via WireGuard"
+/ppp/aaa/set use-radius=yes accounting=yes interim-update=5m
+/radius/incoming/set accept=yes port=3799`;
+      setWgGeneratedScript(script);
+      setWgNewPeerName('');
+      showSuccess(`Peer "${wgNewPeerName}" berhasil ditambahkan! VPN IP: ${data.vpnIp}`);
+      queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vps-wg-peer') });
+    } catch (e: unknown) {
+      showError('Gagal tambah peer WireGuard: ' + errMsg(e));
+    } finally {
+      setWgAddingPeer(false);
+    }
+  };
+
+  const _handleWgRemovePeer = async (pubKey: string) => {
+    const confirmed = await showConfirm('Hapus peer WireGuard ini? Koneksi NAS akan terputus.', 'Hapus Peer WireGuard');
+    if (!confirmed) return;
+    try {
+      const data = await apiAdmin<VpsWgPeerMutateResponse>('/api/network/vps-wg-peer', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'remove', publicKey: pubKey }),
+      });
+      if (!data.success) throw new Error(data.error || 'Gagal hapus peer');
+      showSuccess('Peer WireGuard dihapus');
+      setWgPeers(prev => prev.filter(p => p.publicKey !== pubKey));
+      queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vps-wg-peer') });
+    } catch (e: unknown) {
+      showError('Gagal hapus peer: ' + errMsg(e));
+    }
+  };
+  // ── End WireGuard handlers ──────────────────────────────────────────────
+
+  // Helper: resolve vpnServer info termasuk VPS built-in yang tidak ada di vpnServers list
+  const resolveServer = (vpnServerId: string) => {
+    if (vpnServerId === '__vps_wg_server__') {
+      return { name: 'VPS WireGuard Server', host: wgServerInfo?.publicIp || '103.151.140.110', subnet: wgServerInfo?.subnet || '172.16.212.0/24', wgPublicKey: wgServerInfo?.publicKey || null, wgPort: wgServerInfo?.listenPort || 51820, wgEnabled: true, l2tpEnabled: false }
+    }
+    if (vpnServerId === '__vps_l2tp_server__') {
+      return { name: 'VPS L2TP Server', host: l2tpServerInfo?.publicIp || '103.151.140.110', subnet: l2tpServerInfo?.subnet || '10.201.0.0/24', wgPublicKey: null, wgPort: null, wgEnabled: false, l2tpEnabled: true }
+    }
+    return vpnServers.find(s => s.id === vpnServerId) || null
+  }
+
+  const generateVpsRoutingScript = (client: VpnClient): string => {
+    const server = resolveServer(client.vpnServerId);
+    const subnet = server?.subnet || '10.20.30.0/24';
+    const parts = subnet.split('/')[0].split('.');
+    const gateway = `${parts[0]}.${parts[1]}.${parts[2]}.1`;
+
+    return [
+      `#!/bin/bash`,
+      `# ============================================================`,
+      `# VPS Routing Setup -- RADIUS Server (${client.name})`,
+      `# VPN Subnet : ${subnet}`,
+      `# CHR Gateway: ${gateway}`,
+      `# Run as root on your Linux VPS / RADIUS server`,
+      `# ============================================================`,
+      ``,
+      `VPN_SUBNET="${subnet}"`,
+      ``,
+      `echo ">> [1/5] Enable IP forwarding..."`,
+      `sysctl -w net.ipv4.ip_forward=1`,
+      `grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf || echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf`,
+      ``,
+      `echo ">> [2/5] Add route via active PPP interface..."`,
+      `echo ">> [2/5] Add route via active PPP interface..."`,
+      `PPP_IFACE=$(ip -o link show | grep -E 'ppp[0-9]' | awk -F': ' '{print $2}' | head -1)`,
+      `if [ -n "$PPP_IFACE" ]; then`,
+      `    PPP_PEER=$(ip route show dev $PPP_IFACE | grep 'proto kernel' | awk '{print $1}' | head -1)`,
+      `    [ -z "$PPP_PEER" ] && PPP_PEER=$(ip addr show $PPP_IFACE | grep peer | awk '{print $4}' | cut -d'/' -f1)`,
+      `    [ -z "$PPP_PEER" ] && PPP_PEER="${gateway}"`,
+      `    ip route replace $VPN_SUBNET via $PPP_PEER dev $PPP_IFACE metric 100`,
+      `    echo "  Route added: $VPN_SUBNET via $PPP_PEER dev $PPP_IFACE"`,
+      `else`,
+      `    echo "  WARNING: No PPP interface found. Connect VPN first, then re-run."`,
+      `fi`,
+      ``,
+      `echo ">> [3/5] Allow RADIUS ports + ICMP from VPN subnet..."`,
+      `iptables -C INPUT -s $VPN_SUBNET -p udp --dport 1812 -j ACCEPT 2>/dev/null || \\`,
+      `    iptables -I INPUT 1 -s $VPN_SUBNET -p udp --dport 1812 -j ACCEPT`,
+      `iptables -C INPUT -s $VPN_SUBNET -p udp --dport 1813 -j ACCEPT 2>/dev/null || \\`,
+      `    iptables -I INPUT 1 -s $VPN_SUBNET -p udp --dport 1813 -j ACCEPT`,
+      `iptables -C INPUT -s $VPN_SUBNET -p icmp -j ACCEPT 2>/dev/null || \\`,
+      `    iptables -I INPUT 1 -s $VPN_SUBNET -p icmp -j ACCEPT`,
+      `echo "  RADIUS 1812/1813 + ICMP rules applied"`,
+      ``,
+      `echo ">> [4/5] Allow FORWARD chain (routing between VPN peers)..."`,
+      `iptables -C FORWARD -s $VPN_SUBNET -j ACCEPT 2>/dev/null || \\`,
+      `    iptables -I FORWARD 1 -s $VPN_SUBNET -j ACCEPT`,
+      `iptables -C FORWARD -d $VPN_SUBNET -j ACCEPT 2>/dev/null || \\`,
+      `    iptables -I FORWARD 1 -d $VPN_SUBNET -j ACCEPT`,
+      `echo "  FORWARD rules applied"`,
+      ``,
+      `echo ">> [5/5] Install persistent PPP hook..."`,
+      `mkdir -p /etc/ppp/ip-up.d`,
+      `cat > /etc/ppp/ip-up.d/99-vpn-routes.sh << 'HOOK'`,
+      `#!/bin/bash`,
+      `# Auto-configure VPN routing on PPP connect`,
+      `# \$1=iface \$4=local_ip \$5=remote_ip(peer)`,
+      `VPN_SUBNET="${subnet}"`,
+      `ip route replace $VPN_SUBNET via $5 dev $1 metric 100 2>/dev/null || true`,
+      `iptables -C INPUT -s $VPN_SUBNET -p udp --dport 1812 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -s $VPN_SUBNET -p udp --dport 1812 -j ACCEPT`,
+      `iptables -C INPUT -s $VPN_SUBNET -p udp --dport 1813 -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -s $VPN_SUBNET -p udp --dport 1813 -j ACCEPT`,
+      `iptables -C INPUT -s $VPN_SUBNET -p icmp -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -s $VPN_SUBNET -p icmp -j ACCEPT`,
+      `iptables -C FORWARD -s $VPN_SUBNET -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -s $VPN_SUBNET -j ACCEPT`,
+      `iptables -C FORWARD -d $VPN_SUBNET -j ACCEPT 2>/dev/null || iptables -I FORWARD 1 -d $VPN_SUBNET -j ACCEPT`,
+      `logger -t vpn-route "Routes configured: $VPN_SUBNET via $5 on $1"`,
+      `HOOK`,
+      `chmod +x /etc/ppp/ip-up.d/99-vpn-routes.sh`,
+      ``,
+      `echo ""`,
+      `echo "Done! Verify with: ip route show | grep ppp"`,
+      `echo "Test ping: ping ${gateway}"`,
+    ].join('\n');
+  };
+
+  const handleWgSavePoolConfig = async () => {
+    setWgPoolSaving(true);
+    try {
+      const data = await apiAdmin<VpsWgPeerMutateResponse>('/api/network/vps-wg-peer', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          poolStart: wgPoolForm.poolStart || undefined,
+          poolEnd: wgPoolForm.poolEnd || undefined,
+          gatewayIp: wgPoolForm.gatewayIp || undefined,
+        }),
+      });
+      if (!data.success) throw new Error(data.error || 'Gagal simpan');
+      queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vps-wg-peer') });
+      setWgPoolEdit(false);
+      showSuccess('Konfigurasi pool WireGuard disimpan');
+    } catch (e: unknown) {
+      showError(errMsg(e) || 'Gagal simpan pool WireGuard');
+    } finally {
+      setWgPoolSaving(false);
+    }
+  };
+
+  const handleL2tpSavePoolConfig = async () => {
+    setL2tpPoolSaving(true);
+    try {
+      const data = await apiAdmin<VpsL2tpPeerMutateResponse>('/api/network/vps-l2tp-peer', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          poolStart: l2tpPoolForm.poolStart || undefined,
+          poolEnd: l2tpPoolForm.poolEnd || undefined,
+          gateway: l2tpPoolForm.gateway || undefined,
+        }),
+      });
+      if (!data.success) throw new Error(data.error || 'Gagal simpan');
+      queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vps-l2tp-info') });
+      setL2tpPoolEdit(false);
+      showSuccess('Konfigurasi pool L2TP disimpan');
+    } catch (e: unknown) {
+      showError(errMsg(e) || 'Gagal simpan pool L2TP');
+    } finally {
+      setL2tpPoolSaving(false);
+    }
+  };
+
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault()
+
+    // VPS WireGuard mode: intercept and use vps-wg-peer flow
+    if (formData.vpnType === 'wireguard' && formData.vpnServerId === '__vps_wg__') {
+      if (!formData.name.trim()) return
+      const peerName = formData.name.trim()
+      const localNetworks = formData.localNetworks.trim()
+      setWgNewPeerName(peerName)
+      setShowModal(false)
+      setFormData({ name: '', description: '', vpnServerId: '', vpnType: 'l2tp', customVpnIp: '', localNetworks: '' })
+      setShowWgSection(true)
+      // Trigger add peer with the name from the form
+      setCreating(true)
+      try {
+        const data = await apiAdmin<VpsWgPeerMutateResponse>('/api/network/vps-wg-peer', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'add', nasName: peerName, localNetworks: localNetworks || undefined }),
+        })
+        if (data.success) {
+          setWgGeneratedScript(data.routerosScript || null)
+          queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vps-wg-peer') });
+          showSuccess('WireGuard peer berhasil ditambahkan ke VPS', 'Peer Ditambahkan')
+
+          // Auto-show credentials with generated script so user can copy it immediately
+          const wgSubnet = data.vpnSubnet || wgServerInfo?.subnet || '10.200.0.0/24'
+          const wgGatewayIp = data.gatewayIp || wgSubnet.replace(/\.\d+\/\d+$/, '.1')
+          setCredentials({
+            server: wgServerInfo?.publicIp || data.serverEndpoint?.split(':')[0] || 'VPS',
+            serverHost: wgServerInfo?.publicIp || data.serverEndpoint?.split(':')[0] || 'VPS',
+            username: peerName,
+            nasName: peerName,
+            password: '',
+            vpnIp: data.vpnIp || '',
+            vpnType: 'wireguard',
+            clientPrivateKey: data.clientPrivateKey || null,
+            serverPublicKey: data.serverPublicKey || wgServerInfo?.publicKey || null,
+            wgPort: data.wgPort || wgServerInfo?.listenPort || 51820,
+            wgSubnet,
+            wgGatewayIp,
+            nasSecret: data.nasSecret || undefined,
+            apiUsername: data.apiUsername || undefined,
+            apiPassword: data.apiPassword || undefined,
+            radiusServerIp: undefined, // VPS gateway is used as fallback in generateMikroTikScript
+          })
+          setSelectedVpnType('wireguard')
+          setShowCredentials(true)
+          queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vpn-client') });
+        } else {
+          showError(data.error || 'Gagal menambahkan WireGuard peer ke VPS')
+        }
+      } catch {
+        showError('Gagal menghubungi VPS')
+      } finally {
+        setCreating(false)
+      }
+      return
+    }
+
+    // VPS L2TP mode: intercept and use vps-l2tp-peer flow
+    if (formData.vpnType === 'l2tp' && formData.vpnServerId === '__vps_l2tp__') {
+      if (!formData.name.trim()) return
+      setCreating(true)
+      try {
+        const data = await apiAdmin<VpsL2tpPeerMutateResponse>('/api/network/vps-l2tp-peer', {
+          method: 'POST',
+          body: JSON.stringify({ action: 'add', label: formData.name.trim(), localNetworks: formData.localNetworks.trim() || undefined }),
+        })
+        if (data.success) {
+          setShowModal(false)
+          const ipsecPsk = data.ipsecPsk || l2tpServerInfo?.ipsecPsk || ''
+          const nasDisplayName = formData.name.trim()
+          const safeApiUser = `api-${nasDisplayName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+          const safeApiPass = data.apiPassword || Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10)
+          setCredentials({
+            server: l2tpServerInfo?.publicIp || 'VPS',
+            serverHost: l2tpServerInfo?.publicIp || 'VPS',
+            username: data.username || '',
+            password: data.password || '',
+            vpnIp: data.vpnIp || '',
+            vpnType: 'l2tp',
+            nasName: nasDisplayName,
+            ipsecPsk,
+            apiUsername: safeApiUser,
+            apiPassword: data.apiPassword || safeApiPass,
+            nasSecret: data.nasSecret || undefined,
+          })
+          setSelectedVpnType('l2tp')
+          setShowCredentials(true)
+          // Store generated script in wgGeneratedScript state for display
+          setWgGeneratedScript(data.routerosScript || null)
+          setShowWgSection(true)
+          showSuccess('L2TP user berhasil ditambahkan ke VPS', 'Berhasil')
+          setFormData({ name: '', description: '', vpnServerId: '', vpnType: 'l2tp', customVpnIp: '', localNetworks: '' })
+          queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vpn-client') });
+        } else {
+          showError(data.error || 'Gagal menambahkan L2TP user ke VPS')
+        }
+      } catch {
+        showError('Gagal menghubungi VPS')
+      } finally {
+        setCreating(false)
+      }
+      return
+    }
+
+    setCreating(true)
+
+    try {
+      const result = await apiAdmin<VpnClientCreateResponse>('/api/network/vpn-client', {
+        method: 'POST',
+        body: JSON.stringify(formData),
+      })
+
+      if (result.success) {
+        setCredentials(result.credentials || null);
+        const createdType = String(result.credentials?.vpnType || 'l2tp').toLowerCase();
+        setSelectedVpnType(createdType === 'pptp' || createdType === 'sstp' ? createdType : 'l2tp');
+        setShowCredentials(true);
+        setShowModal(false);
+        setFormData({ name: '', description: '', vpnServerId: '', vpnType: 'l2tp', customVpnIp: '', localNetworks: '' });
+        queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vpn-client') });
+        showSuccess(t('network.clientCredentialsDisplayed'), t('network.vpnClientCreated'));
+      } else {
+        showError(result.error || t('network.failedCreateClient'));
+      }
+    } catch (error: unknown) {
+      showError(errMsg(error) || t('network.anErrorOccurred'));
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const handleDelete = async (id: string, name: string) => {
+    const confirmed = await showConfirm(
+      `This will remove "${name}" from CHR and database`,
+      'Delete VPN Client?'
+    );
+
+    if (!confirmed) return;
+
+    try {
+      await apiAdmin(`/api/network/vpn-client?id=${id}`, { method: 'DELETE' })
+      showSuccess(t('network.deleted'));
+      queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vpn-client') });
+    } catch (error: unknown) {
+      showError(errMsg(error) || t('network.failedDeleteClient'));
+    }
+  }
+
+  const handleToggleRadiusServer = async (clientId: string, isRadiusServer: boolean) => {
+    try {
+      await apiAdmin('/api/network/vpn-client', {
+        method: 'PUT',
+        body: JSON.stringify({ id: clientId, isRadiusServer }),
+      })
+      showSuccess(isRadiusServer ? t('network.setAsRadiusServerSuccess') : t('network.unsetRadiusServerSuccess'));
+      queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vpn-client') });
+    } catch (error: unknown) {
+      showError(errMsg(error) || t('network.failedUpdateClient'));
+    }
+  }
+
+  const handleEditIpSave = async (clientId: string) => {
+    if (!editingIpValue.trim()) return;
+    setEditingIpLoading(true);
+    try {
+      const data = await apiAdmin<VpnClientPatchResponse>('/api/network/vpn-client', {
+        method: 'PATCH',
+        body: JSON.stringify({ id: clientId, vpnIp: editingIpValue.trim() }),
+      });
+      if (data.success) {
+        showSuccess(`IP berhasil diubah ke ${data.newIp}`);
+        setEditingIpClientId(null);
+        queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vpn-client') });
+      } else {
+        showError(data.error || 'Gagal mengubah IP');
+      }
+    } catch {
+      showError('Gagal menghubungi server');
+    } finally {
+      setEditingIpLoading(false);
+    }
+  };
+
+  const viewCredentials = (client: VpnClient) => {
+    const server = resolveServer(client.vpnServerId)
+    if (!server) return
+
+    const normalizedClientType = String(client.vpnType || 'l2tp').toLowerCase()
+    const clientVpnType = (
+      normalizedClientType === 'pptp' || normalizedClientType === 'sstp' || normalizedClientType === 'wireguard'
+        ? normalizedClientType : 'l2tp'
+    ) as 'l2tp' | 'pptp' | 'sstp' | 'wireguard'
+    const radiusServer = clients.find(c => c.isRadiusServer)
+
+    setCredentials({
+      server: server.host,
+      serverHost: server.host,
+      username: client.username,
+      password: client.password,
+      vpnIp: client.vpnIp,
+      nasName: client.name,
+      winboxPort: client.winboxPort || undefined,
+      winboxRemote: client.winboxPort ? `${server.host}:${client.winboxPort}` : undefined,
+      apiUsername: client.apiUsername || undefined,
+      apiPassword: client.apiPassword || undefined,
+      vpnType: clientVpnType,
+      nasSecret: client.nasSecret || undefined,
+      radiusServerIp: (!client.isRadiusServer && radiusServer) ? radiusServer.vpnIp : undefined,
+      ipsecPsk: String(client.vpnType || '').toLowerCase() === 'l2tp' ? (l2tpServerInfo?.ipsecPsk || '') : undefined,
+      clientPrivateKey: client.clientPrivateKey || null,
+      serverPublicKey: server.wgPublicKey || null,
+      wgPort: server.wgPort || null,
+      // WG subnet: derive from VPN IP if wgServerInfo available, fallback to server subnet
+      wgSubnet: wgServerInfo?.subnet || server.subnet || '10.200.0.0/24',
+      wgGatewayIp: wgServerInfo?.subnet
+        ? wgServerInfo.subnet.replace(/\.\d+\/\d+$/, '.1')
+        : server.subnet?.replace(/\.\d+\/\d+$/, '.1') || '10.200.0.1',
+    })
+    setSelectedVpnType(clientVpnType)
+    setShowCredentials(true)
+  }
+
+  const generateMikroTikScript = () => {
+    if (!credentials) return ''
+
+    const scriptBase = (vpnCmd: string, iface: string) => {
+      const safeApiUsername = credentials.apiUsername || `api-${credentials.vpnIp?.replace(/\./g, '-')}`
+      const safeApiPassword = credentials.apiPassword || '<generate-password>'
+      const safeWinbox = credentials.winboxRemote || `${credentials.serverHost || credentials.server}:8291`
+      return `# ============================================================
+# MikroTik VPN Client Setup Script
+# NAS: ${credentials.vpnIp}
+# VPN Server: ${credentials.server}
+# ============================================================
+
+# 1. Create API User Group
+/user group add name=api-users policy=read,write,policy,test,sensitive,api comment="Limited API Access Group"
+
+# 2. Create API User
+/user add name=${safeApiUsername} group=api-users password=${safeApiPassword} comment="API User for Remote Access"
+
+# 3. Setup ${(selectedVpnType as string).toUpperCase()} Client
+/interface ${iface}
+${vpnCmd}
+
+# 4. Assign IP Address (if needed)
+# /ip address add address=${credentials.vpnIp}/32 interface=${iface}-salfanet
+
+# Remote Winbox Access: ${safeWinbox}
+# API Username: ${safeApiUsername}
+# API Password: ${safeApiPassword}
+
+# ============================================================
+# LANGKAH SELANJUTNYA:
+# 1. Pergi ke menu Routers/NAS
+# 2. Pilih router ini → klik tombol Setup RADIUS (ikon sinyal)
+# 3. Copy dan paste script RADIUS ke terminal MikroTik
+# 4. Setelah RADIUS selesai → klik tombol Setup Isolir (ikon gembok)
+# ============================================================`.trim()
+    }
+
+    const nasDisplayName = credentials.nasName || credentials.username
+    const l2tpIpsecSecret = credentials.ipsecPsk || 'salfanet-vpn-secret'
+    if (selectedVpnType === 'l2tp') {
+      return scriptBase(
+        `add connect-to=${credentials.server} user=${credentials.username} password="${credentials.password}" disabled=no name=${toSafeIfaceName('l2tp', nasDisplayName)} use-ipsec=yes ipsec-secret="${l2tpIpsecSecret}" add-default-route=no allow=mschap2 comment="SALFANET VPN"`,
+        'l2tp-client'
+      )
+    } else if (selectedVpnType === 'sstp') {
+      return scriptBase(
+        `add connect-to=${credentials.server} port=992 user=${credentials.username} password=${credentials.password} disabled=no name=${toSafeIfaceName('sstp', nasDisplayName)} add-default-route=no authentication=mschap2 certificate=none comment="SALFANET VPN"`,
+        'sstp-client'
+      )
+    } else if (selectedVpnType === 'wireguard') {
+      // WireGuard script for RouterOS 7+
+      const serverPk = credentials.serverPublicKey || '<SERVER_PUBLIC_KEY>'
+      const clientPk = credentials.clientPrivateKey || '<CLIENT_PRIVATE_KEY>'
+      const wgPort = credentials.wgPort || 51820
+      const serverHost = credentials.serverHost || credentials.server
+      const wgSubnet = credentials.wgSubnet || '10.200.0.0/24'
+      const wgGatewayIp = credentials.wgGatewayIp || wgSubnet.replace(/\.\d+\/\d+$/, '.1')
+      const safeApiUsername = credentials.apiUsername || `api-${credentials.vpnIp?.replace(/\./g, '-')}`
+      const safeApiPassword = credentials.apiPassword || '<generate-on-mikrotik>'
+      return `# ============================================================
+# MikroTik WireGuard Client Setup Script (RouterOS 7+)
+# NAS IP     : ${credentials.vpnIp}
+# VPN Subnet : ${wgSubnet}
+# VPS Gateway: ${wgGatewayIp}
+# API User   : ${safeApiUsername}
+# ============================================================
+
+# 1. Buat WireGuard interface dengan private key NAS
+/interface/wireguard/add name=${toSafeIfaceName('wg', credentials.nasName || credentials.username)} private-key="${clientPk}"
+
+# 2. Tambah peer (VPS WireGuard server)
+#    allowed-address = subnet VPN agar semua host VPN dapat diakses
+/interface/wireguard/peers/add interface=${toSafeIfaceName('wg', credentials.nasName || credentials.username)} \\
+  public-key="${serverPk}" \\
+  endpoint-address="${serverHost}" \\
+  endpoint-port=${wgPort} \\
+  allowed-address="${wgSubnet}" \\
+  persistent-keepalive=25
+
+# 3. Assign IP address NAS ke interface WireGuard
+/ip/address/remove [find where interface=${toSafeIfaceName('wg', credentials.nasName || credentials.username)}]
+/ip/address/add address=${credentials.vpnIp}/32 interface=${toSafeIfaceName('wg', credentials.nasName || credentials.username)}
+
+# 4. Route seluruh subnet VPN melalui WireGuard
+/ip/route/remove [find where comment="SALFANET-VPN"]
+/ip/route/add dst-address=${wgSubnet} gateway=${toSafeIfaceName('wg', credentials.nasName || credentials.username)} comment="SALFANET-VPN"
+
+# 5. Buat API User (untuk remote management MikroTik)
+/user/group/add name=api-users policy=read,write,policy,test,sensitive,api comment="Limited API Access Group"
+/user/add name=${safeApiUsername} group=api-users password=${safeApiPassword} comment="API User for Remote Access"
+# API Username : ${safeApiUsername}
+# API Password : ${safeApiPassword}
+
+# ============================================================
+# LANGKAH SELANJUTNYA:
+# 1. Pergi ke menu Routers/NAS
+# 2. Pilih router ini → klik tombol Setup RADIUS (ikon sinyal)
+# 3. Copy dan paste script RADIUS ke terminal MikroTik
+# 4. Setelah RADIUS selesai → klik tombol Setup Isolir (ikon gembok)
+# ============================================================`.trim()
+    } else {
+      return scriptBase(
+        `add connect-to=${credentials.server} user=${credentials.username} password=${credentials.password} disabled=no name=pptp-client-salfanet add-default-route=no comment="SALFANET VPN"`,
+        'pptp-client'
+      )
+    }
+  }
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      showSuccess(t('network.copiedToClipboard'), t('network.copied'));
+    } catch (_error) {
+      showError(t('network.failedCopy'), t('network.copyFailed'));
+    }
+  };
+
+  // Stats
+  const totalClients = clients.length;
+  const radiusServers = clients.filter(c => c.isRadiusServer).length;
+  const activeClients = clients.filter(c => c.isActive).length;
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+          <div className="absolute top-1/4 left-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-primary/10 rounded-full blur-3xl animate-pulse"></div>
+          <div className="absolute bottom-1/4 right-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-brand-500/20 rounded-full blur-3xl animate-pulse delay-1000"></div>
+        </div>
+        <div className="relative z-10 flex flex-col items-center gap-4">
+          <Loader2 className="w-12 h-12 animate-spin text-brand-500 dark:text-brand-500 dark:drop-" />
+          <p className="text-brand-500 font-medium animate-pulse">{t('network.loadingVpnClients')}</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <main className="bg-background relative">
+        {/* Animated Background */}
+        <div className="absolute inset-0 overflow-hidden pointer-events-none dark:block hidden">
+          <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-primary/10 rounded-full blur-[120px] animate-pulse"></div>
+          <div className="absolute top-1/3 right-1/4 w-[400px] h-[400px] bg-brand-500/15 rounded-full blur-[100px] animate-pulse delay-700"></div>
+          <div className="absolute bottom-0 left-1/2 w-[600px] h-[400px] bg-pink-500/10 rounded-full blur-[150px] animate-pulse delay-1000"></div>
+          <div className="hidden dark:block absolute inset-0 bg-[linear-gradient(rgba(139,92,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(139,92,246,0.03)_1px,transparent_1px)] bg-[size:60px_60px]"></div>
+        </div>
+
+        <div className="max-w-7xl mx-auto relative z-10 p-6 lg:p-8">
+          {/* Header Section */}
+          <div className="mb-8">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="p-2.5 bg-gradient-to-br from-brand-500 to-primary rounded-xl  flex items-center justify-center">
+                    <Users className="w-6 h-6 text-white" />
+                  </div>
+                  <h1 className="text-3xl lg:text-4xl font-bold text-foreground dark:text-transparent dark:bg-clip-text dark:bg-gradient-to-r dark:from-brand-500 dark:via-white dark:to-pink-500">
+                    {t('network.vpnClientManagement')}
+                  </h1>
+                </div>
+                <p className="text-muted-foreground ml-14">
+                  {t('network.vpnClientManagementDesc')}
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setFormData({ name: '', description: '', vpnServerId: '', vpnType: 'l2tp', customVpnIp: '', localNetworks: '' })
+                  setShowModal(true)
+                }}
+                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-brand-500 to-[#00d4e6] text-black font-bold rounded-xl hover: transition-all duration-300 transform hover:scale-105"
+              >
+                <Plus className="w-5 h-5" />
+                {t('network.addVpnClient')}
+              </button>
+            </div>
+          </div>
+
+          {/* Stats Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+            <div className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 rounded-2xl border border-border p-5 hover:border-border transition-all group">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-muted-foreground text-sm mb-1">{t('common.totalClients')}</p>
+                  <p className="text-3xl font-bold text-foreground">{totalClients}</p>
+                </div>
+                <div className="p-3 bg-primary/10 rounded-xl group-hover:bg-primary/10 transition-colors flex items-center justify-center">
+                  <Users className="w-6 h-6 text-primary" />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 rounded-2xl border border-brand-500/30 p-5 hover:border-brand-500/50 transition-all group">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-muted-foreground text-sm mb-1">{t('network.radiusServer')}</p>
+                  <p className="text-3xl font-bold text-brand-500">{radiusServers}</p>
+                </div>
+                <div className="p-3 bg-brand-500/20 rounded-xl group-hover:bg-brand-500/30 transition-colors flex items-center justify-center">
+                  <Radio className="w-6 h-6 text-brand-500" />
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 rounded-2xl border border-green-500/30 p-5 hover:border-green-500/50 transition-all group">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-muted-foreground text-sm mb-1">{t('common.activeClients')}</p>
+                  <p className="text-3xl font-bold text-green-400">{activeClients}</p>
+                </div>
+                <div className="p-3 bg-green-500/20 rounded-xl group-hover:bg-green-500/30 transition-colors flex items-center justify-center">
+                  <Wifi className="w-6 h-6 text-green-400" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ── Tutorial / Flow Banner ───────────────────────────────── */}
+          <div className="mb-8">
+            <div className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border border-brand-500/20 rounded-2xl overflow-hidden">
+              <button
+                onClick={() => setShowTutorial(!showTutorial)}
+                className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-brand-500/5 transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-1.5 bg-brand-500/20 rounded-lg flex items-center justify-center">
+                    <Info className="w-4 h-4 text-brand-500" />
+                  </div>
+                  <span className="text-sm font-bold text-brand-500 uppercase tracking-wider">Cara Penggunaan - Alur VPN Client</span>
+                </div>
+                {showTutorial ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+              </button>
+              {showTutorial && (
+                <div className="px-6 pb-6 border-t border-brand-500/10">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-5">
+                    {[
+                      { step: 1, icon: '🖥️', color: 'border-border bg-primary/10', title: 'VPN Server Dulu', desc: 'Pastikan VPN Server sudah dikonfigurasi di menu VPN Server (MikroTik CHR atau WireGuard VPS).', link: '/admin/network/vpn-server', linkLabel: '→ Menu VPN Server' },
+                      { step: 2, icon: '➕', color: 'border-brand-500/40 bg-brand-500/5', title: 'Buat VPN Client', desc: 'Klik "+ Tambah VPN Client", pilih protokol (WireGuard/L2TP/SSTP/PPTP), dan nama NAS. Sistem otomatis generate user & konfigurasi di CHR.', link: null, linkLabel: null },
+                      { step: 3, icon: '', color: 'border-green-500/40 bg-green-500/5', title: 'Apply Script ke NAS', desc: 'Copy script RouterOS yang dihasilkan → paste di terminal MikroTik/WinBox pada router/NAS pelanggan. VPN akan tersambung otomatis.', link: null, linkLabel: null },
+                      { step: 4, icon: '', color: 'border-amber-500/40 bg-amber-500/5', title: 'Tandai RADIUS Server', desc: 'Centang "Jadikan RADIUS Server" pada client yang jalan di VPS/Raspberry Pi. Lalu daftarkan NAS di menu NAS/Router.', link: '/admin/network/routers', linkLabel: '→ Menu NAS/Router' },
+                    ].map(item => (
+                      <div key={item.step} className={`rounded-xl border ${item.color} p-4`}>
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-xl">{item.icon}</span>
+                          <span className="text-xs font-bold text-muted-foreground bg-muted/50 dark:bg-slate-800/80 px-2 py-0.5 rounded-full">Step {item.step}</span>
+                        </div>
+                        <p className="text-sm font-bold text-foreground mb-1">{item.title}</p>
+                        <p className="text-xs text-muted-foreground leading-relaxed">{item.desc}</p>
+                        {item.link && (
+                          <a href={item.link} className="inline-block mt-2 text-xs font-medium text-brand-500 hover:underline">{item.linkLabel}</a>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-4 p-3 rounded-xl border border-amber-500/20 bg-amber-500/5">
+                    <p className="text-xs text-amber-400/90"><span className="font-bold">Tips protokol:</span> Gunakan <strong>WireGuard</strong> untuk RouterOS 7+ (lebih cepat &amp; modern). Gunakan <strong>L2TP/SSTP</strong> untuk RouterOS 6 atau jika WireGuard tidak support. PPTP sudah deprecated, hindari untuk keamanan.</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+
+
+          {/* ── VPS Built-in VPN Settings ─────────────────────────────── */}
+          <div className="mb-8">
+            <div className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border border-brand-500/30 rounded-2xl overflow-hidden">
+              <button
+                onClick={() => {
+                  setShowVpsSettings(!showVpsSettings);
+                  if (!showVpsSettings) {
+                    queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vps-wg-peer') });
+                    queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vps-l2tp-info') });
+                  }
+                }}
+                className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-brand-500/5 transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-1.5 bg-brand-500/20 rounded-lg flex items-center justify-center">
+                    <Settings className="w-4 h-4 text-brand-500" />
+                  </div>
+                  <div>
+                    <span className="text-sm font-bold text-brand-500 uppercase tracking-wider">Konfigurasi VPS Built-in VPN</span>
+                    <span className="ml-2 text-xs text-muted-foreground">- Pool IP &amp; Gateway untuk WireGuard dan L2TP yang terinstall di VPS</span>
+                  </div>
+                </div>
+                {showVpsSettings ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+              </button>
+              {showVpsSettings && (
+                <div className="border-t border-brand-500/20 px-6 py-5 space-y-6">
+                  <p className="text-xs text-muted-foreground">Atur range IP pool yang akan di-assign otomatis ke setiap VPN client baru. Konfigurasi ini khusus untuk VPN WireGuard dan L2TP yang berjalan langsung di VPS (bukan MikroTik CHR).</p>
+
+                  {/* WireGuard Pool Config */}
+                  {wgServerInfoLoading ? (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Memuat info WireGuard...
+                    </div>
+                  ) : wgServerInfo?.installed ? (
+                    <div className="p-4 rounded-xl border border-teal-500/30 bg-teal-500/5">
+                      <div className="flex items-center justify-between mb-3 min-w-0">
+                        <p className="text-sm font-bold text-teal-300 flex items-center gap-2">
+                          <Wifi className="w-4 h-4" /> Pool IP WireGuard VPS
+                        </p>
+                        {!wgPoolEdit && (
+                          <button
+                            onClick={() => {
+                              // Derive base from existing poolStart if it's a full IP, else from subnet
+                              const existingStart = wgServerInfo.poolStart;
+                              const base = (typeof existingStart === 'string' && existingStart.includes('.'))
+                                ? existingStart.split('.').slice(0,3).join('.')
+                                : wgServerInfo.subnet?.split('/')[0].split('.').slice(0,3).join('.');
+                              const toFullIp = (v: number | string | undefined, def: number) =>
+                                v === undefined ? (base ? `${base}.${def}` : '') :
+                                (typeof v === 'string' && v.includes('.')) ? v :
+                                (base ? `${base}.${v}` : String(v));
+                              setWgPoolEdit(true);
+                              setWgPoolForm({
+                                poolStart: toFullIp(wgServerInfo.poolStart, 2),
+                                poolEnd: toFullIp(wgServerInfo.poolEnd, 254),
+                                gatewayIp: wgServerInfo.gatewayIp || (base ? `${base}.1` : ''),
+                              });
+                            }}
+                            className="text-xs text-teal-400 hover:text-teal-300 border border-teal-500/40 px-2 py-1 rounded-lg"
+                          >
+                            Edit
+                          </button>
+                        )}
+                      </div>
+                      {!wgPoolEdit ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                          <div>
+                            <p className="text-muted-foreground mb-0.5">IP Mulai</p>
+                            <p className="font-mono text-foreground">{typeof wgServerInfo.poolStart === 'string' ? wgServerInfo.poolStart : `${wgServerInfo.subnet?.split('/')[0].split('.').slice(0,3).join('.')}.${wgServerInfo.poolStart ?? 2}`}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground mb-0.5">IP Akhir</p>
+                            <p className="font-mono text-foreground">{typeof wgServerInfo.poolEnd === 'string' ? wgServerInfo.poolEnd : `${wgServerInfo.subnet?.split('/')[0].split('.').slice(0,3).join('.')}.${wgServerInfo.poolEnd ?? 254}`}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground mb-0.5">Gateway VPS</p>
+                            <p className="font-mono text-foreground">{wgServerInfo.gatewayIp || `${wgServerInfo.subnet?.split('/')[0].split('.').slice(0,3).join('.')}.1`}</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1 block">IP Mulai <span className="text-gray-500">(IP lengkap, mis. 10.200.0.2)</span></label>
+                              <input type="text" value={wgPoolForm.poolStart} onChange={(e) => setWgPoolForm(p => ({...p, poolStart: e.target.value}))} className="w-full px-3 py-2 bg-input border border-border rounded-lg text-foreground font-mono text-sm focus:border-teal-400 focus:ring-1 focus:ring-teal-400/30" placeholder="mis. 10.200.0.2" />
+                            </div>
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1 block">IP Akhir <span className="text-gray-500">(IP lengkap, mis. 10.200.0.254)</span></label>
+                              <input type="text" value={wgPoolForm.poolEnd} onChange={(e) => setWgPoolForm(p => ({...p, poolEnd: e.target.value}))} className="w-full px-3 py-2 bg-input border border-border rounded-lg text-foreground font-mono text-sm focus:border-teal-400 focus:ring-1 focus:ring-teal-400/30" placeholder="mis. 10.200.0.254" />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Gateway IP VPS <span className="text-gray-500">(IP wg0 di VPS, default .1)</span></label>
+                            <input type="text" value={wgPoolForm.gatewayIp} onChange={(e) => setWgPoolForm(p => ({...p, gatewayIp: e.target.value}))} className="w-full px-3 py-2 bg-input border border-border rounded-lg text-foreground font-mono text-sm focus:border-teal-400 focus:ring-1 focus:ring-teal-400/30" placeholder={`${wgServerInfo.subnet?.split('/')[0].split('.').slice(0,3).join('.')}.1`} />
+                          </div>
+                          <div className="flex gap-2 pt-1">
+                            <button onClick={handleWgSavePoolConfig} disabled={wgPoolSaving} className="flex-1 py-2 bg-teal-500 text-white text-sm font-bold rounded-lg hover:bg-teal-400 disabled:opacity-50 transition-colors">{wgPoolSaving ? 'Menyimpan...' : 'Simpan'}</button>
+                            <button onClick={() => setWgPoolEdit(false)} className="flex-1 py-2 bg-muted border border-border text-foreground text-sm rounded-lg hover:bg-accent transition-colors">Batal</button>
+                          </div>
+                        </div>
+                      )}
+                      <p className="text-xs text-muted-foreground mt-2">Pool subnet: <span className="font-mono text-teal-300">{(() => { const s = wgServerInfo.poolStart; const b = (typeof s === 'string' && s.includes('.')) ? s.split('.').slice(0,3).join('.') : wgServerInfo.subnet?.split('/')[0].split('.').slice(0,3).join('.'); return b ? `${b}.0/24` : wgServerInfo.subnet || '-'; })()}</span> · Server: {wgServerInfo.publicIp}:{wgServerInfo.listenPort}</p>
+                    </div>
+                  ) : (
+                    <div className="p-4 rounded-xl border border-slate-700/40 bg-slate-900/40 text-center">
+                      <Wifi className="w-6 h-6 text-muted-foreground mx-auto mb-2" />
+                      <p className="text-sm text-muted-foreground">WireGuard belum terinstall di VPS.</p>
+                      <a href="/admin/network/vpn-server" className="text-xs text-brand-500 hover:underline mt-1 inline-block">→ Install dari menu VPN Server</a>
+                    </div>
+                  )}
+
+                  {/* L2TP Pool Config */}
+                  {l2tpServerInfoLoading ? (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="w-4 h-4 animate-spin" /> Memuat info L2TP...
+                    </div>
+                  ) : l2tpServerInfo?.installed ? (
+                    <div className="p-4 rounded-xl border border-border bg-primary/10">
+                      <div className="flex items-center justify-between mb-3 min-w-0">
+                        <p className="text-sm font-bold text-primary flex items-center gap-2">
+                          <Radio className="w-4 h-4" /> Pool IP L2TP/IPsec VPS
+                        </p>
+                        {!l2tpPoolEdit && (
+                          <button
+                            onClick={() => {
+                              // Derive base from existing poolStart if it's a full IP, else from subnet
+                              const existingStart = l2tpServerInfo.poolStart;
+                              const base = (typeof existingStart === 'string' && existingStart.includes('.'))
+                                ? existingStart.split('.').slice(0,3).join('.')
+                                : l2tpServerInfo.subnet?.split('/')[0].split('.').slice(0,3).join('.');
+                              const toFullIp = (v: number | string | undefined, def: number) =>
+                                v === undefined ? (base ? `${base}.${def}` : '') :
+                                (typeof v === 'string' && v.includes('.')) ? v :
+                                (base ? `${base}.${v}` : String(v));
+                              setL2tpPoolEdit(true);
+                              setL2tpPoolForm({
+                                poolStart: toFullIp(l2tpServerInfo.poolStart, 10),
+                                poolEnd: toFullIp(l2tpServerInfo.poolEnd, 254),
+                                gateway: l2tpServerInfo.gateway || (base ? `${base}.1` : ''),
+                              });
+                            }}
+                            className="text-xs text-primary hover:text-[#d060ff] border border-border px-2 py-1 rounded-lg"
+                          >
+                            Edit
+                          </button>
+                        )}
+                      </div>
+                      {!l2tpPoolEdit ? (
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+                          <div>
+                            <p className="text-muted-foreground mb-0.5">IP Mulai</p>
+                            <p className="font-mono text-foreground">{typeof l2tpServerInfo.poolStart === 'string' ? l2tpServerInfo.poolStart : `${l2tpServerInfo.subnet?.split('/')[0].split('.').slice(0,3).join('.')}.${l2tpServerInfo.poolStart ?? 10}`}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground mb-0.5">IP Akhir</p>
+                            <p className="font-mono text-foreground">{typeof l2tpServerInfo.poolEnd === 'string' ? l2tpServerInfo.poolEnd : `${l2tpServerInfo.subnet?.split('/')[0].split('.').slice(0,3).join('.')}.${l2tpServerInfo.poolEnd ?? 254}`}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground mb-0.5">Gateway</p>
+                            <p className="font-mono text-foreground">{l2tpServerInfo.gateway || `${l2tpServerInfo.subnet?.split('/')[0].split('.').slice(0,3).join('.')}.1`}</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1 block">IP Mulai <span className="text-gray-500">(IP lengkap, mis. 10.201.0.10)</span></label>
+                              <input type="text" value={l2tpPoolForm.poolStart} onChange={(e) => setL2tpPoolForm(p => ({...p, poolStart: e.target.value}))} className="w-full px-3 py-2 bg-input border border-border rounded-lg text-foreground font-mono text-sm" placeholder="mis. 10.201.0.10" />
+                            </div>
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1 block">IP Akhir <span className="text-gray-500">(IP lengkap, mis. 10.201.0.254)</span></label>
+                              <input type="text" value={l2tpPoolForm.poolEnd} onChange={(e) => setL2tpPoolForm(p => ({...p, poolEnd: e.target.value}))} className="w-full px-3 py-2 bg-input border border-border rounded-lg text-foreground font-mono text-sm" placeholder="mis. 10.201.0.254" />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Gateway <span className="text-gray-500">(IP lokal VPS L2TP, kosong = auto .1)</span></label>
+                            <input type="text" value={l2tpPoolForm.gateway} onChange={(e) => setL2tpPoolForm(p => ({...p, gateway: e.target.value}))} className="w-full px-3 py-2 bg-input border border-border rounded-lg text-foreground font-mono text-sm" placeholder="mis. 10.201.0.1" />
+                          </div>
+                          <div className="flex gap-2 pt-1">
+                            <button onClick={handleL2tpSavePoolConfig} disabled={l2tpPoolSaving} className="flex-1 py-2 bg-violet-500 text-white text-sm font-bold rounded-lg hover:bg-[#d060ff] disabled:opacity-50 transition-colors">{l2tpPoolSaving ? 'Menyimpan...' : 'Simpan'}</button>
+                            <button onClick={() => setL2tpPoolEdit(false)} className="flex-1 py-2 bg-muted border border-border text-foreground text-sm rounded-lg hover:bg-accent transition-colors">Batal</button>
+                          </div>
+                        </div>
+                      )}
+                      <p className="text-xs text-muted-foreground mt-2">Pool subnet: <span className="font-mono text-primary">{(() => { const s = l2tpServerInfo.poolStart; const b = (typeof s === 'string' && s.includes('.')) ? s.split('.').slice(0,3).join('.') : l2tpServerInfo.subnet?.split('/')[0].split('.').slice(0,3).join('.'); return b ? `${b}.0/24` : l2tpServerInfo.subnet || '-'; })()}</span> · Server: {l2tpServerInfo.publicIp}</p>
+                    </div>
+                  ) : (
+                    <div className="p-4 rounded-xl border border-slate-700/40 bg-slate-900/40 text-center">
+                      <Radio className="w-6 h-6 text-muted-foreground mx-auto mb-2" />
+                      <p className="text-sm text-muted-foreground">L2TP/IPsec belum terinstall di VPS.</p>
+                      <a href="/admin/network/vpn-server" className="text-xs text-brand-500 hover:underline mt-1 inline-block">→ Install dari menu VPN Server</a>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Clients List */}
+          {clients.length === 0 ? (
+            <div className="bg-gradient-to-br from-slate-800/60 to-slate-900/60 rounded-3xl border-2 border-dashed border-border p-16 text-center">
+              <div className="w-20 h-20 mx-auto mb-6 bg-gradient-to-br from-primary/20 to-brand-500/20 rounded-2xl flex items-center justify-center">
+                <Shield className="w-10 h-10 text-primary" />
+              </div>
+              <h3 className="text-lg sm:text-2xl font-bold text-foreground mb-3">{t('network.noVpnClientsYet')}</h3>
+              <p className="text-muted-foreground mb-8 max-w-md mx-auto">
+                {t('network.noVpnClientsDesc')}
+              </p>
+              <button
+                onClick={() => {
+                  setFormData({ name: '', description: '', vpnServerId: '', vpnType: 'l2tp', customVpnIp: '', localNetworks: '' })
+                  setShowModal(true)
+                }}
+                className="inline-flex items-center gap-2 px-8 py-4 bg-gradient-to-r from-brand-500 to-[#00d4e6] text-black font-bold rounded-xl hover: transition-all duration-300 transform hover:scale-105"
+              >
+                <Plus className="w-5 h-5" />
+                {t('network.addFirstVpnClient')}
+              </button>
+            </div>
+          ) : (
+            <div className="grid gap-4">
+              {clients.map((client) => (
+                <div
+                  key={client.id}
+                  className="bg-gradient-to-br from-slate-800/80 to-slate-900/80 border border-border rounded-2xl overflow-hidden hover:border-brand-500/50 hover: transition-all duration-300 group"
+                >
+                  <div className="p-6">
+                    <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-3 mb-3">
+                          <div className="p-2 bg-gradient-to-br from-brand-500/30 to-primary/30 rounded-lg flex items-center justify-center">
+                            <Shield className="w-5 h-5 text-brand-500" />
+                          </div>
+                          <h3 className="font-bold text-lg text-foreground group-hover:text-brand-500 transition-colors">{client.name}</h3>
+                          {client.isRadiusServer && (
+                            <span className="px-3 py-1 text-xs font-bold rounded-lg bg-brand-500/20 text-brand-500 border border-brand-500/50 ">
+                              {t('network.radiusServer')}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+                          <div>
+                            <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.vpnServer')}</p>
+                            <p className="font-medium text-foreground text-sm">
+                              {resolveServer(client.vpnServerId)?.name || 'N/A'}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.vpnIp')}</p>
+                            {editingIpClientId === client.id ? (
+                              <div className="flex items-center gap-1.5">
+                                <input
+                                  type="text"
+                                  value={editingIpValue}
+                                  onChange={(e) => setEditingIpValue(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') handleEditIpSave(client.id); if (e.key === 'Escape') setEditingIpClientId(null); }}
+                                  className="w-32 px-2 py-1 text-xs font-mono bg-background border border-brand-500/50 rounded-lg text-foreground focus:border-brand-500 focus:ring-1 focus:ring-brand-500/30 outline-none"
+                                  autoFocus
+                                  placeholder={client.vpnIp}
+                                />
+                                <button
+                                  onClick={() => handleEditIpSave(client.id)}
+                                  disabled={editingIpLoading}
+                                  className="p-1 bg-green-500/20 border border-green-500/40 text-green-400 rounded-lg hover:bg-green-500/30 transition-all"
+                                  title="Simpan"
+                                >
+                                  {editingIpLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
+                                </button>
+                                <button
+                                  onClick={() => setEditingIpClientId(null)}
+                                  className="p-1 bg-red-500/10 border border-red-500/30 text-red-400 rounded-lg hover:bg-red-500/20 transition-all"
+                                  title="Batal"
+                                >
+                                  <XCircle className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <p className="font-mono text-foreground text-sm">{client.vpnIp}</p>
+                                <button
+                                  onClick={() => { setEditingIpClientId(client.id); setEditingIpValue(client.vpnIp); }}
+                                  className="p-1 bg-brand-500/10 border border-brand-500/30 text-brand-500 rounded-lg hover:bg-brand-500/20 transition-all opacity-60 hover:opacity-100"
+                                  title="Edit IP"
+                                >
+                                  <Key className="w-3 h-3" />
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                          <div>
+                            <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.username')}</p>
+                            <p className="font-mono text-foreground text-sm">{client.username}</p>
+                          </div>
+                          {client.winboxPort && (
+                            <div>
+                              <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.winboxRemote')}</p>
+                              <p className="font-mono text-brand-500 text-sm drop-">
+                                {resolveServer(client.vpnServerId)?.host}:{client.winboxPort}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+
+                        {client.description && (
+                          <p className="text-xs sm:text-sm text-muted-foreground mt-3">{client.description}</p>
+                        )}
+
+                        {/* RADIUS Toggle */}
+                        <div className="mt-4 pt-4 border-t border-border">
+                          <label className="flex items-center gap-3 cursor-pointer w-fit">
+                            <input
+                              type="checkbox"
+                              checked={client.isRadiusServer || false}
+                              onChange={(e) => handleToggleRadiusServer(client.id, e.target.checked)}
+              className="w-5 h-5 rounded border-border bg-background dark:bg-slate-900 text-brand-500 focus:ring-brand-500/50 focus:ring-offset-0"
+                            />
+                            <span className="text-xs sm:text-sm text-muted-foreground">
+                              {client.isRadiusServer ? t('network.defaultRadiusServer') : t('network.setAsRadiusServer')}
+                            </span>
+                          </label>
+                        </div>
+
+                        {/* VPS Routing Setup - only shown for RADIUS server nodes */}
+                        {client.isRadiusServer && (
+                          <div className="mt-4 pt-4 border-t border-brand-500/20">
+                            <button
+                              onClick={() => toggleRoutingPanel(client.id)}
+                              className="flex items-center gap-2 text-sm font-medium text-brand-500 hover:text-white transition-colors w-full text-left"
+                            >
+                              <div className="p-1.5 bg-brand-500/20 rounded-lg flex items-center justify-center">
+                                <Terminal className="w-3.5 h-3.5 text-brand-500" />
+                              </div>
+                              <span>{t('network.vpsRoutingSetup')}</span>
+                              <span className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
+                                <Route className="w-3 h-3" />
+                                {resolveServer(client.vpnServerId)?.subnet || '-'}
+                                {expandedRoutingPanels.has(client.id)
+                                  ? <ChevronUp className="w-4 h-4" />
+                                  : <ChevronDown className="w-4 h-4" />}
+                              </span>
+                            </button>
+
+                            {expandedRoutingPanels.has(client.id) && (
+                              <div className="mt-3 rounded-xl overflow-hidden border border-brand-500/20">
+                                {/* Panel header */}
+                                <div className="flex items-center justify-between px-4 py-3 bg-gradient-to-r from-brand-500/10 to-primary/10 border-b border-brand-500/20">
+                                  <div>
+                                    <p className="text-xs font-bold text-brand-500 uppercase tracking-wider">{t('network.vpsRoutingSetup')}</p>
+                                    <p className="text-xs text-muted-foreground mt-0.5">{t('network.vpsRoutingSetupDesc')}</p>
+                                  </div>
+                                  <button
+                                    onClick={() => copyToClipboard(generateVpsRoutingScript(client))}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-brand-500/20 border border-brand-500/30 text-brand-500 rounded-lg hover:bg-brand-500/30 transition-all text-xs font-medium flex-shrink-0"
+                                  >
+                                    <Copy className="w-3.5 h-3.5" />
+                                    {t('network.copyVpsScript')}
+                                  </button>
+                                  <button
+                                    onClick={() => handleApplyRouting(client)}
+                                    className="flex items-center gap-1.5 px-3 py-1.5 bg-primary/10 border border-border text-primary rounded-lg hover:bg-primary/10 transition-all text-xs font-medium flex-shrink-0"
+                                  >
+                                    <Zap className="w-3.5 h-3.5" />
+                                    Apply Frontend
+                                  </button>
+                                </div>
+                                {/* Script content */}
+                                <pre className="p-4 bg-gray-100 dark:bg-slate-950 text-green-700 dark:text-green-400 text-xs font-mono overflow-x-auto overflow-y-auto max-h-72 whitespace-pre leading-relaxed">
+                                  {generateVpsRoutingScript(client)}
+                                </pre>
+                                {/* Notes */}
+                                <div className="px-4 py-3 bg-amber-500/5 border-t border-amber-500/20">
+                                  <p className="text-xs text-amber-400/80 flex items-start gap-1.5">
+                                    <CheckCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                                    {t('network.vpsRoutingNote')}
+                                  </p>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-shrink-0 lg:pt-1">
+                        <button
+                          onClick={() => viewCredentials(client)}
+                          className="flex items-center gap-2 px-4 py-2.5 bg-brand-500/20 border border-brand-500/40 text-brand-500 rounded-xl hover:bg-brand-500/30 transition-all"
+                          title="Lihat Kredensial"
+                        >
+                          <Eye className="w-4 h-4" />
+                          <span className="text-sm font-medium">{t('common.view')}</span>
+                        </button>
+                        <button
+                          onClick={() => handleDelete(client.id, client.name)}
+                          className="flex items-center gap-2 px-4 py-2.5 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl hover:bg-red-500/20 transition-all"
+                          title="Hapus"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                          <span className="text-sm font-medium">{t('common.delete')}</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Add Modal */}
+        {showModal && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-2.5 sm:p-4">
+            <div className="bg-gradient-to-br from-slate-800 to-slate-900 border border-border rounded-2xl max-w-[calc(100%-2rem)] sm:max-w-lg w-full p-4 sm:p-6 ">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 bg-gradient-to-br from-brand-500 to-primary rounded-lg flex items-center justify-center">
+                  <Plus className="w-5 h-5 text-white" />
+                </div>
+                <h2 className="text-xl font-bold text-foreground">{t('network.addVpnClient')}</h2>
+              </div>
+
+              <form onSubmit={handleCreate} className="space-y-5">
+                <div>
+                  <label className="block text-sm font-medium text-brand-500 mb-2">
+                    {t('network.vpnServer')} <span className="text-red-400">*</span>
+                  </label>
+                  <select
+                    value={formData.vpnServerId}
+                    onChange={(e) => setFormData({ ...formData, vpnServerId: e.target.value })}
+                    className="w-full px-4 py-3 bg-input border border-border rounded-xl text-foreground focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all"
+                    required
+                  >
+                    <option value="" className="bg-slate-800">{t('network.selectVpnClient')}</option>
+                    {/* VPS WireGuard option */}
+                    {formData.vpnType === 'wireguard' && wgServerInfoLoading && (
+                      <option disabled className="bg-slate-800">Memeriksa VPS WireGuard...</option>
+                    )}
+                    {formData.vpnType === 'wireguard' && wgServerInfo?.installed && (
+                      <option value="__vps_wg__" className="bg-slate-800">
+                        🖥️ VPS WireGuard Server ({wgServerInfo.publicIp || 'VPS'} :{wgServerInfo.listenPort || 51820})
+                      </option>
+                    )}
+                    {/* VPS L2TP option */}
+                    {formData.vpnType === 'l2tp' && l2tpServerInfoLoading && (
+                      <option disabled className="bg-slate-800">Memeriksa VPS L2TP...</option>
+                    )}
+                    {formData.vpnType === 'l2tp' && l2tpServerInfo?.installed && (
+                      <option value="__vps_l2tp__" className="bg-slate-800">
+                        🖥️ VPS L2TP/IPsec Server ({l2tpServerInfo.publicIp || 'VPS'})
+                      </option>
+                    )}
+                    {/* CHR servers */}
+                    {vpnServers
+                      .filter(server => {
+                        if (formData.vpnType === 'wireguard') return server.wgEnabled === true
+                        if (formData.vpnType === 'l2tp') return server.l2tpEnabled === true
+                        if (formData.vpnType === 'sstp') return server.sstpEnabled === true
+                        if (formData.vpnType === 'pptp') return server.pptpEnabled === true
+                        return true
+                      })
+                      .map((server) => (
+                        <option key={server.id} value={server.id} className="bg-slate-800">
+                          🔷 CHR: {server.name} ({server.host})
+                        </option>
+                      ))}
+                  </select>
+                  {formData.vpnType === 'wireguard' && !wgServerInfoLoading && wgServerInfo && !wgServerInfo.installed && vpnServers.filter(s => s.wgEnabled).length === 0 && (
+                    <p className="text-xs text-amber-400 mt-1.5">
+                      WireGuard belum terinstall di VPS dan tidak ada CHR dengan WireGuard aktif.
+                      <a href="/admin/network/vpn-server" className="text-brand-500 underline ml-1">Setup di menu VPN Server</a>.
+                    </p>
+                  )}
+                  {formData.vpnType === 'l2tp' && !l2tpServerInfoLoading && l2tpServerInfo && !l2tpServerInfo.installed && vpnServers.filter(s => s.l2tpEnabled).length === 0 && (
+                    <p className="text-xs text-amber-400 mt-1.5">
+                      L2TP belum terinstall di VPS dan tidak ada CHR dengan L2TP aktif.
+                      <a href="/admin/network/vpn-server" className="text-brand-500 underline ml-1">Setup di menu VPN Server</a>.
+                    </p>
+                  )}
+                  {formData.vpnType && (formData.vpnType === 'sstp' || formData.vpnType === 'pptp') && vpnServers.filter(server => {
+                    if (formData.vpnType === 'sstp') return server.sstpEnabled === true
+                    if (formData.vpnType === 'pptp') return server.pptpEnabled === true
+                    return true
+                  }).length === 0 && (
+                    <p className="text-xs text-amber-400 mt-1.5 flex items-center gap-1">
+                      Tidak ada CHR yang mengaktifkan protokol <strong>{formData.vpnType.toUpperCase()}</strong>.
+                      <span> Setup di</span><a href="/admin/network/vpn-server" className="text-brand-500 underline ml-1">menu VPN Server</a>.
+                    </p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-brand-500 mb-2">
+                    VPN Protocol <span className="text-red-400">*</span>
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {(['wireguard', 'l2tp', 'pptp', 'sstp'] as const).map((type) => (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => { setFormData({ ...formData, vpnType: type, vpnServerId: '' }); if (type === 'wireguard') queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vps-wg-peer') }); if (type === 'l2tp') queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vps-l2tp-info') }); }}
+                        className={`px-3 py-2.5 rounded-xl text-sm font-bold transition-all ${formData.vpnType === type
+                          ? 'bg-gradient-to-r from-brand-500 to-[#00d4e6] text-black '
+                          : 'bg-muted/60 dark:bg-slate-800/60 border border-border text-foreground hover:bg-primary/10'
+                        }`}
+                      >
+                        {type === 'l2tp' ? 'L2TP/IPSec' : type === 'wireguard' ? 'WireGuard' : type.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                  {formData.vpnType === 'wireguard' && (
+                    <p className="text-xs text-brand-500/80 mt-2 flex items-center gap-1"><Wifi className="w-3 h-3" /> WireGuard memerlukan RouterOS 7+ di NAS. Sistem akan menambah peer ke CHR secara otomatis.</p>
+                  )}
+                  {formData.vpnType === 'pptp' && (
+                    <p className="text-xs text-amber-400/80 mt-2">PPTP sudah deprecated dan kurang aman. Gunakan WireGuard atau L2TP jika memungkinkan.</p>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-brand-500 mb-2">
+                    {t('network.clientName')} <span className="text-red-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    className="w-full px-4 py-3 bg-input border border-border rounded-xl text-foreground placeholder-gray-500 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all"
+                    placeholder="e.g., Branch Office A"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-brand-500 mb-2">
+                    {t('network.descriptionOptional')}
+                  </label>
+                  <textarea
+                    value={formData.description}
+                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                    className="w-full px-4 py-3 bg-input border border-border rounded-xl text-foreground placeholder-gray-500 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all resize-none"
+                    placeholder={t('network.additionalNotes')}
+                    rows={3}
+                  />
+                </div>
+
+                {/* Local Networks - for any WireGuard peer (VPS routes to local subnets behind NAS) */}
+                {formData.vpnType === 'wireguard' && (
+                  <div>
+                    <label className="block text-sm font-medium text-brand-500 mb-2">
+                      IP Lokal / Subnet di Balik NAS <span className="text-muted-foreground font-normal">(opsional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.localNetworks}
+                      onChange={(e) => setFormData({ ...formData, localNetworks: e.target.value })}
+                      className="w-full px-4 py-3 bg-input border border-border rounded-xl text-foreground placeholder-gray-500 font-mono focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all"
+                      placeholder="cth: 192.168.75.0/24,136.1.1.100/32"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Pisahkan dengan koma. IP/subnet ini akan ditambahkan ke <span className="text-brand-500 font-mono">AllowedIPs</span> peer WireGuard di VPS sehingga VPS bisa menjangkau jaringan lokal di balik NAS (Mikrotik).
+                    </p>
+                  </div>
+                )}
+
+                {/* Custom VPN IP - only for non-VPS WG (VPS WG assigns IPs automatically) */}
+                {formData.vpnServerId && formData.vpnServerId !== '__vps_wg__' && (
+                  <div>
+                    <label className="block text-sm font-medium text-brand-500 mb-1">
+                      IP VPN Client <span className="text-muted-foreground font-normal">(opsional - kosongkan untuk auto)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.customVpnIp}
+                      onChange={(e) => setFormData({ ...formData, customVpnIp: e.target.value })}
+                      className="w-full px-4 py-3 bg-input border border-border rounded-xl text-foreground placeholder-gray-500 font-mono focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 transition-all"
+                      placeholder="cth: 10.20.30.15 (kosong = auto-assign)"
+                    />
+                    {(() => {
+                      const srv = vpnServers.find(s => s.id === formData.vpnServerId);
+                      const sub = srv?.subnet;
+                      if (!sub) return null;
+                      const base = sub.split('/')[0].split('.').slice(0, 3).join('.');
+                      return <p className="text-xs text-muted-foreground mt-1">Subnet server: <span className="text-brand-500 font-mono">{sub}</span> - IP harus dalam range <span className="font-mono">{base}.10</span> - <span className="font-mono">{base}.254</span></p>;
+                    })()}
+                  </div>
+                )}
+
+                <div className="flex gap-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setShowModal(false)}
+                    className="flex-1 px-4 py-3 bg-muted border border-border text-foreground rounded-xl hover:bg-accent transition-all font-medium"
+                  >
+                    {t('common.cancel')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={creating}
+                    className="flex-1 px-4 py-3 bg-gradient-to-r from-brand-500 to-[#00d4e6] text-black font-bold rounded-xl hover: transition-all disabled:opacity-50"
+                  >
+                    {creating ? t('common.creating') : t('network.createClient')}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* Credentials Modal */}
+        {showCredentials && credentials && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-2.5 sm:p-4">
+            <div className="bg-gradient-to-br from-slate-800 to-slate-900 border border-border rounded-2xl max-w-[calc(100%-2rem)] sm:max-w-4xl w-full p-4 sm:p-6  max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 bg-gradient-to-br from-brand-500 to-primary rounded-lg flex items-center justify-center">
+                  <Shield className="w-5 h-5 text-white" />
+                </div>
+                <h2 className="text-xl font-bold text-foreground">{t('network.vpnClientCredentials')}</h2>
+              </div>
+
+              <div className="space-y-6">
+                {/* Credentials Grid */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 p-5 bg-gradient-to-br from-primary/10 to-brand-500/10 border border-border rounded-xl">
+                  <div>
+                    <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.vpnServer')}</p>
+                    <p className="font-mono text-sm text-foreground">{credentials.server}</p>
+                  </div>
+                  <div>
+                    <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.vpnIp')}</p>
+                    <p className="font-mono text-sm text-foreground">{credentials.vpnIp}</p>
+                  </div>
+                  <div>
+                    <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.username')}</p>
+                    <p className="font-mono text-sm text-foreground">{credentials.username}</p>
+                  </div>
+                  <div>
+                    <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.password')}</p>
+                    <p className="font-mono text-sm text-foreground">{credentials.password}</p>
+                  </div>
+                  {credentials.winboxRemote && (
+                    <div>
+                      <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.winboxRemote')}</p>
+                      <p className="font-mono text-sm text-brand-500 drop-">{credentials.winboxRemote}</p>
+                    </div>
+                  )}
+                  {credentials.apiUsername && (
+                    <div>
+                      <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.apiUsername')}</p>
+                      <p className="font-mono text-sm text-green-400">{credentials.apiUsername}</p>
+                    </div>
+                  )}
+                  {credentials.apiPassword && (
+                    <div>
+                      <p className="text-brand-500 text-xs uppercase tracking-wider mb-1">{t('network.apiPassword')}</p>
+                      <p className="font-mono text-sm text-green-400">{credentials.apiPassword}</p>
+                    </div>
+                  )}
+                  {credentials.radiusServerIp && (
+                    <div className="col-span-2 mt-1 p-3 bg-primary/10 border border-border rounded-lg">
+                      <p className="text-primary text-xs uppercase tracking-wider mb-2 font-bold">RADIUS Configuration</p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <p className="text-primary text-xs uppercase tracking-wider mb-1">RADIUS Server IP</p>
+                          <p className="font-mono text-sm text-amber-300">{credentials.radiusServerIp}</p>
+                        </div>
+                        <div>
+                          <p className="text-primary text-xs uppercase tracking-wider mb-1">NAS Secret</p>
+                          <p className="font-mono text-sm text-amber-300">{credentials.nasSecret}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* VPN Type Selector */}
+                <div className="p-5 bg-brand-500/10 border border-brand-500/30 rounded-xl">
+                  <p className="text-sm font-medium text-brand-500 mb-3 uppercase tracking-wider">
+                    {t('network.selectVpnType')}
+                  </p>
+                  <div className="flex gap-2 flex-wrap">
+                    {(['wireguard', 'l2tp', 'pptp', 'sstp'] as const).map((type) => (
+                      <button
+                        key={type}
+                        onClick={() => setSelectedVpnType(type)}
+                        className={`flex-1 min-w-[80px] px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${selectedVpnType === type
+                          ? 'bg-gradient-to-r from-brand-500 to-[#00d4e6] text-black '
+                          : 'bg-muted/60 dark:bg-slate-800/60 border border-border text-foreground hover:bg-primary/10'
+                          }`}
+                      >
+                        {type === 'l2tp' ? 'L2TP/IPSec' : type === 'wireguard' ? 'WireGuard' : type.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                  {selectedVpnType === 'wireguard' && (
+                    <div className="mt-3 p-3 bg-primary/10 border border-border rounded-xl">
+                      <div className="flex items-start gap-2">
+                        <Key className="w-4 h-4 text-primary mt-0.5 flex-shrink-0" />
+                        <div>
+                          <p className="text-xs font-bold text-primary mb-1">WireGuard Keys</p>
+                          {credentials.clientPrivateKey ? (
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs text-muted-foreground w-20 shrink-0">Private Key:</span>
+                                <code className="text-xs font-mono text-green-400 truncate">{credentials.clientPrivateKey.substring(0, 20)}...</code>
+                                <button onClick={() => copyToClipboard(credentials.clientPrivateKey!)} className="text-xs text-brand-500 hover:underline shrink-0"><Copy className="w-3 h-3" /></button>
+                              </div>
+                              {credentials.serverPublicKey && (
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs text-muted-foreground w-20 shrink-0">Server PubKey:</span>
+                                  <code className="text-xs font-mono text-amber-400 truncate">{credentials.serverPublicKey.substring(0, 20)}...</code>
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">Key dihasilkan otomatis saat membuat client. Gunakan tombol "Lihat" pada client WireGuard.</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* MikroTik Script */}
+                <div>
+                  <div className="flex items-center justify-between mb-3 min-w-0">
+                    <p className="text-sm font-medium text-brand-500 uppercase tracking-wider">
+                      {t('network.mikrotikConfigScript')}
+                    </p>
+                    <button
+                      onClick={() => copyToClipboard(generateMikroTikScript())}
+                      className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-primary to-pink-500 text-white font-bold rounded-lg hover: transition-all text-sm"
+                    >
+                      <Copy className="w-4 h-4" />
+                      {t('network.copyScript')}
+                    </button>
+                  </div>
+                  <pre className="p-5 bg-gray-100 dark:bg-slate-950 text-green-700 dark:text-green-400 border border-border rounded-xl text-xs overflow-auto max-h-80 whitespace-pre font-mono">
+                    {generateMikroTikScript()}
+                  </pre>
+                </div>
+
+                {/* Important Notes */}
+                <div className="p-5 bg-amber-500/10 border border-amber-500/30 rounded-xl">
+                  <h4 className="text-sm font-bold text-amber-400 mb-3 uppercase tracking-wider flex items-center gap-2">
+                    <span></span> {t('network.importantNotes')}
+                  </h4>
+                  <ul className="text-xs sm:text-sm text-foreground space-y-2">
+                    <li className="flex items-start gap-2">
+                      <CheckCircle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
+                      <span><strong className="text-amber-300">{t('network.apiUserGroup')}:</strong> {t('network.limitedPermissions')}</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <CheckCircle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
+                      <span><strong className="text-amber-300">{t('network.vpnConnection')}:</strong> {t('network.noDefaultRoute')}</span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <CheckCircle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
+              <span><strong className="text-amber-300 dark:text-amber-300 text-amber-600">{t('network.remoteAccess')}:</strong> {t('network.useWinboxVia')} <code className="px-1.5 py-0.5 bg-muted dark:bg-slate-800 border border-brand-500/30 rounded text-brand-500">{credentials.winboxRemote}</code></span>
+                    </li>
+                    <li className="flex items-start gap-2">
+                      <CheckCircle className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
+                      <span><strong className="text-amber-300">{t('network.apiCredentials')}:</strong> {t('network.forRemoteManagement')}</span>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+
+              <button
+                onClick={() => { setShowCredentials(false); queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/network/vpn-client') }); }}
+                className="w-full mt-6 px-4 py-4 bg-gradient-to-r from-primary to-pink-500 hover:from-primary/90 hover:to-pink-500/90 rounded-xl transition-all font-bold text-white "
+              >
+                {t('common.close')}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Apply Routing via Frontend Modal */}
+        {showApplyRoutingModal && applyRoutingClient && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-2.5 sm:p-4">
+            <div className="bg-gradient-to-br from-slate-800 to-slate-900 border border-brand-500/50 rounded-2xl max-w-xl w-full p-6  max-h-[90vh] overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 bg-gradient-to-br from-brand-500 to-primary rounded-lg flex items-center justify-center">
+                    <Route className="w-5 h-5 text-white" />
+                  </div>
+                  <h2 className="text-xl font-bold text-foreground">Apply VPS Routing</h2>
+                </div>
+                <button onClick={() => setShowApplyRoutingModal(false)} className="p-2 text-muted-foreground hover:text-foreground transition-colors">
+                  <XCircle className="w-6 h-6" />
+                </button>
+              </div>
+              <p className="text-sm text-muted-foreground mb-4">
+                Terapkan routing script ke VPS: <span className="text-brand-500 font-medium">{applyRoutingClient.name}</span>
+              </p>
+
+              <div className="p-4 rounded-xl border border-brand-500/30 bg-muted/50 dark:bg-slate-900/60 mb-4">
+                <p className="text-xs font-bold text-brand-500 mb-3">SSH Credentials VPS RADIUS</p>
+                <input
+                    className="w-full px-3 py-2 bg-input border border-border rounded-lg text-foreground text-sm mb-2"
+                    placeholder="IP VPS RADIUS (contoh: 103.151.140.110)"
+                    value={applyRoutingForm.host}
+                    onChange={(e) => setApplyRoutingForm(p => ({...p, host: e.target.value}))}
+                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
+                  <input
+                    className="px-3 py-2 bg-input border border-border rounded-lg text-foreground text-sm"
+                    placeholder="SSH Port"
+                    type="number"
+                    value={applyRoutingForm.port}
+                    onChange={(e) => setApplyRoutingForm(p => ({...p, port: e.target.value}))}
+                  />
+                  <input
+                    className="px-3 py-2 bg-input border border-border rounded-lg text-foreground text-sm"
+                    placeholder="Username"
+                    value={applyRoutingForm.username}
+                    onChange={(e) => setApplyRoutingForm(p => ({...p, username: e.target.value}))}
+                  />
+                </div>
+                <input
+                  className="w-full px-3 py-2 bg-input border border-border rounded-lg text-foreground text-sm"
+                  placeholder="Password"
+                  type="password"
+                  value={applyRoutingForm.password}
+                  onChange={(e) => setApplyRoutingForm(p => ({...p, password: e.target.value}))}
+                />
+              </div>
+
+              {applyRoutingOutput && (
+                <div className="mb-4 p-3 bg-gray-100 dark:bg-slate-950 rounded-xl border border-brand-500/20 max-h-52 overflow-y-auto">
+                  <p className="text-brand-500 text-xs uppercase mb-1 font-bold">Output:</p>
+                  <pre className="text-xs text-green-300 font-mono whitespace-pre-wrap">{applyRoutingOutput}</pre>
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowApplyRoutingModal(false)}
+                  className="flex-1 px-4 py-2.5 text-sm border border-border rounded-xl text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  Tutup
+                </button>
+                <button
+                  onClick={executeApplyRouting}
+                  disabled={applyRoutingRunning}
+                  className="flex-1 px-4 py-2.5 text-sm font-bold bg-gradient-to-r from-brand-500 to-[#00d4e6] text-black rounded-xl hover: transition-all disabled:opacity-50"
+                >
+                  {applyRoutingRunning ? 'Menjalankan...' : 'Apply Routing'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+    </>
+  )
+}

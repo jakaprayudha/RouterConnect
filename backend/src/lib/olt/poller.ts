@@ -1,0 +1,542 @@
+/**
+ * OLT Poller Service
+ * Polls all enabled OLTs and updates database with monitoring data
+ */
+
+import { prisma } from '@/server/db/client';
+import { getSystemInfo } from './snmp';
+import { evaluateCustomRules, createRuleContext, type RuleCondition, type RuleAction, type RuleSchedule } from './rule-engine';
+
+// Vendor modules
+import * as huawei from './vendors/huawei';
+import * as zte from './vendors/zte';
+import * as fiberhome from './vendors/fiberhome';
+import * as bdcom from './vendors/bdcom';
+import * as raisecom from './vendors/raisecom';
+import * as hioso from './vendors/hioso';
+
+type VendorModule = typeof huawei;
+
+function getVendorModule(vendor: string | null | undefined): VendorModule {
+  switch (vendor?.toLowerCase()) {
+    case 'zte':       return zte as any as VendorModule;
+    case 'fiberhome': return fiberhome as any as VendorModule;
+    case 'bdcom':     return bdcom as any as VendorModule;
+    case 'raisecom':  return raisecom as any as VendorModule;
+    case 'hioso':
+    case 'cdata':
+    case 'c-data':    return hioso as any as VendorModule;
+    default:          return huawei;
+  }
+}
+
+/**
+ * Poll a single OLT and update monitoring data
+ */
+export async function pollOLT(oltId: string): Promise<{ success: boolean; error?: string }> {
+  return pollOLTWithOptions(oltId);
+}
+
+export async function pollOLTWithOptions(
+  oltId: string,
+  options: { ignoreMonitoringDisabled?: boolean; skipOpticalInfo?: boolean } = {}
+): Promise<{ success: boolean; error?: string }> {
+  const olt = await prisma.networkOLT.findUnique({ where: { id: oltId } });
+  if (!olt) return { success: false, error: 'OLT not found' };
+  if (!olt.monitoringEnabled && !options.ignoreMonitoringDisabled) {
+    return { success: false, error: 'Monitoring not enabled' };
+  }
+
+  const now = new Date();
+  let isOnline = false;
+  let temperature: number | null = null;
+  let cpuUsage: number | null = null;
+  let memoryUsage: number | null = null;
+  let uptime: bigint = BigInt(0);
+  let discoveredOnus: any[] = [];
+
+  try {
+    const vendor = getVendorModule(olt.vendor);
+    const snmpConfig = olt.snmpEnabled ? {
+      host: olt.ipAddress,
+      community: olt.snmpCommunity,
+      port: olt.snmpPort,
+    } : null;
+
+    const sshConfig = olt.sshEnabled && olt.username ? {
+      host: olt.ipAddress,
+      port: olt.sshPort,
+      username: olt.username,
+      password: olt.password ?? undefined,
+    } : null;
+
+    const telnetConfig = olt.telnetEnabled && olt.username ? {
+      host: olt.ipAddress,
+      port: olt.telnetPort,
+      username: olt.username,
+      password: olt.password ?? '',
+    } : null;
+
+    // Test connectivity
+    if (snmpConfig) {
+      const sysInfo = await getSystemInfo(snmpConfig);
+      if (sysInfo) {
+        isOnline = true;
+        uptime = BigInt(sysInfo.uptime ?? 0);
+      }
+    }
+
+    // If SNMP failed or not enabled, try a lightweight SSH/Telnet connectivity test.
+    // Do NOT assume online just because credentials are configured — actually test
+    // the connection before marking the OLT as online.
+    if (!isOnline && (sshConfig || telnetConfig)) {
+      try {
+        if (telnetConfig) {
+          // Quick Telnet test: execute a single harmless command
+          const { executeCommand } = await import('./telnet');
+          const r = await executeCommand(telnetConfig, 'show version');
+          if (r.success) isOnline = true;
+        } else if (sshConfig) {
+          // Quick SSH test: execute a single harmless command
+          const { executeCommand: sshExec } = await import('./ssh');
+          const r = await sshExec(sshConfig, 'show version');
+          if (r.success) isOnline = true;
+        }
+      } catch {
+        // Connection test failed — OLT is genuinely unreachable
+        isOnline = false;
+      }
+    }
+
+    // Get performance metrics
+    if (snmpConfig && isOnline) {
+      [temperature, cpuUsage, memoryUsage] = await Promise.all([
+        vendor.getTemperature(snmpConfig),
+        vendor.getCpuUsage(snmpConfig),
+        vendor.getMemoryUsage(snmpConfig),
+      ]);
+    }
+
+    // Discover ONUs — try SNMP first (ZTE C320 supports SNMP-based ONU discovery)
+    if (snmpConfig && isOnline && typeof (vendor as any).discoverONUsSNMP === 'function') {
+      try {
+        discoveredOnus = await (vendor as any).discoverONUsSNMP(snmpConfig, olt.firmwareVersion, telnetConfig);
+      } catch { /* fallback to SSH/Telnet */ }
+    }
+    if (discoveredOnus.length === 0 && sshConfig && isOnline) {
+      discoveredOnus = await vendor.discoverONUsSSH(sshConfig);
+    } else if (discoveredOnus.length === 0 && telnetConfig && isOnline) {
+      discoveredOnus = await vendor.discoverONUs(telnetConfig);
+    }
+
+    // Re-check the OLT wasn't deleted while the SNMP/Telnet/SSH probes above
+    // were in flight (those can take tens of seconds) — writing ONU/metric
+    // rows for an oltId that no longer exists throws a foreign-key error for
+    // every single write below instead of one clean, expected abort.
+    const stillExists = await prisma.networkOLT.findUnique({ where: { id: oltId }, select: { id: true } });
+    if (!stillExists) return { success: false, error: 'OLT deleted during poll' };
+
+    // Upsert ONU statuses
+    const discoveredKeys = new Set<string>();
+    const registeredSerials = new Set<string>();
+    for (const onu of discoveredOnus) {
+      discoveredKeys.add(buildOnuKey(onu));
+      if (mapOnuStatus(onu.status) !== 'auth_failed' && onu.serialNumber) registeredSerials.add(normalizeSerial(onu.serialNumber));
+      await upsertONU(oltId, onu, sshConfig, telnetConfig, vendor, options);
+    }
+
+    if (discoveredOnus.length > 0) {
+      await pruneMissingOnus(oltId, discoveredKeys, registeredSerials, (discoveredOnus as any).uncfgAuthoritative === true);
+    }
+
+    // Count ONU statuses
+    const [totalOnu, onlineOnu, offlineOnu] = await Promise.all([
+      prisma.oltOnuStatus.count({ where: { oltId } }),
+      prisma.oltOnuStatus.count({ where: { oltId, status: 'online' } }),
+      prisma.oltOnuStatus.count({ where: { oltId, status: 'offline' } }),
+    ]);
+
+    // Update OLT record
+    await prisma.networkOLT.update({
+      where: { id: oltId },
+      data: {
+        isOnline,
+        uptime,
+        temperature,
+        cpuUsage,
+        memoryUsage,
+        totalOnu,
+        onlineOnu,
+        offlineOnu,
+        lastPollAt: now,
+        updatedAt: now,
+      },
+    });
+
+    // Save performance metric snapshot
+    await prisma.oltPerformanceMetric.create({
+      data: {
+        id: crypto.randomUUID(),
+        oltId,
+        cpuUsage,
+        memoryUsage,
+        temperature,
+        uptime,
+        totalOnu,
+        onlineOnu,
+        offlineOnu,
+        recordedAt: now,
+      },
+    });
+
+    // Run alert checks
+    const onus = await prisma.oltOnuStatus.findMany({ where: { oltId } });
+    await checkAlerts(olt, onus, temperature, cpuUsage, memoryUsage);
+
+    // Save success log
+    await prisma.oltMonitoringLog.create({
+      data: {
+        id: crypto.randomUUID(),
+        oltId,
+        logType: 'poll',
+        severity: 'info',
+        message: `Poll successful. Online: ${onlineOnu}/${totalOnu} ONUs.`,
+        data: { isOnline, temperature, cpuUsage, memoryUsage, totalOnu, onlineOnu, offlineOnu },
+      },
+    });
+
+    return { success: true };
+  } catch (err: any) {
+    console.error(`[OLT Poller] Error polling OLT ${oltId}:`, err);
+
+    // Update OLT as offline on error
+    await prisma.networkOLT.update({
+      where: { id: oltId },
+      data: { isOnline: false, lastPollAt: now, updatedAt: now },
+    }).catch(() => {});
+
+    // Save error log
+    await prisma.oltMonitoringLog.create({
+      data: {
+        id: crypto.randomUUID(),
+        oltId,
+        logType: 'error',
+        severity: 'error',
+        message: err.message,
+        data: { stack: err.stack },
+      },
+    }).catch(() => {});
+
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * Poll all OLTs with monitoring enabled
+ */
+export async function pollAllOLTs(): Promise<void> {
+  const olts = await prisma.networkOLT.findMany({
+    where: { monitoringEnabled: true },
+    select: { id: true, name: true, ipAddress: true },
+  });
+
+  console.log(`[OLT Poller] Starting poll for ${olts.length} OLTs`);
+
+  // Poll sequentially to avoid overwhelming the server
+  for (const olt of olts) {
+    try {
+      const result = await pollOLT(olt.id);
+      console.log(`[OLT Poller] ${olt.name} (${olt.ipAddress}): ${result.success ? 'OK' : result.error}`);
+    } catch (err) {
+      console.error(`[OLT Poller] Failed for ${olt.name}:`, err);
+    }
+  }
+}
+
+function buildOnuKey(onu: { frame?: number | null; slot?: number | null; port: number; onuId: number }): string {
+  return [onu.frame ?? 0, onu.slot ?? 0, onu.port, onu.onuId].join(':');
+}
+
+function normalizeSerial(serial: string): string {
+  return serial.toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+/** An ONU just deleted from the UI is kept visible this long, even before the OLT lists it as unconfigured. */
+const RECENTLY_DELETED_GRACE_MS = 10 * 60 * 1000;
+/** Unconfigured rows the OLT hasn't listed for this long are dropped even when this poll's listing failed. */
+const UNSEEN_UNCONFIGURED_MAX_MS = 24 * 60 * 60 * 1000;
+
+async function pruneMissingOnus(
+  oltId: string,
+  discoveredKeys: Set<string>,
+  registeredSerials: Set<string>,
+  uncfgAuthoritative: boolean,
+): Promise<void> {
+  const currentOnus = await prisma.oltOnuStatus.findMany({
+    where: { oltId },
+    select: { id: true, frame: true, slot: true, port: true, onuId: true, status: true, serialNumber: true, updatedAt: true, lastSeenAt: true },
+  });
+  const now = Date.now();
+
+  const staleIds = currentOnus
+    .filter((onu) => {
+      if (discoveredKeys.has(buildOnuKey(onu))) return false; // still visible — keep
+      if (onu.status !== 'auth_failed') return true;
+
+      // Unconfigured rows:
+      // - same serial now registered elsewhere → leftover from before
+      //   registration, always remove.
+      if (onu.serialNumber && registeredSerials.has(normalizeSerial(onu.serialNumber))) return true;
+      // - the OLT's own uncfg listing was read this poll and doesn't contain
+      //   it → the OLT no longer sees it as unconfigured (unplugged, moved,
+      //   registered from the OLT CLI, or never real). Previously these rows
+      //   were kept forever, so the panel showed unconfigured ONUs the OLT
+      //   didn't have. A row the UI marked moments ago (ONU deletion) keeps a
+      //   short grace period until the OLT reports it.
+      const lastTouched = Math.max(onu.updatedAt.getTime(), onu.lastSeenAt?.getTime() ?? 0);
+      if (uncfgAuthoritative) return now - lastTouched > RECENTLY_DELETED_GRACE_MS;
+      // - listing unavailable this poll → keep, unless the OLT hasn't listed
+      //   it for a day (a real unconfigured ONU reappears on the next good poll).
+      return now - lastTouched > UNSEEN_UNCONFIGURED_MAX_MS;
+    })
+    .map((onu) => onu.id);
+
+  if (staleIds.length === 0) return;
+
+  await prisma.oltOnuStatus.deleteMany({
+    where: { id: { in: staleIds } },
+  });
+}
+
+/**
+ * Upsert a single ONU's status record
+ */
+async function upsertONU(
+  oltId: string,
+  onu: any,
+  sshConfig: any,
+  telnetConfig: any,
+  vendor: VendorModule,
+  options: { skipOpticalInfo?: boolean } = {}
+): Promise<void> {
+  try {
+    let opticalInfo: any = null;
+
+    // Manual sync/delete refresh should stay lightweight so the request can finish.
+    // If SNMP discovery already provided rxPower (e.g. ZTE V2.1 via discoverONUsSNMP/discoverPonV21),
+    // skip the per-ONU Telnet/SSH optical info call entirely — it's redundant and causes N×Telnet sessions per cycle.
+    const snmpHasOptical = onu.rxPower !== null && onu.rxPower !== undefined;
+    if (!options.skipOpticalInfo && !snmpHasOptical) {
+      // Only fallback to Telnet optical info when SNMP could not supply rxPower.
+      // Do NOT use SSH path for ZTE C320 (only Telnet CLI is supported).
+      if (telnetConfig) {
+        opticalInfo = await vendor.getOnuOpticalInfo(telnetConfig, onu.frame, onu.slot, onu.port, onu.onuId).catch(() => null);
+      }
+    }
+
+    const status = mapOnuStatus(onu.status);
+    const now = new Date();
+    const serialNumber = onu.serialNumber ?? opticalInfo?.serialNumber ?? null;
+    // Use SNMP-discovered rxPower/distance as fallback if optical info not available
+    const rxPower = opticalInfo?.rxPower ?? onu.rxPower ?? null;
+    const txPower = opticalInfo?.txPower ?? onu.txPower ?? null;
+    const distance = opticalInfo?.distance ?? onu.distance ?? null;
+
+    await prisma.oltOnuStatus.upsert({
+      where: {
+        oltId_frame_slot_port_onuId: {
+          oltId,
+          frame: onu.frame ?? 0,
+          slot: onu.slot ?? 0,
+          port: onu.port,
+          onuId: onu.onuId,
+        },
+      },
+      create: {
+        id: crypto.randomUUID(),
+        oltId,
+        frame: onu.frame ?? 0,
+        slot: onu.slot ?? 0,
+        port: onu.port,
+        onuId: onu.onuId,
+        serialNumber,
+        macAddress: onu.macAddress ?? null,
+        status,
+        description: onu.description ?? null,
+        rxPower,
+        txPower,
+        distance,
+        temperature: opticalInfo?.temperature ?? null,
+        voltage: opticalInfo?.voltage ?? null,
+        firstSeenAt: now,
+        lastSeenAt: now,
+        updatedAt: now,
+      },
+      update: {
+        ...(serialNumber != null ? { serialNumber } : {}),
+        status,
+        description: onu.description ?? undefined,
+        rxPower,
+        txPower,
+        distance,
+        temperature: opticalInfo?.temperature ?? null,
+        voltage: opticalInfo?.voltage ?? null,
+        lastSeenAt: now,
+        lastOfflineAt: status !== 'online' ? now : undefined,
+        updatedAt: now,
+      },
+    });
+  } catch (err) {
+    console.error(`[OLT Poller] Error upserting ONU ${onu.onuId}:`, err);
+  }
+}
+
+function mapOnuStatus(status: string): 'online' | 'offline' | 'dying_gasp' | 'los' | 'auth_failed' {
+  switch (status?.toLowerCase()) {
+    case 'online':        return 'online';
+    case 'dying_gasp':    return 'dying_gasp';
+    case 'los':           return 'los';
+    case 'auth_failed':   return 'auth_failed';
+    case 'unregistered':  return 'auth_failed';  // map to auth_failed (closest match)
+    default:              return 'offline';
+  }
+}
+
+/**
+ * Check built-in alert rules
+ */
+async function checkAlerts(
+  olt: any,
+  onus: any[],
+  temperature: number | null,
+  cpuUsage: number | null,
+  memoryUsage: number | null
+): Promise<void> {
+  const oltId = olt.id;
+
+  // Alert: OLT offline
+  if (!olt.isOnline) {
+    await createAlertIfNotExists(oltId, null, 'olt_offline', 'critical', `OLT ${olt.name} (${olt.ipAddress}) is offline`);
+  }
+
+  // Alert: High temperature
+  if (temperature !== null && temperature > 65) {
+    await createAlertIfNotExists(oltId, null, 'olt_high_temp', 'warning', `OLT ${olt.name} temperature is ${temperature}°C`);
+  }
+
+  // Alert: Dying gasp ONUs
+  const dyingGaspOnus = onus.filter((o) => o.status === 'dying_gasp');
+  for (const onu of dyingGaspOnus) {
+    await createAlertIfNotExists(oltId, onu.id, 'dying_gasp', 'critical', `ONU ${onu.serialNumber ?? onu.onuId} is sending dying gasp`);
+  }
+
+  // Alert: Low signal (RX power degradation)
+  // Threshold: <= -30 dBm = warning, <= -32 dBm = critical
+  for (const onu of onus) {
+    if (onu.status !== 'online' || onu.rxPower === null || onu.rxPower === undefined) continue;
+    const rx = onu.rxPower;
+    if (rx <= -32) {
+      await createAlertIfNotExists(oltId, onu.id, 'low_signal', 'critical',
+        `ONU ${onu.serialNumber ?? onu.onuId} RX power critical: ${rx} dBm`);
+    } else if (rx <= -30) {
+      await createAlertIfNotExists(oltId, onu.id, 'low_signal', 'warning',
+        `ONU ${onu.serialNumber ?? onu.onuId} RX power low: ${rx} dBm`);
+    }
+  }
+
+  // Alert: Mass outage — >=5 ONU offline/los/dying_gasp on same PON
+  const offlineOnus = onus.filter((o) =>
+    o.status === 'offline' || o.status === 'los' || o.status === 'dying_gasp'
+  );
+  if (offlineOnus.length >= 5) {
+    // Group by PON (frame/slot/port)
+    const byPon = new Map<string, typeof onus>();
+    for (const onu of offlineOnus) {
+      const key = `${onu.frame}/${onu.slot}/${onu.port}`;
+      const arr = byPon.get(key) ?? [];
+      arr.push(onu);
+      byPon.set(key, arr);
+    }
+    for (const [ponKey, ponOnus] of byPon) {
+      if (ponOnus.length >= 5) {
+        const serials = ponOnus.slice(0, 5).map((o) => o.serialNumber ?? `ONU${o.onuId}`).join(', ');
+        await createAlertIfNotExists(oltId, null, 'onu_offline', 'critical',
+          `Mass outage on PON ${ponKey}: ${ponOnus.length} ONUs offline. Affected: ${serials}${ponOnus.length > 5 ? ` +${ponOnus.length - 5} more` : ''}`);
+      }
+    }
+  }
+
+  // Run custom rules
+  const customRules = await prisma.oltCustomAlertRule.findMany({
+    where: { isEnabled: true, OR: [{ oltId }, { oltId: null }] },
+  });
+
+  if (customRules.length > 0) {
+    const ctx = createRuleContext(oltId, olt.name, onus, { temperature, cpuUsage, memoryUsage });
+    const triggered = await evaluateCustomRules(
+      customRules.map((r) => ({
+        id: r.id,
+        name: r.name,
+        conditions: r.conditions as unknown as RuleCondition[],
+        actions: r.actions as unknown as RuleAction[],
+        schedule: r.schedule as unknown as RuleSchedule | null,
+        cooldownSeconds: r.cooldownSeconds,
+        lastTriggeredAt: r.lastTriggeredAt,
+      })),
+      ctx
+    );
+
+    for (const t of triggered) {
+      // Update lastTriggeredAt
+      await prisma.oltCustomAlertRule.update({
+        where: { id: t.ruleId },
+        data: { lastTriggeredAt: new Date(), triggerCount: { increment: 1 } },
+      });
+
+      // Log the trigger
+      await prisma.oltMonitoringLog.create({
+        data: {
+          id: crypto.randomUUID(),
+          oltId,
+          logType: 'alert',
+          severity: 'warning',
+          message: `Custom rule triggered: ${t.ruleName}`,
+          data: { ruleId: t.ruleId, actions: t.actions as unknown as import('@prisma/client').Prisma.InputJsonValue },
+        },
+      });
+    }
+  }
+}
+
+/**
+ * Create alert if no unresolved alert of same type exists
+ */
+async function createAlertIfNotExists(
+  oltId: string,
+  onuId: string | null,
+  alertType: string,
+  severity: string,
+  message: string
+): Promise<void> {
+  const existing = await prisma.oltAlert.findFirst({
+    where: {
+      oltId,
+      onuId: onuId ?? undefined,
+      alertType: alertType as any,
+      isResolved: false,
+    },
+  });
+
+  if (!existing) {
+    await prisma.oltAlert.create({
+      data: {
+        id: crypto.randomUUID(),
+        oltId,
+        onuId,
+        alertType: alertType as any,
+        severity: severity as any,
+        message,
+      },
+    });
+  }
+}

@@ -1,0 +1,807 @@
+/**
+ * Cron jobs tambahan — hotspot_sync, agent_sales, session_monitor, pppoe_session_sync
+ *
+ * Implementasi 4 job yang sebelumnya hanya placeholder "not yet implemented".
+ */
+import { prisma } from '@/server/db/client';
+import { nowWIB } from '@/lib/timezone';
+import { listPppActive } from '@/server/services/mikrotik/ppp-secret.service';
+import { listPppActiveDetailed, parseUptime, type MikrotikActiveSession } from '@/server/services/mikrotik/active-sessions.service';
+import { fetchAllVoucherStatusesFromMikrotik } from '@/server/services/mikrotik/hotspot-voucher.service';
+import { syncVoucherStatusFromRadius } from '@/server/services/radius/hotspot-sync.service';
+import { fetchLiveHotspotTrafficMap } from '@/server/services/radius/live-hotspot-traffic';
+
+// ─── hotspot_sync ───────────────────────────────────────────────────────────
+/**
+ * Sinkronisasi voucher hotspot:
+ *   1. Sync status dari MikroTik API (active users, schedulers) — semua router
+ *   2. Sync status dari RADIUS radacct (acctstoptime IS NULL) — untuk radius mode
+ *   3. Expire voucher yang sudah lewat masa berlakunya (expiresAt < now)
+ */
+export async function runHotspotSync(): Promise<{ expired: number; expiredSessionsClosed: number; total: number; activated: number; mikrotikUpdated: number; syntheticCreated: number; syntheticClosed: number; timeoutUpdated: number; errors: string[] }> {
+  const errors: string[] = [];
+  const now = nowWIB();
+
+  try {
+    // 1. Sync voucher statuses from MikroTik API (works for ALL routers with API creds)
+    let mikrotikUpdated = 0;
+    try {
+      const mtResult = await fetchAllVoucherStatusesFromMikrotik();
+      mikrotikUpdated = mtResult.results.reduce((sum, r) => sum + r.updated, 0);
+      for (const r of mtResult.results) {
+        errors.push(...r.errors);
+      }
+    } catch (err: any) {
+      errors.push(`MikroTik sync: ${err?.message || 'Unknown'}`);
+    }
+
+    // 2. Sync voucher statuses from RADIUS radacct (for RADIUS-mode routers)
+    let activated = 0;
+    try {
+      const radiusResult = await syncVoucherStatusFromRadius();
+      activated = radiusResult.activated;
+      errors.push(...radiusResult.errors);
+    } catch (err: any) {
+      errors.push(`RADIUS sync: ${err?.message || 'Unknown'}`);
+    }
+
+    // 3. Expire vouchers yang sudah lewat masa berlakunya
+    const expired = await prisma.hotspotVoucher.updateMany({
+      where: {
+        status: { in: ['WAITING', 'ACTIVE'] },
+        expiresAt: { lt: now, not: null },
+      },
+      data: { status: 'EXPIRED' },
+    });
+
+    // 3a. Close open radacct entries for EXPIRED vouchers
+    // Vouchers that just expired (or were already expired) may still have
+    // open synthetic or real radacct entries. Close them so monitoring,
+    // dashboard, and sessions page no longer show them as online.
+    let expiredSessionsClosed = 0;
+    try {
+      const expiredVouchers = await prisma.hotspotVoucher.findMany({
+        where: { status: 'EXPIRED' },
+        select: { code: true },
+      });
+      const expiredCodes = expiredVouchers.map(v => v.code);
+      if (expiredCodes.length > 0) {
+        const closeResult = await prisma.radacct.updateMany({
+          where: {
+            username: { in: expiredCodes },
+            acctstoptime: null,
+          },
+          data: {
+            acctstoptime: now,
+            acctupdatetime: now,
+            acctterminatecause: 'Voucher-Expired',
+          },
+        });
+        expiredSessionsClosed = closeResult.count;
+      }
+    } catch (e: any) {
+      errors.push(`Close expired sessions: ${e?.message || 'Unknown'}`);
+    }
+
+    // 4. Create synthetic radacct entries for ACTIVE vouchers not in radacct
+    // When MikroTik hotspot accounting is not configured (or just migrated to
+    // RADIUS mode), radacct is empty but vouchers are actually active.
+    // Create synthetic radacct rows so dashboard, sessions page, and billing
+    // can display them with proper status.
+    let syntheticCreated = 0;
+    let syntheticClosed = 0;
+    try {
+      const activeVouchers = await prisma.hotspotVoucher.findMany({
+        where: {
+          status: 'ACTIVE',
+          firstLoginAt: { not: null },
+        },
+        select: {
+          id: true,
+          code: true,
+          firstLoginAt: true,
+          expiresAt: true,
+          routerId: true,
+        },
+      });
+
+      if (activeVouchers.length > 0) {
+        const voucherCodes = activeVouchers.map(v => v.code);
+        // Only check for ACTIVE radacct entries (acctstoptime IS NULL).
+        // Vouchers with only stopped entries need a new synthetic active entry.
+        const existingActiveRadacct = await prisma.radacct.findMany({
+          where: { username: { in: voucherCodes }, acctstoptime: null },
+          select: { username: true, acctsessionid: true, radacctid: true },
+        });
+        const radacctActiveUsernames = new Set(existingActiveRadacct.map(r => r.username));
+
+        // Fetch routers with API credentials for MikroTik live check
+        const routerIds = [...new Set(activeVouchers.map(v => v.routerId).filter(Boolean))] as string[];
+        const routers = await prisma.router.findMany({
+          where: { id: { in: routerIds }, isActive: true, username: { not: '' }, password: { not: '' } },
+          select: { id: true, name: true, nasname: true, ipAddress: true, port: true, username: true, password: true },
+        });
+
+        // Fetch actually-connected hotspot users from MikroTik
+        // Only create synthetic radacct for vouchers that are TRULY connected
+        const liveMap = routers.length > 0
+          ? await fetchLiveHotspotTrafficMap(routers, new Set(voucherCodes))
+          : new Map();
+        const connectedUsernames = new Set(liveMap.keys());
+
+        // Create synthetic radacct only for vouchers that are:
+        // 1. Missing from active radacct
+        // 2. Actually connected to MikroTik (verified via /ip/hotspot/active)
+        const missingVouchers = activeVouchers.filter(
+          v => !radacctActiveUsernames.has(v.code) && connectedUsernames.has(v.code)
+        );
+
+        for (const voucher of missingVouchers) {
+          try {
+            const router = voucher.routerId
+              ? routers.find(r => r.id === voucher.routerId)
+              : null;
+            if (!router) continue;
+            const nasIp = router.nasname || router.ipAddress || '';
+            const live = liveMap.get(voucher.code);
+
+            await prisma.$executeRaw`
+              INSERT INTO radacct (
+                acctsessionid, acctuniqueid, username, realm,
+                nasipaddress, nasportid, nasporttype,
+                acctstarttime, acctupdatetime, acctstoptime,
+                acctsessiontime, acctauthentic, connectinfo_start,
+                acctinputoctets, acctoutputoctets,
+                calledstationid, callingstationid, acctterminatecause,
+                servicetype, framedprotocol, framedipaddress
+              ) VALUES (
+                ${'hs-sync-' + Date.now() + '-' + voucher.code},
+                ${'hs-' + voucher.code + '-' + Date.now()},
+                ${voucher.code},
+                NULL,
+                ${nasIp},
+                '', 'Ethernet',
+                ${voucher.firstLoginAt}, ${now}, NULL,
+                ${live?.uptimeSeconds || 0}, 'RADIUS', '',
+                ${live?.uploadBytes || 0}, ${live?.downloadBytes || 0},
+                '', ${live?.macAddress || ''}, '',
+                'Framed-User', 'PPP', ${live?.ipAddress || ''}
+              )
+            `;
+            syntheticCreated++;
+          } catch (e: any) {
+            console.error(`[HOTSPOT_SYNC] Failed to create synthetic radacct for ${voucher.code}:`, e?.message);
+          }
+        }
+
+        // Close synthetic radacct entries for vouchers NOT connected to MikroTik.
+        // This removes "ghost" sessions where the device disconnected but the
+        // database still shows ACTIVE status with an open radacct entry.
+        const ghostSessions = existingActiveRadacct.filter(
+          r => r.acctsessionid?.startsWith('hs-sync-') && !connectedUsernames.has(r.username)
+        );
+        for (const ghost of ghostSessions) {
+          try {
+            await prisma.radacct.update({
+              where: { radacctid: ghost.radacctid },
+              data: {
+                acctstoptime: now,
+                acctupdatetime: now,
+                acctterminatecause: 'Hotspot-Disconnect',
+              },
+            });
+            syntheticClosed++;
+          } catch (e: any) {
+            console.error(`[HOTSPOT_SYNC] Failed to close ghost radacct for ${ghost.username}:`, e?.message);
+          }
+        }
+      }
+    } catch (e: any) {
+      errors.push(`Synthetic radacct: ${e?.message || 'Unknown'}`);
+    }
+
+    // 5. Update Session-Timeout in radgroupreply for ACTIVE vouchers
+    // Ensures remaining timeleft is sent on re-authentication (not reset to full validity)
+    let timeoutUpdated = 0;
+    try {
+      const timeoutResult = await updateActiveVoucherSessionTimeout();
+      timeoutUpdated = timeoutResult.updated;
+      errors.push(...timeoutResult.errors);
+    } catch (e: any) {
+      errors.push(`Session-Timeout update: ${e?.message || 'Unknown'}`);
+    }
+
+    // Count active vouchers for reporting
+    const activeCount = await prisma.hotspotVoucher.count({
+      where: { status: 'ACTIVE' },
+    });
+
+    return {
+      expired: expired.count,
+      expiredSessionsClosed,
+      total: activeCount,
+      activated,
+      mikrotikUpdated,
+      syntheticCreated,
+      syntheticClosed,
+      timeoutUpdated,
+      errors,
+    };
+  } catch (error: any) {
+    errors.push(error?.message || 'Unknown error');
+    return { expired: 0, expiredSessionsClosed: 0, total: 0, activated: 0, mikrotikUpdated: 0, syntheticCreated: 0, syntheticClosed: 0, timeoutUpdated: 0, errors };
+  }
+}
+
+/**
+ * Update Session-Timeout in radgroupreply for ACTIVE vouchers.
+ * Called by hotspot_sync cronjob every minute.
+ *
+ * When a voucher is ACTIVE (has firstLoginAt and expiresAt), the Session-Timeout
+ * in radgroupreply should reflect the REMAINING timeleft, not the full validity.
+ * This ensures that when a voucher reconnects (re-authenticates), RADIUS sends
+ * the correct remaining time — not a reset full duration.
+ *
+ * Each voucher has a unique radgroupreply group (hotspot-{profile}-{code}),
+ * so we can update Session-Timeout per-voucher without affecting others.
+ */
+async function updateActiveVoucherSessionTimeout(): Promise<{ updated: number; errors: string[] }> {
+  const errors: string[] = [];
+  let updated = 0;
+
+  try {
+    // Get all ACTIVE vouchers with expiresAt
+    const activeVouchers = await prisma.hotspotVoucher.findMany({
+      where: {
+        status: 'ACTIVE',
+        expiresAt: { not: null },
+      },
+      select: {
+        id: true,
+        code: true,
+        expiresAt: true,
+        profile: { select: { name: true } },
+      },
+    });
+
+    if (activeVouchers.length === 0) return { updated: 0, errors };
+
+    const now = new Date();
+
+    for (const voucher of activeVouchers) {
+      try {
+        // Calculate remaining timeleft in seconds
+        const remainingMs = (voucher.expiresAt as Date).getTime() - now.getTime();
+        const remainingSec = Math.max(0, Math.floor(remainingMs / 1000));
+
+        // Build the unique group name (same logic as syncVoucherToRadius)
+        const profileName = voucher.profile.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const uniqueGroupName = `hotspot-${profileName}-${voucher.code}`;
+
+        // Update Session-Timeout in radgroupreply
+        await prisma.radgroupreply.updateMany({
+          where: {
+            groupname: uniqueGroupName,
+            attribute: 'Session-Timeout',
+          },
+          data: {
+            value: remainingSec > 0 ? remainingSec.toString() : '1',
+          },
+        });
+        updated++;
+      } catch (e: any) {
+        // Non-fatal — skip this voucher
+        console.error(`[HOTSPOT_SYNC] Failed to update Session-Timeout for ${voucher.code}:`, e?.message);
+      }
+    }
+  } catch (e: any) {
+    errors.push(`Session-Timeout update: ${e?.message || 'Unknown'}`);
+  }
+
+  return { updated, errors };
+}
+
+// ─── agent_sales ────────────────────────────────────────────────────────────
+/**
+ * Catat penjualan voucher agent:
+ *   - Cari voucher dengan status ACTIVE/EXPIRED yang punya agentId & firstLoginAt
+ *     yang belum tercatat di agent_sales
+ *   - Buat record agent_sale untuk tracking komisi/setoran
+ */
+export async function runAgentSales(): Promise<{ recorded: number; total: number; errors: string[] }> {
+  const errors: string[] = [];
+
+  try {
+    // Cari voucher ACTIVE/EXPIRED yang punya agentId dan firstLoginAt
+    // yang belum tercatat di agent_sales
+    const soldVouchers = await prisma.hotspotVoucher.findMany({
+      where: {
+        status: { in: ['ACTIVE', 'EXPIRED'] },
+        agentId: { not: null },
+        firstLoginAt: { not: null },
+      },
+      select: {
+        id: true,
+        code: true,
+        agentId: true,
+        profileId: true,
+        firstLoginAt: true,
+        profile: { select: { name: true, sellingPrice: true, resellerFee: true } },
+      },
+      take: 100,
+    });
+
+    if (soldVouchers.length === 0) {
+      return { recorded: 0, total: 0, errors };
+    }
+
+    // Cek voucher codes yang sudah ada di agent_sales
+    const existingCodes = await prisma.agentSale.findMany({
+      where: { voucherCode: { in: soldVouchers.map(v => v.code) } },
+      select: { voucherCode: true },
+    });
+    const existingSet = new Set(existingCodes.map(e => e.voucherCode));
+
+    let recorded = 0;
+    for (const voucher of soldVouchers) {
+      if (existingSet.has(voucher.code)) continue;
+
+      try {
+        const amount = voucher.profile?.resellerFee || 0;
+        await prisma.agentSale.create({
+          data: {
+            id: `sale_${voucher.id}_${Date.now()}`,
+            agentId: voucher.agentId!,
+            voucherCode: voucher.code,
+            profileName: voucher.profile?.name || 'Unknown',
+            amount,
+            paymentStatus: 'UNPAID',
+            createdAt: voucher.firstLoginAt!,
+          },
+        });
+        recorded++;
+      } catch (err: any) {
+        // Skip duplicate — might be race condition
+        if (!err?.message?.includes('Unique')) {
+          errors.push(`Voucher ${voucher.code}: ${err?.message || 'Unknown error'}`);
+        }
+      }
+    }
+
+    return { recorded, total: soldVouchers.length, errors };
+  } catch (error: any) {
+    errors.push(error?.message || 'Unknown error');
+    return { recorded: 0, total: 0, errors };
+  }
+}
+
+// ─── session_monitor ────────────────────────────────────────────────────────
+/**
+ * Monitor sesi mencurigakan:
+ *   - Sesi di radacct dengan acctstoptime IS NULL tapi user sudah isolated/suspended
+ *   - Sesi dengan durasi > 30 hari (kemungkinan stale)
+ *   - Sesi dengan username yang tidak ada di pppoe_users (orphan)
+ *   - Log ke cron_history untuk alert admin
+ */
+export async function runSessionMonitor(): Promise<{ suspicious: number; stale: number; orphaned: number; errors: string[] }> {
+  const errors: string[] = [];
+  const now = nowWIB();
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+  try {
+    // 1. Sesi aktif (acctstoptime IS NULL) dari user yang sudah isolated/suspended
+    const suspiciousSessions = await prisma.radacct.findMany({
+      where: {
+        acctstoptime: null,
+        username: {
+          in: (await prisma.pppoeUser.findMany({
+            where: { status: { in: ['isolated', 'suspended'] } },
+            select: { username: true },
+          })).map(u => u.username),
+        },
+      },
+      select: { radacctid: true, username: true, nasipaddress: true, acctstarttime: true },
+      take: 50,
+    });
+
+    // 2. Sesi stale — acctstoptime IS NULL dan acctstarttime > 30 hari
+    const staleSessions = await prisma.radacct.findMany({
+      where: {
+        acctstoptime: null,
+        acctstarttime: { lt: thirtyDaysAgo },
+      },
+      select: { radacctid: true, username: true, acctstarttime: true },
+      take: 50,
+    });
+
+    // 3. Sesi orphan — username di radacct tidak ada di pppoe_users maupun hotspot_vouchers
+    const activeUsernames = await prisma.radacct.findMany({
+      where: { acctstoptime: null },
+      select: { username: true },
+      distinct: ['username'],
+    });
+
+    const orphanedSessions: { radacctid: BigInt; username: string }[] = [];
+    if (activeUsernames.length > 0) {
+      const [knownPppoeUsers, knownVouchers] = await Promise.all([
+        prisma.pppoeUser.findMany({
+          where: { username: { in: activeUsernames.map(u => u.username) } },
+          select: { username: true },
+        }),
+        prisma.hotspotVoucher.findMany({
+          where: { code: { in: activeUsernames.map(u => u.username) } },
+          select: { code: true },
+        }),
+      ]);
+      const knownUsers = new Set([
+        ...knownPppoeUsers.map(u => u.username),
+        ...knownVouchers.map(v => v.code),
+      ]);
+
+      const orphanUsernames = activeUsernames
+        .map(u => u.username)
+        .filter(u => !knownUsers.has(u));
+
+      if (orphanUsernames.length > 0) {
+        const orphanDb = await prisma.radacct.findMany({
+          where: {
+            acctstoptime: null,
+            username: { in: orphanUsernames },
+          },
+          select: { radacctid: true, username: true },
+          take: 50,
+        });
+        orphanedSessions.push(...orphanDb.map(s => ({ radacctid: s.radacctid, username: s.username })));
+
+        // Auto-close orphaned sessions
+        for (let i = 0; i < orphanedSessions.length; i += 50) {
+          const batch = orphanedSessions.slice(i, i + 50);
+          try {
+            await prisma.radacct.updateMany({
+              where: { radacctid: { in: batch.map(b => b.radacctid.toString()) as any } },
+              data: {
+                acctstoptime: now,
+                acctupdatetime: now,
+                acctterminatecause: 'Orphaned-Session-Cleanup',
+              },
+            });
+          } catch (err: any) {
+            errors.push(`Orphan auto-close error: ${err?.message || 'Unknown'}`);
+          }
+        }
+      }
+    }
+
+    // Auto-close stale sessions (>30 days without stop)
+    if (staleSessions.length > 0) {
+      for (let i = 0; i < staleSessions.length; i += 50) {
+        const batch = staleSessions.slice(i, i + 50);
+        try {
+          await prisma.radacct.updateMany({
+            where: { radacctid: { in: batch.map(b => b.radacctid.toString()) as any } },
+            data: {
+              acctstoptime: now,
+              acctupdatetime: now,
+              acctterminatecause: 'Stale-Session-Cleanup',
+            },
+          });
+        } catch (err: any) {
+          errors.push(`Stale auto-close error: ${err?.message || 'Unknown'}`);
+        }
+      }
+    }
+
+    // Log summary
+    if (suspiciousSessions.length > 0) {
+      console.log(`[SESSION_MONITOR] ${suspiciousSessions.length} suspicious sessions (user isolated/suspended but still active)`);
+    }
+    if (staleSessions.length > 0) {
+      console.log(`[SESSION_MONITOR] ${staleSessions.length} stale sessions (>30 days) — auto-closed`);
+    }
+    if (orphanedSessions.length > 0) {
+      console.log(`[SESSION_MONITOR] ${orphanedSessions.length} orphaned sessions (not registered) — auto-closed`);
+    }
+
+    return {
+      suspicious: suspiciousSessions.length,
+      stale: staleSessions.length,
+      orphaned: orphanedSessions.length,
+      errors,
+    };
+  } catch (error: any) {
+    errors.push(error?.message || 'Unknown error');
+    return { suspicious: 0, stale: 0, orphaned: 0, errors };
+  }
+}
+
+// ─── pppoe_session_sync ─────────────────────────────────────────────────────
+/**
+ * Sync sesi PPPoE dari MikroTik ke database:
+ *   - Ambil daftar PPP active dari setiap router via RouterOS API (per-router)
+ *   - Bandingkan dengan radacct (acctstoptime IS NULL)
+ *   - Close sesi stale HANYA untuk router yang API-nya berhasil
+ *   - Close sesi orphaned (username tidak terdaftar di pppoe_users/hotspot_vouchers)
+ *   - JANGAN close sesi jika MikroTik API gagal (kemungkinan timeout, bukan stale)
+ *
+ * SAFETY: Jika semua router API gagal, skip stale-close entirely.
+ *         Hanya close orphaned (username tidak terdaftar) yang aman.
+ */
+export async function runPppoeSessionSync(): Promise<{ synced: number; closed: number; orphaned: number; total: number; created: number; errors: string[] }> {
+  const errors: string[] = [];
+  const now = nowWIB();
+
+  try {
+    // Ambil semua router aktif
+    const routers = await prisma.router.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true, nasname: true, ipAddress: true },
+    });
+
+    if (routers.length === 0) {
+      return { synced: 0, closed: 0, orphaned: 0, total: 0, created: 0, errors };
+    }
+
+    // Per-router fetch PPP active — track which routers succeeded
+    const routerActiveMap = new Map<string, Set<string>>(); // nasIp → active usernames
+    const successNasIps = new Set<string>();
+    let anySuccess = false;
+
+    for (const router of routers) {
+      try {
+        const active = await listPppActive(router.id);
+        const nasIp = router.nasname || router.ipAddress || '';
+        routerActiveMap.set(nasIp, active);
+        if (router.ipAddress && router.ipAddress !== nasIp) {
+          routerActiveMap.set(router.ipAddress, active);
+        }
+        successNasIps.add(nasIp);
+        if (router.ipAddress) successNasIps.add(router.ipAddress);
+        anySuccess = true;
+      } catch (err: any) {
+        errors.push(`Router ${router.name} API failed: ${err?.message || 'Unknown'}`);
+      }
+    }
+
+    // Cari sesi open di radacct
+    const openSessions = await prisma.radacct.findMany({
+      where: { acctstoptime: null },
+      select: { radacctid: true, username: true, nasipaddress: true, acctstarttime: true },
+      take: 500,
+    });
+
+    if (openSessions.length === 0) {
+      return { synced: 0, closed: 0, orphaned: 0, total: 0, created: 0, errors };
+    }
+
+    // Ambil daftar username yang terdaftar di pppoe_users dan hotspot_vouchers
+    const allUsernames = [...new Set(openSessions.map(s => s.username))];
+    const [pppoeUsers, hotspotVouchers] = await Promise.all([
+      prisma.pppoeUser.findMany({
+        where: { username: { in: allUsernames } },
+        select: { username: true },
+      }),
+      prisma.hotspotVoucher.findMany({
+        where: { code: { in: allUsernames } },
+        select: { code: true },
+      }),
+    ]);
+    const registeredUsernames = new Set([
+      ...pppoeUsers.map(u => u.username),
+      ...hotspotVouchers.map(v => v.code),
+    ]);
+    // Build set of PPPoE-only usernames (not hotspot vouchers)
+    // Hotspot vouchers use /ip/hotspot/active, not /ppp/active — so they
+    // should NOT be closed as stale by this PPPoE-only sync job.
+    const pppoeUsernames = new Set(pppoeUsers.map(u => u.username));
+    const hotspotVoucherCodes = new Set(hotspotVouchers.map(v => v.code));
+
+    // Klasifikasi sesi
+    let closed = 0;
+    let orphaned = 0;
+    let synced = 0;
+    const toCloseStale: BigInt[] = [];
+    const toCloseOrphaned: BigInt[] = [];
+
+    for (const session of openSessions) {
+      const isRegistered = registeredUsernames.has(session.username);
+      const isHotspotVoucher = hotspotVoucherCodes.has(session.username);
+      const isPppoeUser = pppoeUsernames.has(session.username);
+      const nasIp = session.nasipaddress;
+      const routerActive = routerActiveMap.get(nasIp);
+      const routerSucceeded = routerActive !== undefined;
+      const isOnMikrotik = routerSucceeded && routerActive.has(session.username);
+
+      if (!isRegistered) {
+        // Orphaned — username tidak terdaftar di pppoe_users maupun hotspot_vouchers
+        // Aman untuk close terlepas dari MikroTik API status
+        toCloseOrphaned.push(session.radacctid);
+      } else if (isHotspotVoucher && !isPppoeUser) {
+        // Hotspot voucher — skip stale-close entirely.
+        // Hotspot vouchers use /ip/hotspot/active (not /ppp/active), so
+        // checking PPP active would incorrectly mark them as stale.
+        // Hotspot session cleanup is handled by hotspot_sync cronjob instead.
+        synced++;
+      } else if (routerSucceeded && !isOnMikrotik) {
+        // Stale — router API berhasil, user terdaftar, tapi tidak di PPP active MikroTik
+        toCloseStale.push(session.radacctid);
+      } else if (!routerSucceeded) {
+        // Router API gagal — JANGAN close, user mungkin masih online
+        // Skip entirely, biarkan sesi open sampai API berhasil atau Accounting-Stop datang
+        synced++; // anggap masih aktif
+      } else {
+        // Active — user terdaftar dan online di MikroTik
+        synced++;
+      }
+    }
+
+    // Close stale sessions (hanya untuk router yang API-nya berhasil)
+    const batchSize = 50;
+    for (let i = 0; i < toCloseStale.length; i += batchSize) {
+      const batch = toCloseStale.slice(i, i + batchSize);
+      try {
+        await prisma.radacct.updateMany({
+          where: { radacctid: { in: batch.map(b => b.toString()) as any } },
+          data: {
+            acctstoptime: now,
+            acctupdatetime: now,
+            acctterminatecause: 'Session-Timeout-Cron',
+          },
+        });
+        closed += batch.length;
+      } catch (err: any) {
+        errors.push(`Stale close error: ${err?.message || 'Unknown'}`);
+      }
+    }
+
+    // Close orphaned sessions (username tidak terdaftar di sistem)
+    for (let i = 0; i < toCloseOrphaned.length; i += batchSize) {
+      const batch = toCloseOrphaned.slice(i, i + batchSize);
+      try {
+        await prisma.radacct.updateMany({
+          where: { radacctid: { in: batch.map(b => b.toString()) as any } },
+          data: {
+            acctstoptime: now,
+            acctupdatetime: now,
+            acctterminatecause: 'Orphaned-Session-Cleanup',
+          },
+        });
+        orphaned += batch.length;
+      } catch (err: any) {
+        errors.push(`Orphan close error: ${err?.message || 'Unknown'}`);
+      }
+    }
+
+    if (!anySuccess && openSessions.length > 0) {
+      console.log(`[PPPOE_SESSION_SYNC] All router APIs failed — skipped stale-close for ${openSessions.length} sessions`);
+    }
+
+    // ── Synthetic radacct entries for MikroTik-active users not in radacct ──
+    // When MikroTik's RADIUS accounting isn't reaching us (accounting not
+    // configured, NAS IP not yet in FreeRADIUS clients, a Start packet lost
+    // across a FreeRADIUS restart), radacct has no open row for a user who is
+    // actually online. We create one so the sessions page, dashboard and
+    // billing see them.
+    //
+    // These rows used to be written with empty framedipaddress /
+    // callingstationid, zero bytes and acctstarttime = now, because this job
+    // only fetched usernames from MikroTik — so the Sesi PPPoE page showed
+    // "-" for IP and MAC. They now carry the live session's IP, MAC, uptime
+    // and counters, and open synthetic rows are refreshed on every run, which
+    // also repairs rows written before this fix.
+    let created = 0;
+    if (anySuccess) {
+      const onlineRadacctUsernames = new Set(openSessions.map(s => s.username));
+      const allMtActiveUsernames = new Set<string>();
+      for (const [, activeSet] of routerActiveMap) {
+        for (const u of activeSet) allMtActiveUsernames.add(u);
+      }
+      const missingFromRadacct = [...allMtActiveUsernames].filter(u => !onlineRadacctUsernames.has(u));
+      const registeredUsers = missingFromRadacct.length > 0
+        ? await prisma.pppoeUser.findMany({
+            where: { username: { in: missingFromRadacct } },
+            select: { username: true, routerId: true },
+          })
+        : [];
+      const syntheticOpen = await prisma.radacct.findMany({
+        where: { acctstoptime: null, acctsessionid: { startsWith: 'mt-sync-' } },
+        select: { radacctid: true, username: true },
+      });
+
+      // Live per-session detail (IP, MAC, uptime, bytes), fetched only when
+      // there is something to create or refresh.
+      const live = new Map<string, MikrotikActiveSession>();
+      if (registeredUsers.length > 0 || syntheticOpen.length > 0) {
+        const detailed = await Promise.allSettled(routers.map(r => listPppActiveDetailed(r.id)));
+        for (const d of detailed) {
+          if (d.status !== 'fulfilled') continue;
+          for (const s of d.value) if (!live.has(s.username)) live.set(s.username, s);
+        }
+      }
+      const startFromUptime = (s?: MikrotikActiveSession) => {
+        const secs = s ? parseUptime(s.uptime) : 0;
+        return { secs, start: secs > 0 ? new Date(now.getTime() - secs * 1000) : now };
+      };
+
+      for (const user of registeredUsers) {
+        try {
+          const router = user.routerId
+            ? await prisma.router.findUnique({
+                where: { id: user.routerId },
+                select: { nasname: true, ipAddress: true },
+              })
+            : null;
+          if (!router) continue;
+          const nasIp = router.nasname || router.ipAddress || '';
+          const existing = await prisma.radacct.findFirst({
+            where: { username: user.username, acctstoptime: null },
+            select: { radacctid: true },
+          });
+          if (existing) continue;
+          const s = live.get(user.username);
+          const { secs, start } = startFromUptime(s);
+          await prisma.$executeRaw`
+            INSERT INTO radacct (
+              acctsessionid, acctuniqueid, username, realm,
+              nasipaddress, nasportid, nasporttype,
+              acctstarttime, acctupdatetime, acctstoptime,
+              acctsessiontime, acctauthentic, connectinfo_start,
+              acctinputoctets, acctoutputoctets,
+              calledstationid, callingstationid, acctterminatecause,
+              servicetype, framedprotocol, framedipaddress
+            ) VALUES (
+              ${'mt-sync-' + Date.now() + '-' + user.username.slice(0, 8)},
+              ${'mt-' + user.username + '-' + Date.now()},
+              ${user.username},
+              NULL,
+              ${nasIp},
+              '', 'Ethernet',
+              ${start}, ${now}, NULL,
+              ${secs}, 'RADIUS', '',
+              ${s?.rxBytes ?? 0}, ${s?.txBytes ?? 0},
+              '', ${(s?.macAddress ?? '').slice(0, 50)}, '',
+              'Framed-User', 'PPP', ${(s?.ipAddress ?? '').slice(0, 15)}
+            )
+          `;
+          created++;
+        } catch (e: any) {
+          console.error(`[PPPOE_SESSION_SYNC] Failed to create synthetic radacct for ${user.username}:`, e?.message);
+        }
+      }
+
+      // Refresh open synthetic rows (FreeRADIUS never sends interim updates
+      // for them, so this job is the only thing keeping them current).
+      for (const row of syntheticOpen) {
+        const s = live.get(row.username);
+        if (!s) continue;
+        try {
+          const { secs } = startFromUptime(s);
+          await prisma.radacct.update({
+            where: { radacctid: row.radacctid },
+            data: {
+              framedipaddress: (s.ipAddress ?? '').slice(0, 15),
+              callingstationid: (s.macAddress ?? '').slice(0, 50),
+              acctupdatetime: now,
+              acctsessiontime: secs,
+              acctinputoctets: BigInt(s.rxBytes || 0),
+              acctoutputoctets: BigInt(s.txBytes || 0),
+            },
+          });
+        } catch (e: any) {
+          console.error(`[PPPOE_SESSION_SYNC] Failed to refresh synthetic radacct for ${row.username}:`, e?.message);
+        }
+      }
+    }
+
+    return {
+      synced,
+      closed,
+      orphaned,
+      total: openSessions.length,
+      created,
+      errors,
+    };
+  } catch (error: any) {
+    errors.push(error?.message || 'Unknown error');
+    return { synced: 0, closed: 0, orphaned: 0, total: 0, created: 0, errors };
+  }
+}

@@ -1,0 +1,773 @@
+﻿import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/server/db/client';
+import { requirePermission } from '@/server/middleware/api-auth';
+import { getTimezoneOffsetMs } from '@/lib/timezone';
+import { batchFetchMikrotikActiveSessions, parseUptime, type MikrotikActiveSession } from '@/server/services/mikrotik/active-sessions.service';
+
+// ─── Formatting helpers ─────────────────────────────────────────────────────
+
+function formatBytes(bytes: number): string {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const exponent = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1024)),
+    units.length - 1,
+  );
+  const value = bytes / Math.pow(1024, exponent);
+  return `${value.toFixed(2)} ${units[exponent]}`;
+}
+
+function formatDuration(seconds: number): string {
+  if (!seconds) return '0s';
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`;
+  if (hours > 0) return `${hours}h ${minutes}m ${remainingSeconds}s`;
+  if (minutes > 0) return `${minutes}m ${remainingSeconds}s`;
+  return `${remainingSeconds}s`;
+}
+
+async function getLatestMacByUsernames(usernames: string[]): Promise<Map<string, string>> {
+  if (usernames.length === 0) return new Map();
+
+  const rows = await prisma.radacct.findMany({
+    where: {
+      username: { in: usernames },
+      callingstationid: { not: '' },
+    },
+    select: {
+      username: true,
+      callingstationid: true,
+      acctstarttime: true,
+    },
+    orderBy: { acctstarttime: 'desc' },
+  });
+
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    if (!map.has(row.username) && row.callingstationid) {
+      map.set(row.username, row.callingstationid);
+    }
+  }
+  return map;
+}
+
+// ─── Stale session cleanup ──────────────────────────────────────────────────────
+
+/**
+ * Mark stale radacct sessions as stopped.
+ * A session is "stale" if acctstoptime IS NULL and acctupdatetime is older
+ * than the threshold. This handles cases where MikroTik fails to send
+ * Accounting-Stop (e.g. power outage, network issue).
+ *
+ * Uses DB-only timestamps (acctupdatetime vs acctstarttime) instead of NOW()
+ * to avoid false positives when the VPS system clock differs from the NAS clock.
+ * A session is stale when (acctupdatetime - acctstarttime) > 8h AND no update
+ * has arrived in the last 8 hours measured by the last-update timestamp gap.
+ *
+ * Specifically: session is stale if:
+ *   acctsessiontime > 0 (MikroTik already wrote a session time)
+ *   AND acctupdatetime = acctstoptime-candidates (last update > 8h ago relative to itself)
+ *
+ * Simpler: if (NOW() in NAS-clock space) means we compare acctupdatetime against
+ * a fixed absolute UTC wall-clock epoch we can trust — Java epoch of the server
+ * startup is unreliable. Safest: only clean up if acctsessiontime already set AND
+ * the session has been idle (acctupdatetime unchanged) for 8+ hours measured purely
+ * between DB column values, using TIMESTAMPDIFF.
+ *
+ * Since both acctstarttime AND acctupdatetime come from FreeRADIUS (written via
+ * FROM_UNIXTIME from the NAS clock), their difference is always clock-skew-safe.
+ */
+async function cleanupStaleSessions(): Promise<number> {
+  const STALE_HOURS = 8;
+  try {
+    // Only close sessions where no interim-update has arrived for 8+ hours
+    // (measured purely in DB timestamps — clock-skew-safe).
+    const result = await prisma.$executeRawUnsafe(`
+      UPDATE radacct
+      SET acctstoptime = acctupdatetime,
+          acctterminatecause = 'Lost-Carrier',
+          acctsessiontime = TIMESTAMPDIFF(SECOND, acctstarttime, acctupdatetime)
+      WHERE acctstoptime IS NULL
+        AND acctupdatetime IS NOT NULL
+        AND TIMESTAMPDIFF(HOUR, acctupdatetime, NOW()) > ${STALE_HOURS}
+        AND TIMESTAMPDIFF(HOUR, acctupdatetime, NOW()) < 720
+    `);
+    const total = Number(result);
+    if (total > 0) {
+      console.log(`[Sessions] Cleaned up ${total} stale radacct session(s)`);
+    }
+    return total;
+  } catch (err) {
+    console.error('[Sessions] Failed to cleanup stale sessions:', err);
+    return 0;
+  }
+}
+
+// ─── GET handler: list active sessions from RADIUS (radacct) ────────────────
+
+export async function GET(request: NextRequest) {
+  const authCheck = await requirePermission('sessions.view');
+  if (!authCheck.authorized) return authCheck.response;
+
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const type = searchParams.get('type'); // 'pppoe' | 'hotspot' | null (both)
+    const routerId = searchParams.get('routerId');
+    const search = searchParams.get('search');
+    const _useLiveTraffic = searchParams.get('live') === 'true';
+    const page = Number.parseInt(searchParams.get('page') || '1', 10);
+    const limit = Number.parseInt(searchParams.get('limit') || '0', 10);
+
+    // ── 0. Cleanup stale sessions (lightweight, runs inline) ────────────────
+    await cleanupStaleSessions();
+
+    // ── 1. Get active routers (for NAS IP → router mapping) ─────────────────
+    const routerWhere: any = { isActive: true };
+    if (routerId) routerWhere.id = routerId;
+
+    const routers = await prisma.router.findMany({
+      where: routerWhere,
+      select: {
+        id: true,
+        name: true,
+        nasname: true,
+        ipAddress: true,
+        username: true,
+        password: true,
+        port: true,
+        authMode: true,
+      },
+    });
+
+    // Build NAS IP → router mapping
+    const routerByNasIp = new Map<string, { id: string; name: string }>();
+    const nasIpList: string[] = [];
+    for (const r of routers) {
+      routerByNasIp.set(r.nasname, { id: r.id, name: r.name });
+      nasIpList.push(r.nasname);
+      if (r.ipAddress && r.ipAddress !== r.nasname) {
+        routerByNasIp.set(r.ipAddress, { id: r.id, name: r.name });
+        nasIpList.push(r.ipAddress);
+      }
+    }
+
+    // ── 2. Query radacct for active sessions ────────────────────────────────
+    // Active = acctstoptime IS NULL
+    const radacctWhere: any = {
+      acctstoptime: null,
+    };
+
+    // Filter by router NAS IPs if routerId is specified
+    if (routerId && nasIpList.length > 0) {
+      radacctWhere.nasipaddress = { in: nasIpList };
+    }
+
+    // Search filter (username, IP, MAC)
+    if (search) {
+      radacctWhere.OR = [
+        { username: { contains: search } },
+        { framedipaddress: { contains: search } },
+        { callingstationid: { contains: search } },
+      ];
+    }
+
+    const activeSessions = await prisma.radacct.findMany({
+      where: radacctWhere,
+      orderBy: { acctstarttime: 'desc' },
+    });
+
+    // ── 3. Determine session types ──────────────────────────────────────────
+    // Look up all usernames in pppoeUser and hotspotVoucher
+    const allUsernames = [...new Set(activeSessions.map((s) => s.username))];
+
+    const [pppoeUsers, hotspotVouchers] = await Promise.all([
+      prisma.pppoeUser.findMany({
+        where: { username: { in: allUsernames } },
+        select: {
+          id: true,
+          username: true,
+          customerId: true,
+          name: true,
+          phone: true,
+          profile: { select: { name: true } },
+          area: { select: { id: true, name: true } },
+        },
+      }),
+      prisma.hotspotVoucher.findMany({
+        where: { code: { in: allUsernames } },
+        select: {
+          id: true,
+          code: true,
+          status: true,
+          batchCode: true,
+          firstLoginAt: true,
+          expiresAt: true,
+          agent: { select: { id: true, name: true } },
+          profile: { select: { name: true } },
+          router: { select: { id: true, name: true } },
+        },
+      }),
+    ]);
+
+    const pppoeByUsername = new Map(pppoeUsers.map((u) => [u.username, u]));
+    const voucherByCode = new Map(hotspotVouchers.map((v) => [v.code, v]));
+
+    // ── 4. Build response sessions ──────────────────────────────────────────
+    // DB radacct dates are WIB-as-UTC (FreeRADIUS FROM_UNIXTIME uses NAS clock).
+    // Voucher dates (firstLoginAt, expiresAt) are TRUE UTC (stored via Prisma).
+    //
+    // `now` (WIB-as-UTC) is used for duration calculations against radacct DB
+    // dates so both sides are in the same timezone space.
+    // `nowUtc` (TRUE UTC) is used for creating startTime/lastUpdate ISO strings
+    // sent to the frontend, because formatWIB() expects TRUE UTC and converts
+    // to company timezone for display.
+    const TZ_OFFSET_MS = getTimezoneOffsetMs();
+    const now = Date.now() + TZ_OFFSET_MS; // WIB-as-UTC epoch for radacct duration calc
+    const nowUtc = Date.now();             // True UTC epoch for frontend timestamps
+    // ── 4b. Synthetic hotspot sessions: ACTIVE vouchers with no radacct record ──
+    // Covers cases where MikroTik authenticated successfully but no
+    // Accounting-Start was recorded in radacct.
+    // We query DB separately because allUsernames only contains codes already in radacct.
+    const activeHotspotUsernames = new Set(
+      activeSessions
+        .filter((s) => voucherByCode.has(s.username))
+        .map((s) => s.username),
+    );
+
+    const nowDate = new Date();
+    const orphanedVoucherWhere: any = {
+      status: 'ACTIVE',
+      firstLoginAt: { not: null },
+      code: { notIn: [...activeHotspotUsernames] },
+      // Exclude already-expired vouchers whose status hasn't been updated yet
+      OR: [
+        { expiresAt: null },
+        { expiresAt: { gt: nowDate } },
+      ],
+    };
+    if (routerId) orphanedVoucherWhere.routerId = routerId;
+
+    let orphanedActiveVouchers = await prisma.hotspotVoucher.findMany({
+      where: orphanedVoucherWhere,
+      select: {
+        id: true,
+        code: true,
+        status: true,
+        batchCode: true,
+        firstLoginAt: true,
+        expiresAt: true,
+        agent: { select: { id: true, name: true } },
+        profile: { select: { name: true } },
+        router: { select: { id: true, name: true, nasname: true } },
+      },
+    });
+
+    // Filter out vouchers whose latest stop was AFTER their current firstLoginAt.
+    // This means they properly disconnected after this login.
+    // Vouchers with only OLD stop records (before firstLoginAt) have a new login
+    // that isn't yet in radacct — they should show as synthetic.
+    // lastKnownIpMap: fallback IP from the most recent radacct row (even if stopped).
+    // Needed because cleanupStaleSessions() may have marked the active row as stopped\n    // before the active-session query runs — the framedipaddress in radacct is the only IP source left.
+    const lastKnownIpMap = new Map<string, string>();
+    if (orphanedActiveVouchers.length > 0) {
+      const orphanCodes = orphanedActiveVouchers.map(v => v.code);
+      const stoppedRows = await prisma.radacct.findMany({
+        where: { username: { in: orphanCodes }, acctstoptime: { not: null } },
+        select: { username: true, acctstoptime: true, framedipaddress: true },
+        orderBy: { acctstoptime: 'desc' },
+      });
+      // Build map: username → latest stop time
+      const latestStopMap = new Map<string, Date>();
+      for (const r of stoppedRows) {
+        if (r.acctstoptime && !latestStopMap.has(r.username)) {
+          latestStopMap.set(r.username, new Date(r.acctstoptime));
+        }
+        if (r.framedipaddress && !lastKnownIpMap.has(r.username)) {
+          lastKnownIpMap.set(r.username, r.framedipaddress);
+        }
+      }
+      orphanedActiveVouchers = orphanedActiveVouchers.filter(v => {
+        const latestStop = latestStopMap.get(v.code);
+        if (!latestStop || !v.firstLoginAt) return true; // No prior stop → show synthetic
+        // Exclude only if the most recent stop is >= firstLoginAt (session already ended)
+        return latestStop.getTime() < new Date(v.firstLoginAt).getTime();
+      });
+    }
+
+    const syntheticHotspotSessions = orphanedActiveVouchers.map((voucher, _i) => {
+        const effectiveStartMs = new Date(voucher.firstLoginAt!).getTime();
+        const effectiveStartTime = new Date(effectiveStartMs).toISOString();
+        // firstLoginAt is TRUE UTC (stored via Prisma), so use nowUtc (TRUE UTC)
+        const duration = Math.max(0, Math.floor((nowUtc - effectiveStartMs) / 1000));
+        const router =
+          voucher.router
+            ? { id: voucher.router.id, name: voucher.router.name }
+            : { id: 'unknown', name: 'Unknown' };
+        return {
+          id: `voucher-${voucher.id}`,
+          username: voucher.code,
+          sessionId: null,
+          type: 'hotspot' as const,
+          nasIpAddress: voucher.router?.nasname || null,
+          framedIpAddress: lastKnownIpMap.get(voucher.code) || null,
+          macAddress: '-',
+          calledStationId: '-',
+          startTime: effectiveStartTime,
+          lastUpdate: null,
+          duration,
+          durationFormatted: formatDuration(duration),
+          uploadBytes: 0,
+          downloadBytes: 0,
+          totalBytes: 0,
+          uploadFormatted: formatBytes(0),
+          downloadFormatted: formatBytes(0),
+          totalFormatted: formatBytes(0),
+          router,
+          user: null,
+          voucher: {
+            id: voucher.id,
+            status: voucher.status,
+            profile: voucher.profile?.name ?? null,
+            batchCode: voucher.batchCode,
+            expiresAt: voucher.expiresAt
+              ? new Date(voucher.expiresAt).toISOString()
+              : null,
+            agent: voucher.agent
+              ? { id: voucher.agent.id, name: voucher.agent.name }
+              : null,
+          },
+          dataSource: 'radius' as const,
+        };
+      });
+
+    // Only show sessions for users registered in the database.
+    // Sessions where the username is not in pppoeUser OR hotspotVoucher are
+    // from unregistered/ghost users and must be excluded from all views.
+    let allSessions = [...activeSessions
+      .filter((acct) => pppoeByUsername.has(acct.username) || voucherByCode.has(acct.username))
+      .map((acct) => {
+      const pppoeUser = pppoeByUsername.get(acct.username);
+      const voucher = voucherByCode.get(acct.username);
+      const sessionType: 'pppoe' | 'hotspot' = pppoeUser ? 'pppoe' : 'hotspot';
+
+      // Both acctstarttime and firstLoginAt are stored as WIB naive DATETIME.
+      // Prisma appends Z so getTime() gives WIB-as-UTC epoch — matches our
+      // WIB-as-UTC "now" for correct duration calculation.
+      const rawStartMs = acct.acctstarttime
+        ? new Date(acct.acctstarttime).getTime()
+        : now;
+
+      let effectiveStartMs = rawStartMs;
+      let effectiveStartTime: string | null = acct.acctstarttime
+        ? new Date(rawStartMs).toISOString()
+        : null;
+
+      if (sessionType === 'hotspot' && voucher?.firstLoginAt) {
+        effectiveStartMs = new Date(voucher.firstLoginAt).getTime();
+        effectiveStartTime = new Date(effectiveStartMs).toISOString();
+      }
+
+      // Compute duration clock-independently: prefer (updateTime - startTime)
+      // which is derived entirely from DB timestamps written by the NAS clock
+      // (via FROM_UNIXTIME). Falls back to (now - startMs) for the case where
+      // acctupdatetime is unavailable or earlier than starttime.
+      let duration: number;
+      const rawUpdateMs = acct.acctupdatetime ? new Date(acct.acctupdatetime).getTime() : 0;
+      if (rawUpdateMs > effectiveStartMs) {
+        // DB-based: session time = updateTime - startTime (no VPS-clock dependency)
+        duration = Math.floor((rawUpdateMs - effectiveStartMs) / 1000);
+      } else {
+        // Fallback to acctsessiontime field if available (also from NAS clock)
+        duration = Number(acct.acctsessiontime ?? 0);
+        if (duration === 0) {
+          // Last fallback: VPS-clock based (may be 0 if VPS clock is behind NAS clock)
+          duration = Math.max(0, Math.floor((now - effectiveStartMs) / 1000));
+        }
+      }
+
+      // Re-derive timestamps from VPS's real clock to correct for NAS clock drift.
+      // NAS (MikroTik) sends UNIX epoch based on its LOCAL clock, which may be
+      // wrong (e.g. hours ahead/behind). Since duration = DB(update) - DB(start)
+      // cancels the NAS clock offset, we use:
+      //   real startTime (WIB-as-UTC) = VPS_now - duration
+      //   real lastUpdate (WIB-as-UTC) ≈ VPS_now (last interim was ≤ Acct-Interim-Interval ago)
+      if (acct.acctstarttime && duration > 0) {
+        // Use nowUtc (TRUE UTC) — frontend formatWIB() expects TRUE UTC
+        effectiveStartTime = new Date(nowUtc - duration * 1000).toISOString();
+      }
+
+      // Use radacct bytes (updated by Interim-Update packets from router)
+      const uploadBytes   = Number(acct.acctinputoctets  ?? 0);
+      const downloadBytes = Number(acct.acctoutputoctets ?? 0);
+      const router = routerByNasIp.get(acct.nasipaddress) || { id: 'unknown', name: acct.nasipaddress };
+      return {
+        id: String(acct.radacctid),
+        username: acct.username,
+        sessionId: acct.acctsessionid,
+        type: sessionType,
+        nasIpAddress: acct.nasipaddress,
+        framedIpAddress: acct.framedipaddress || null,
+        macAddress: acct.callingstationid || '',
+        calledStationId: acct.calledstationid || '-',
+        startTime: effectiveStartTime,
+        // Re-derive lastUpdate from VPS clock to cancel NAS clock drift.
+        // acctupdatetime has the same skew as acctstarttime (both come from
+        // NAS-clock epoch via FROM_UNIXTIME). Since startTime was re-derived
+        // as (VPS_now - duration), lastUpdate ≈ VPS_now for active sessions.
+        lastUpdate: acct.acctstarttime && duration > 0
+          ? new Date(nowUtc).toISOString()
+          : (acct.acctupdatetime ? new Date(acct.acctupdatetime).toISOString() : null),
+        duration,
+        durationFormatted: formatDuration(duration),
+        uploadBytes,
+        downloadBytes,
+        totalBytes: uploadBytes + downloadBytes,
+        uploadFormatted: formatBytes(uploadBytes),
+        downloadFormatted: formatBytes(downloadBytes),
+        totalFormatted: formatBytes(uploadBytes + downloadBytes),
+        router: { id: router.id, name: router.name },
+        user:
+          sessionType === 'pppoe' && pppoeUser
+            ? {
+                id: pppoeUser.id,
+                customerId: pppoeUser.customerId ?? null,
+                name: pppoeUser.name,
+                phone: pppoeUser.phone,
+                profile: pppoeUser.profile?.name ?? null,
+                area: pppoeUser.area ?? null,
+              }
+            : null,
+        voucher:
+          sessionType === 'hotspot' && voucher
+            ? {
+                id: voucher.id,
+                status: voucher.status,
+                profile: voucher.profile?.name ?? null,
+                batchCode: voucher.batchCode,
+                expiresAt: voucher.expiresAt
+                  ? new Date(voucher.expiresAt).toISOString()
+                  : null,
+                agent: voucher.agent
+                  ? { id: voucher.agent.id, name: voucher.agent.name }
+                  : null,
+              }
+            : null,
+        dataSource: 'radius',
+      };
+    }), ...syntheticHotspotSessions];
+
+    // ── 4c. Historical MAC fallback from radacct ───────────────────────────
+    // If current active row still misses MAC, reuse latest known MAC
+    // from previous accounting rows for the same username.
+    const missingMacUsernames = [
+      ...new Set(
+        allSessions
+          .filter((s) => s.type === 'hotspot' && (!s.macAddress || s.macAddress === '-'))
+          .map((s) => s.username),
+      ),
+    ];
+    if (missingMacUsernames.length > 0) {
+      const historicalMacMap = await getLatestMacByUsernames(missingMacUsernames);
+      allSessions = allSessions.map((s) => {
+        if (s.type !== 'hotspot') return s;
+        if (s.macAddress && s.macAddress !== '-') return s;
+        const historicalMac = historicalMacMap.get(s.username);
+        return historicalMac ? { ...s, macAddress: historicalMac } : s;
+      });
+    }
+
+    // ── 4d2. Live traffic overlays removed for CPU optimization ──────────
+    // Hotspot & PPPoE live byte counter overlays from MikroTik API have been
+    // removed. Monitoring now focuses on online/offline status and sync only.
+
+    // ── 4e. Fetch active sessions from MikroTik local-auth routers ────────
+    // Routers with authMode='local' authenticate PPPoE/Hotspot locally and
+    // do NOT send RADIUS accounting records. Their sessions won't appear in
+    // radacct. Fetch them directly from MikroTik API and merge.
+    //
+    // For local-auth hotspot routers, many users authenticate via mac-cookie
+    // or http-chap directly on MikroTik and are NOT registered in our DB
+    // (hotspot_vouchers / pppoe_users). We still show them so operators can
+    // see ALL active sessions on the router, with dataSource='mikrotik'.
+    const existingUsernames = new Set(allSessions.map(s => s.username));
+    const mikrotikType = type as 'pppoe' | 'hotspot' | null;
+    const mikrotikSessions = await batchFetchMikrotikActiveSessions(routers, mikrotikType);
+
+    // Build a map of MikroTik sessions by username for enrichment of
+    // synthetic voucher sessions (which lack IP/MAC/uptime/bytes).
+    const mtSessionByUsername = new Map<string, MikrotikActiveSession>();
+    for (const ms of mikrotikSessions) {
+      if (!mtSessionByUsername.has(ms.username)) {
+        mtSessionByUsername.set(ms.username, ms);
+      }
+    }
+
+    // ── 4e1. Enrich synthetic voucher sessions with live MikroTik data ────
+    // Synthetic sessions come from DB-only voucher records and have no IP,
+    // MAC, uptime, or byte counters. If the same username is active on
+    // MikroTik right now, overlay the live data.
+    allSessions = allSessions.map((s) => {
+      if (s.dataSource !== 'radius' || s.type !== 'hotspot') return s;
+      const mt = mtSessionByUsername.get(s.username);
+      if (!mt) return s;
+      const duration = parseUptime(mt.uptime);
+      return {
+        ...s,
+        framedIpAddress: mt.ipAddress || s.framedIpAddress,
+        macAddress: mt.macAddress || s.macAddress,
+        sessionId: mt.sessionId || s.sessionId,
+        startTime: duration > 0
+          ? new Date(nowUtc - duration * 1000).toISOString()
+          : s.startTime,
+        lastUpdate: new Date(nowUtc).toISOString(),
+        duration,
+        durationFormatted: formatDuration(duration),
+        uploadBytes: mt.rxBytes,
+        downloadBytes: mt.txBytes,
+        totalBytes: mt.rxBytes + mt.txBytes,
+        uploadFormatted: formatBytes(mt.rxBytes),
+        downloadFormatted: formatBytes(mt.txBytes),
+        totalFormatted: formatBytes(mt.rxBytes + mt.txBytes),
+        dataSource: 'mikrotik',
+      } as typeof s;
+    });
+
+    // ── 4e1b. Fill blank IP / MAC on any RADIUS session from live MikroTik ──
+    // 4e1 only covers hotspot. PPPoE rows can also arrive without
+    // framedipaddress / callingstationid — notably the synthetic rows the
+    // pppoe_session_sync cron writes when accounting isn't reaching us — and
+    // the page then showed "-" for a session that is plainly up. Only blanks
+    // are filled; values that accounting reported are never overwritten.
+    allSessions = allSessions.map((s) => {
+      if (s.dataSource !== 'radius') return s;
+      const needIp = !s.framedIpAddress;
+      const needMac = !s.macAddress || s.macAddress === '-';
+      if (!needIp && !needMac) return s;
+      const mt = mtSessionByUsername.get(s.username);
+      if (!mt) return s;
+      return {
+        ...s,
+        framedIpAddress: needIp ? (mt.ipAddress || s.framedIpAddress) : s.framedIpAddress,
+        macAddress: needMac ? (mt.macAddress || s.macAddress) : s.macAddress,
+      } as typeof s;
+    });
+
+    // ── 4e2. Remove synthetic voucher sessions not connected to MikroTik ──
+    // Synthetic sessions are ACTIVE vouchers with no radacct record. If the
+    // voucher is NOT currently active on MikroTik either, the device is
+    // disconnected — hide it so only actual connected sessions are shown.
+    // When the device reconnects, MikroTik will list it and the session
+    // reappears (either enriched synthetic or raw MikroTik session).
+    allSessions = allSessions.filter((s) => {
+      // Only filter synthetic voucher sessions (id starts with 'voucher-')
+      // that were NOT enriched with MikroTik data (still dataSource='radius')
+      if (s.id.startsWith('voucher-') && s.dataSource === 'radius') {
+        return mtSessionByUsername.has(s.username);
+      }
+      return true;
+    });
+
+    // Look up pppoeUser and hotspotVoucher for MikroTik sessions
+    const mikrotikUsernames = [...new Set(mikrotikSessions.map(s => s.username))];
+    const [mtPppoeUsers, mtHotspotVouchers] = await Promise.all([
+      prisma.pppoeUser.findMany({
+        where: { username: { in: mikrotikUsernames } },
+        select: {
+          id: true, username: true, customerId: true, name: true, phone: true,
+          profile: { select: { name: true } },
+          area: { select: { id: true, name: true } },
+        },
+      }),
+      prisma.hotspotVoucher.findMany({
+        where: { code: { in: mikrotikUsernames } },
+        select: {
+          id: true, code: true, status: true, batchCode: true,
+          firstLoginAt: true, expiresAt: true,
+          agent: { select: { id: true, name: true } },
+          profile: { select: { name: true } },
+        },
+      }),
+    ]);
+    const mtPppoeByUsername = new Map(mtPppoeUsers.map(u => [u.username, u]));
+    const mtVoucherByCode = new Map(mtHotspotVouchers.map(v => [v.code, v]));
+
+    // Build a set of router IDs with authMode='local' — for these routers,
+    // we show ALL MikroTik hotspot sessions (including unregistered users)
+    // because the router authenticates locally and users may not be in DB.
+    const localAuthRouterIds = new Set(
+      routers.filter(r => r.authMode === 'local').map(r => r.id),
+    );
+
+    // Track which usernames were enriched as synthetic voucher sessions.
+    // These are skipped in the MikroTik loop to avoid double-counting,
+    // but duplicate MikroTik sessions (same username, different device)
+    // are still shown.
+    const enrichedSyntheticUsernames = new Set<string>();
+    allSessions.forEach(s => {
+      if (s.dataSource === 'mikrotik' && s.id.startsWith('voucher-')) {
+        enrichedSyntheticUsernames.add(s.username);
+      }
+    });
+
+    for (const ms of mikrotikSessions) {
+      // Skip if already in radacct sessions (RADIUS accounting has this user)
+      if (existingUsernames.has(ms.username)) continue;
+      // Skip if already enriched as synthetic voucher (avoid double-count)
+      if (enrichedSyntheticUsernames.has(ms.username)) continue;
+
+      const pppoeUser = mtPppoeByUsername.get(ms.username);
+      const voucher = mtVoucherByCode.get(ms.username);
+
+      // For local-auth routers, show ALL sessions (even unregistered users)
+      // so operators can see every active client on the router — both
+      // hotspot and PPPoE.
+      // For radius-auth routers, only show registered users (in pppoeUser
+      // or hotspotVoucher), since RADIUS accounting handles the rest.
+      if (!pppoeUser && !voucher) {
+        if (!localAuthRouterIds.has(ms.routerId)) continue;
+      }
+
+      // Determine session type from MikroTik source type, not from DB
+      // registration. A PPPoE session from MikroTik is PPPoE even if the
+      // user is not registered in our pppoeUser table (local-auth router).
+      const sessionType = ms.type === 'pppoe' ? 'pppoe' : 'hotspot';
+      const duration = parseUptime(ms.uptime);
+      // pppoe-in interface: rx-byte = from client = upload, tx-byte = to client = download
+      const uploadBytes = ms.rxBytes;
+      const downloadBytes = ms.txBytes;
+
+      // Use a unique ID that includes sessionId/MAC to distinguish
+      // multiple sessions from the same username (different devices).
+      const uniqueSuffix = ms.sessionId || ms.macAddress || ms.ipAddress || '';
+      allSessions.push({
+        id: `mt-${ms.routerId}-${ms.username}-${uniqueSuffix}`,
+        username: ms.username,
+        sessionId: ms.sessionId || '',
+        type: sessionType,
+        nasIpAddress: '',
+        framedIpAddress: ms.ipAddress,
+        macAddress: ms.macAddress || '-',
+        calledStationId: '-',
+        startTime: duration > 0 ? new Date(nowUtc - duration * 1000).toISOString() : new Date().toISOString(),
+        lastUpdate: new Date(nowUtc).toISOString(),
+        duration,
+        durationFormatted: formatDuration(duration),
+        uploadBytes,
+        downloadBytes,
+        totalBytes: uploadBytes + downloadBytes,
+        uploadFormatted: formatBytes(uploadBytes),
+        downloadFormatted: formatBytes(downloadBytes),
+        totalFormatted: formatBytes(uploadBytes + downloadBytes),
+        router: { id: ms.routerId, name: ms.routerName },
+        user: sessionType === 'pppoe' && pppoeUser ? {
+          id: pppoeUser.id,
+          customerId: pppoeUser.customerId ?? null,
+          name: pppoeUser.name,
+          phone: pppoeUser.phone,
+          profile: pppoeUser.profile?.name ?? null,
+          area: pppoeUser.area ?? null,
+        } : null,
+        voucher: sessionType === 'hotspot' && voucher ? {
+          id: voucher.id,
+          status: voucher.status,
+          profile: voucher.profile?.name ?? null,
+          batchCode: voucher.batchCode,
+          expiresAt: voucher.expiresAt ? new Date(voucher.expiresAt).toISOString() : null,
+          agent: voucher.agent ? { id: voucher.agent.id, name: voucher.agent.name } : null,
+        } : null,
+        dataSource: 'mikrotik',
+      });
+      // Note: do NOT add to existingUsernames — allow multiple sessions
+      // per username (same user on different devices/IPs).
+    }
+
+    // ── 5. Filter by session type ─────────────────────────────────────────────────
+    if (type) {
+      allSessions = allSessions.filter((s) => s.type === type);
+    }
+
+    // ── 5b. Filter by search term (applies to MikroTik sessions too) ──────────
+    // radacct sessions are already filtered at DB level, but MikroTik sessions
+    // (added later) need client-side filtering by username, IP, or MAC.
+    if (search) {
+      const q = search.toLowerCase();
+      allSessions = allSessions.filter((s) => {
+        return (
+          s.username?.toLowerCase().includes(q) ||
+          s.framedIpAddress?.toLowerCase().includes(q) ||
+          s.macAddress?.toLowerCase().includes(q) ||
+          (s as any).user?.name?.toLowerCase().includes(q) ||
+          (s as any).user?.customerId?.toLowerCase().includes(q) ||
+          (s as any).user?.phone?.toLowerCase().includes(q)
+        );
+      });
+    }
+
+    // ── 6. Stats ────────────────────────────────────────────────────────────
+    const stats = {
+      total: allSessions.length,
+      pppoe: allSessions.filter((s) => s.type === 'pppoe').length,
+      hotspot: allSessions.filter((s) => s.type === 'hotspot').length,
+      totalUpload: allSessions.reduce((sum, s) => sum + s.uploadBytes, 0),
+      totalDownload: allSessions.reduce((sum, s) => sum + s.downloadBytes, 0),
+    };
+    const totalBandwidth = stats.totalUpload + stats.totalDownload;
+
+    // ── 7. Pagination ───────────────────────────────────────────────────────
+    const paginatedSessions =
+      limit > 0
+        ? allSessions.slice((page - 1) * limit, (page - 1) * limit + limit)
+        : allSessions;
+
+    // ── 8. Historical all-time stats from radacct ───────────────────────────
+    const allTimeStats = await prisma.radacct.aggregate({
+      _sum: {
+        acctinputoctets: true,
+        acctoutputoctets: true,
+        acctsessiontime: true,
+      },
+      _count: { radacctid: true },
+    });
+
+    const totalAllTimeBytes =
+      Number(allTimeStats._sum.acctinputoctets ?? 0) +
+      Number(allTimeStats._sum.acctoutputoctets ?? 0);
+
+    return NextResponse.json({
+      sessions: paginatedSessions,
+      stats: {
+        ...stats,
+        totalBandwidth,
+        totalUploadFormatted: formatBytes(stats.totalUpload),
+        totalDownloadFormatted: formatBytes(stats.totalDownload),
+        totalBandwidthFormatted: formatBytes(totalBandwidth),
+      },
+      allTimeStats: {
+        totalSessions: allTimeStats._count.radacctid ?? 0,
+        totalBandwidth: totalAllTimeBytes,
+        totalBandwidthFormatted: formatBytes(totalAllTimeBytes),
+        totalDuration: allTimeStats._sum.acctsessiontime ?? 0,
+        totalDurationFormatted: formatDuration(
+          allTimeStats._sum.acctsessiontime ?? 0,
+        ),
+      },
+      pagination: {
+        page,
+        limit: limit > 0 ? limit : allSessions.length,
+        total: allSessions.length,
+        totalPages:
+          limit > 0 ? Math.max(1, Math.ceil(allSessions.length / limit)) : 1,
+      },
+      mode: 'radius',
+    });
+  } catch (error) {
+    console.error('[Sessions API] Failed to list active sessions', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 },
+    );
+  }
+}

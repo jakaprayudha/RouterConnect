@@ -1,0 +1,303 @@
+/**
+ * PPPoE API client - all PPPoE-related endpoints.
+ *
+ * Usage:
+ *   import { pppoeApi } from '@/lib/api/pppoe';
+ *   const users = await pppoeApi.listUsers();
+ *   await pppoeApi.createUser(payload);
+ */
+
+import { apiAdmin } from './client';
+import type { PppoeUser, PppoeUserListResponse, PppoeUserResponse, PppoeUserCreateResponse, PppoeUserDeleteResponse, PppoeProfile, PppoeProfileListResponse, PppoeProfileResponse, PppoeArea, PppoeAreaListResponse, PppoeAreaResponse, PppoeOnlineStatusResponse, SyncPreviewResponse, SyncMikrotikImportResponse, SyncAuditResponse, SyncAuditFixResponse, UpdateUserStatusResponse, BulkUpdateStatusResponse } from '@/types/api';
+
+// Re-export types for backward compatibility
+export type {
+  PppoeUser,
+  PppoeProfile,
+  PppoeArea,
+};
+
+export interface CreatePppoeUserPayload {
+  username?: string;
+  password?: string;
+  profile?: string;
+  profileId?: string;
+  routerId?: string;
+  areaId?: string;
+  registeredAt?: string;
+  name?: string;
+  phone?: string;
+  pppoeCustomerId?: string;
+  noPppoeAccount?: boolean;
+  idCardPhoto?: string;
+  latitude?: number | string;
+  longitude?: number | string;
+  expiredAt?: string;
+  firstInvoice?: 'none' | 'full' | 'prorate';
+  createPppSecret?: boolean;
+  discount?: number;
+  connectionType?: 'PPPOE' | 'HOTSPOT' | 'STATIC_IP';
+  [key: string]: unknown;
+}
+
+export interface UpdatePppoeUserPayload {
+  id: string;
+  [key: string]: unknown;
+}
+
+// ─── API ────────────────────────────────────────────────────────────
+
+export const pppoeApi = {
+  // ── Users ──────────────────────────────────────────────────────────
+
+  /** List PPPoE users with optional filters */
+  listUsers(params?: Record<string, string | undefined>): Promise<PppoeUserListResponse> {
+    const query = params ? '?' + new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v != null) as [string, string][]
+    ).toString() : '';
+    return apiAdmin<PppoeUserListResponse>(`/api/pppoe/users${query}`);
+  },
+
+  /** Get single PPPoE user by ID */
+  getUser(id: string): Promise<PppoeUserResponse> {
+    return apiAdmin<PppoeUserResponse>(`/api/pppoe/users/${id}`);
+  },
+
+  /** Create new PPPoE user */
+  createUser(payload: CreatePppoeUserPayload): Promise<PppoeUserCreateResponse> {
+    return apiAdmin<PppoeUserCreateResponse>('/api/pppoe/users', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  /** Update PPPoE user */
+  updateUser(payload: UpdatePppoeUserPayload): Promise<PppoeUserResponse> {
+    return apiAdmin<PppoeUserResponse>('/api/pppoe/users', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  /** Delete PPPoE user (requires superadmin password confirmation) */
+  deleteUser(id: string, confirmPassword: string): Promise<PppoeUserDeleteResponse> {
+    return apiAdmin<PppoeUserDeleteResponse>(`/api/pppoe/users?id=${id}`, {
+      method: 'DELETE',
+      body: JSON.stringify({ confirmPassword }),
+    });
+  },
+
+  /** Update user status (active, suspended, stop, etc.) */
+  updateStatus(userId: string, status: string): Promise<UpdateUserStatusResponse> {
+    return apiAdmin<UpdateUserStatusResponse>('/api/pppoe/users/status', {
+      method: 'PUT',
+      body: JSON.stringify({ userId, status }),
+    });
+  },
+
+  /** Bulk update status for multiple users */
+  bulkUpdateStatus(userIds: string[], status: string): Promise<BulkUpdateStatusResponse> {
+    return apiAdmin<BulkUpdateStatusResponse>('/api/pppoe/users/bulk-status', {
+      method: 'PUT',
+      body: JSON.stringify({ userIds, status }),
+    });
+  },
+
+  /** Bulk update editable fields (routerId, billingDay, autoIsolationEnabled) for multiple users */
+  bulkUpdate(userIds: string[], fields: {
+    routerId?: string | null;
+    billingDay?: number;
+    autoIsolationEnabled?: boolean;
+  }): Promise<{ success: boolean; updated: number; fields: string[] }> {
+    return apiAdmin<{ success: boolean; updated: number; fields: string[] }>('/api/pppoe/users/bulk-update', {
+      method: 'PUT',
+      body: JSON.stringify({ userIds, ...fields }),
+    });
+  },
+
+  /** Migrate a router from LOCAL auth mode to RADIUS auth mode (sync all users + disable PPP secrets + CoA) */
+  migrateToRadius(routerId: string): Promise<{
+    success: boolean;
+    message: string;
+    alreadyRadius?: boolean;
+    router: { id: string; name: string; authMode: string };
+    summary: { total: number; synced: number; secretsDisabled: number; failed: number };
+    errors?: Array<{ username: string; error: string }>;
+    coa?: { disconnected: number; failed: number };
+  }> {
+    return apiAdmin('/api/pppoe/users/bulk-migrate-radius', {
+      method: 'POST',
+      body: JSON.stringify({ routerId }),
+    });
+  },
+
+  /** Re-sync all users to RADIUS tables (fix out-of-sync data without changing authMode) */
+  bulkSyncRadius(routerId?: string): Promise<{
+    success: boolean;
+    message: string;
+    summary: { total: number; synced: number; failed: number };
+    errors?: Array<{ username: string; error: string }>;
+  }> {
+    return apiAdmin('/api/pppoe/users/bulk-sync-radius', {
+      method: 'POST',
+      body: JSON.stringify(routerId ? { routerId } : {}),
+    });
+  },
+
+  /** Bulk delete users - NOTE: backend may not have this endpoint, falls back to individual deletes */
+  bulkDelete(userIds: string[]): Promise<{ deleted: number }> {
+    return apiAdmin<{ deleted: number }>('/api/pppoe/users/bulk-delete', {
+      method: 'DELETE',
+      body: JSON.stringify({ userIds }),
+    });
+  },
+
+  /** Sync user to RADIUS */
+  syncRadius(userId: string): Promise<{ success: boolean; message?: string }> {
+    return apiAdmin<{ success: boolean; message?: string }>(`/api/pppoe/users/${userId}/sync-radius`, { method: 'POST' });
+  },
+
+  /** Mark user as paid */
+  markPaid(userId: string, payload?: Record<string, unknown>): Promise<{ success: boolean; message?: string }> {
+    return apiAdmin<{ success: boolean; message?: string }>(`/api/pppoe/users/${userId}/mark-paid`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  /** Extend user subscription */
+  extend(userId: string, payload: Record<string, unknown>): Promise<{ success: boolean; message?: string }> {
+    return apiAdmin<{ success: boolean; message?: string }>(`/api/pppoe/users/${userId}/extend`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  /** Send notification to user */
+  sendNotification(payload: Record<string, unknown>): Promise<{ success: boolean; message?: string }> {
+    return apiAdmin<{ success: boolean; message?: string }>('/api/pppoe/users/send-notification', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+
+  /** Get online status for multiple users */
+  getOnlineStatus(usernames: string): Promise<PppoeOnlineStatusResponse> {
+    return apiAdmin<PppoeOnlineStatusResponse>(`/api/pppoe/users/online-status?usernames=${encodeURIComponent(usernames)}`);
+  },
+
+  /** Sync users from MikroTik router (GET = preview, POST = import) */
+  syncMikrotik(routerId?: string): Promise<SyncPreviewResponse | SyncMikrotikImportResponse> {
+    if (routerId) {
+      return apiAdmin<SyncPreviewResponse>(`/api/pppoe/users/sync-mikrotik?routerId=${routerId}`);
+    }
+    return apiAdmin<SyncMikrotikImportResponse>('/api/pppoe/users/sync-mikrotik', { method: 'POST' });
+  },
+
+  /** Sync audit: compare DB vs MikroTik PPP secrets */
+  syncAudit(routerId: string): Promise<SyncAuditResponse> {
+    return apiAdmin<SyncAuditResponse>(`/api/pppoe/users/sync-audit?routerId=${encodeURIComponent(routerId)}`);
+  },
+
+  /** Sync audit fix: apply fixes to MikroTik */
+  syncAuditFix(routerId: string, fixes: Array<{ username: string; action: string }>): Promise<SyncAuditFixResponse> {
+    return apiAdmin<SyncAuditFixResponse>('/api/pppoe/users/sync-audit', {
+      method: 'POST',
+      body: JSON.stringify({ routerId, fixes }),
+    });
+  },
+
+  /** Export users (returns blob) */
+  async exportUsers(params: Record<string, string>): Promise<Blob> {
+    const query = new URLSearchParams(params).toString();
+    const res = await fetch(`/api/pppoe/users/export?${query}`, { credentials: 'include' });
+    if (!res.ok) throw new Error(`Export failed: ${res.status}`);
+    return res.blob();
+  },
+
+  /** Bulk operation (template upload, etc.) */
+  async bulkUpload(formData: FormData): Promise<{ success: boolean; results: { success: number; updated: number; failed: number; errors: Array<{ line: number; username?: string; error: string }> } }> {
+    const res = await fetch('/api/pppoe/users/bulk', {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `Bulk upload failed: ${res.status}` }));
+      throw new Error(err.error || err.message || `Bulk upload failed: ${res.status}`);
+    }
+    return res.json();
+  },
+
+  /** Upload PPPoE customer file (id card, installation photo) */
+  async uploadFile(formData: FormData): Promise<{ url: string }> {
+    const res = await fetch('/api/upload/pppoe-customer', {
+      method: 'POST',
+      body: formData,
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ message: 'Upload failed' }));
+      throw new Error(err.message || `Upload failed: ${res.status}`);
+    }
+    return res.json();
+  },
+
+  // ── Profiles ───────────────────────────────────────────────────────
+
+  /** List PPPoE profiles */
+  listProfiles(): Promise<PppoeProfileListResponse> {
+    return apiAdmin<PppoeProfileListResponse>('/api/pppoe/profiles');
+  },
+
+  /** Create or update profile (PUT if id present, POST if new) */
+  saveProfile(payload: Record<string, unknown>): Promise<PppoeProfileResponse> {
+    const method = payload.id ? 'PUT' : 'POST';
+    return apiAdmin<PppoeProfileResponse>('/api/pppoe/profiles', {
+      method,
+      body: JSON.stringify(payload),
+    });
+  },
+
+  /** Delete profile */
+  deleteProfile(id: string): Promise<void> {
+    return apiAdmin(`/api/pppoe/profiles?id=${id}`, { method: 'DELETE' });
+  },
+
+  /** Sync profiles to MikroTik */
+  syncMikrotikProfiles(payload?: Record<string, unknown>): Promise<{ success: boolean; message?: string; synced?: number }> {
+    if (payload) {
+      return apiAdmin<{ success: boolean; message?: string; synced?: number }>('/api/pppoe/profiles/sync-mikrotik', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+    }
+    return apiAdmin<{ success: boolean; message?: string; synced?: number }>('/api/pppoe/profiles/sync-mikrotik', { method: 'POST' });
+  },
+
+  /** Sync profiles to RADIUS */
+  syncRadiusProfiles(): Promise<{ success: boolean; message?: string; synced?: number }> {
+    return apiAdmin<{ success: boolean; message?: string; synced?: number }>('/api/pppoe/profiles/sync-radius', { method: 'POST' });
+  },
+
+  // ── Areas ──────────────────────────────────────────────────────────
+
+  /** List PPPoE areas */
+  listAreas(): Promise<PppoeAreaListResponse> {
+    return apiAdmin<PppoeAreaListResponse>('/api/pppoe/areas');
+  },
+
+  /** Create or update area (PUT if id present, POST if new) */
+  saveArea(payload: Record<string, unknown>): Promise<PppoeAreaResponse> {
+    const method = payload.id ? 'PUT' : 'POST';
+    return apiAdmin<PppoeAreaResponse>('/api/pppoe/areas', {
+      method,
+      body: JSON.stringify(payload),
+    });
+  },
+
+  /** Delete area */
+  deleteArea(id: string): Promise<void> {
+    return apiAdmin(`/api/pppoe/areas?id=${id}`, { method: 'DELETE' });
+  },
+};

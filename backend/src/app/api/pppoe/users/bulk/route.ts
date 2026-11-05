@@ -1,0 +1,759 @@
+﻿import { NextRequest, NextResponse } from 'next/server';
+import { requirePermission } from '@/server/middleware/api-auth';
+import { prisma } from '@/server/db/client';
+import { randomUUID } from 'crypto';
+import { generateExcelBuffer } from '@/lib/utils/export';
+import ExcelJS from 'exceljs';
+import { generateUniqueReferralCode } from '@/server/services/referral.service';
+import { generateInvoiceNumber } from '@/server/services/billing/invoice.service';
+
+function generateCustomerId(prefix = ''): string {
+  return prefix + Math.floor(10000000 + Math.random() * 90000000).toString();
+}
+
+export async function GET(request: NextRequest) {
+  const authCheck = await requirePermission('customers.view');
+  if (!authCheck.authorized) return authCheck.response;
+  const { searchParams } = new URL(request.url);
+  const type = searchParams.get('type');
+
+  try {
+    if (type === 'template') {
+      const format = searchParams.get('format') || 'csv';
+
+      // Sample template rows
+      const sampleData = [
+        {
+          customerId: '',
+          username: 'user001',
+          password: 'pass123',
+          name: 'Budi Santoso',
+          phone: '08123456789',
+          email: 'budi@example.com',
+          address: 'Jl. Merdeka No. 10',
+          area: 'Cluster A',
+          profile: 'Paket 10Mbps',
+          router: 'Router Utama',
+          ipAddress: '10.10.10.2',
+          subscriptionType: 'POSTPAID',
+          expiredAt: '',
+          billingDay: '1',
+          latitude: '-6.200000',
+          longitude: '106.816666',
+          autoIsolationEnabled: 'true',
+          firstInvoice: 'prorate',
+          macAddress: '',
+          comment: 'Pelanggan baru',
+          registeredAt: '',
+        },
+        {
+          customerId: '',
+          username: 'user002',
+          password: 'pass456',
+          name: 'Siti Rahayu',
+          phone: '08987654321',
+          email: 'siti@example.com',
+          address: 'Jl. Sudirman No. 5',
+          area: '',
+          profile: 'Paket 20Mbps',
+          router: '',
+          ipAddress: '',
+          subscriptionType: 'PREPAID',
+          expiredAt: '2026-12-31',
+          billingDay: '',
+          latitude: '',
+          longitude: '',
+          autoIsolationEnabled: 'true',
+          firstInvoice: 'full',
+          macAddress: 'AA:BB:CC:DD:EE:FF',
+          comment: '',
+          registeredAt: '',
+        },
+      ];
+
+      if (format === 'xlsx') {
+        const columns = [
+          { key: 'customerId', header: 'ID Pelanggan (kosongkan = auto)', width: 28 },
+          { key: 'username', header: 'Username *', width: 20 },
+          { key: 'password', header: 'Password *', width: 18 },
+          { key: 'name', header: 'Nama Lengkap *', width: 24 },
+          { key: 'phone', header: 'No. Telepon *', width: 18 },
+          { key: 'email', header: 'Email', width: 26 },
+          { key: 'address', header: 'Alamat', width: 32 },
+          { key: 'area', header: 'Area/Wilayah', width: 20 },
+          { key: 'ipAddress', header: 'IP Address', width: 16 },
+          { key: 'subscriptionType', header: 'Tipe Langganan (POSTPAID/PREPAID)', width: 32 },
+          { key: 'expiredAt', header: 'Tanggal Expired (YYYY-MM-DD)', width: 26 },
+          { key: 'billingDay', header: 'Hari Tagihan (1-31)', width: 20 },
+          { key: 'latitude', header: 'Latitude', width: 14 },
+          { key: 'longitude', header: 'Longitude', width: 14 },
+          { key: 'profile', header: 'Profile (opsional, assign manual setelah import)', width: 36 },
+          { key: 'router', header: 'Router (kosong = global)', width: 22 },
+          { key: 'autoIsolationEnabled', header: 'Auto Isolasi (true/false)', width: 22 },
+          { key: 'firstInvoice', header: 'Tagihan Pertama (none/prorate/full)', width: 30 },
+          { key: 'macAddress', header: 'MAC Address', width: 20 },
+          { key: 'comment', header: 'Komentar', width: 24 },
+          { key: 'registeredAt', header: 'Tanggal Register (YYYY-MM-DD)', width: 26 },
+        ];
+        const buffer = await generateExcelBuffer(sampleData as any, columns, 'PPPoE Template');
+        return new NextResponse(Buffer.from(buffer), {
+          headers: {
+            'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Disposition': 'attachment; filename="pppoe-users-template.xlsx"',
+          },
+        });
+      }
+
+      // CSV fallback — column order must match XLSX template exactly
+      const template = `ID Pelanggan (kosongkan = auto),Username *,Password *,Nama Lengkap *,No. Telepon *,Email,Alamat,Area/Wilayah,IP Address,Tipe Langganan (POSTPAID/PREPAID),Tanggal Expired (YYYY-MM-DD),Hari Tagihan (1-31),Latitude,Longitude,Profile (opsional, assign manual setelah import),Router (kosong = global),Auto Isolasi (true/false),Tagihan Pertama (none/prorate/full),MAC Address,Komentar,Tanggal Register (YYYY-MM-DD)
+,user001,pass123,Budi Santoso,08123456789,budi@example.com,Jl. Merdeka No. 10,Cluster A,10.10.10.2,POSTPAID,,1,-6.200000,106.816666,Paket 10Mbps,Router Utama,true,prorate,,Pelanggan baru,
+,user002,pass456,Siti Rahayu,08987654321,siti@example.com,Jl. Sudirman No. 5,,,,PREPAID,2026-12-31,,,,Paket 20Mbps,,true,full,AA:BB:CC:DD:EE:FF,`;
+
+      return new NextResponse(template, {
+        headers: {
+          'Content-Type': 'text/csv',
+          'Content-Disposition': 'attachment; filename="pppoe-users-template.csv"',
+        },
+      });
+    } else if (type === 'export') {
+      // Export all users to CSV
+      const paymentStatus = searchParams.get('paymentStatus');
+      // P0 security: passwords excluded by default; require includePassword=true
+      const includePassword = searchParams.get('includePassword') === 'true';
+      const exportWhere: any = {};
+      if (paymentStatus === 'unpaid') {
+        exportWhere.invoices = { some: { status: { in: ['PENDING', 'OVERDUE'] } } };
+      } else if (paymentStatus === 'paid') {
+        exportWhere.NOT = { invoices: { some: { status: { in: ['PENDING', 'OVERDUE'] } } } };
+      } else if (paymentStatus === 'isolated') {
+        exportWhere.status = 'isolated';
+      }
+      const users = await prisma.pppoeUser.findMany({
+        where: exportWhere,
+        select: {
+          username: true,
+          password: includePassword,
+          name: true,
+          phone: true,
+          email: true,
+          address: true,
+          ipAddress: true,
+          subscriptionType: true,
+          billingDay: true,
+          status: true,
+          expiredAt: true,
+          latitude: true,
+          longitude: true,
+          autoIsolationEnabled: true,
+          createdAt: true,
+          customerId: true,
+          profile: { select: { name: true } },
+          router: { select: { name: true } },
+          area: { select: { name: true } },
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+      });
+
+      // Build CSV content — password only included when explicitly requested
+      let csv = 'username,password,customerId,name,phone,email,address,area,ipAddress,subscriptionType,billingDay,status,profile,router,expiredAt,latitude,longitude,autoIsolationEnabled,createdAt\n';
+      
+      users.forEach(user => {
+        const row = [
+          user.username,
+          includePassword ? (user.password || '') : '',
+          (user as any).customerId || '',
+          user.name,
+          user.phone,
+          user.email || '',
+          (user.address || '').replace(/,/g, ';'), // Replace commas in address
+          (user as any).area?.name || '',
+          user.ipAddress || '',
+          (user as any).subscriptionType || 'POSTPAID',
+          (user as any).billingDay || '',
+          user.status,
+          user.profile?.name || '',
+          user.router?.name || 'Global',
+          user.expiredAt ? new Date(user.expiredAt).toISOString().split('T')[0] : '',
+          user.latitude || '',
+          user.longitude || '',
+          (user as any).autoIsolationEnabled !== false ? 'true' : 'false',
+          new Date(user.createdAt).toISOString().split('T')[0],
+        ];
+        csv += row.map(field => `"${field}"`).join(',') + '\n';
+      });
+
+      return new NextResponse(csv, {
+        headers: {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename="pppoe-users-export-${new Date().toISOString().split('T')[0]}.csv"`,
+        },
+      });
+    }
+
+    return NextResponse.json({ error: 'Invalid type parameter' }, { status: 400 });
+  } catch (error) {
+    console.error('Bulk operation error:', error);
+    return NextResponse.json(
+      { error: 'Failed to process request' },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const authCheck = await requirePermission('customers.edit');
+    if (!authCheck.authorized) return authCheck.response;
+    const formData = await request.formData();
+    const file = formData.get('file') as File;
+
+    if (!file) {
+      console.error('Bulk import: No file in formData. Keys:', Array.from(formData.keys()));
+      return NextResponse.json(
+        { error: 'File is required' },
+        { status: 400 }
+      );
+    }
+
+    // Pre-load all profiles and routers for per-row auto-resolution from file data
+    const allProfiles = await prisma.pppoeProfile.findMany();
+    const profileByNameMap = new Map(allProfiles.map(p => [p.name.toLowerCase(), p]));
+    const allRouters = await prisma.router.findMany();
+    const routerByNameMap = new Map(allRouters.map(r => [r.name.toLowerCase(), r]));
+
+    // Header normalization map — applied BEFORE row parsing so rowData uses normalized keys
+    const headerNormalizeMap: Record<string, string> = {
+      // English (existing/fallback)
+      'username': 'username',
+      'password': 'password',
+      'name': 'name',
+      'phone': 'phone',
+      'email': 'email',
+      'address': 'address',
+      'ipaddress': 'ipaddress',
+      'ip address': 'ipaddress',
+      'macaddress': 'macaddress',
+      'mac address': 'macaddress',
+      'subscriptiontype': 'subscriptiontype',
+      'expiredat': 'expiredat',
+      'billingday': 'billingday',
+      'latitude': 'latitude',
+      'longitude': 'longitude',
+      'comment': 'comment',
+      'komentar': 'comment',
+      'mac': 'macaddress',
+      'auto isolasi (true/false)': 'autoisolation',
+      'auto isolasi': 'autoisolation',
+      'aksi jatuh tempo': 'autoisolation',
+      'autoisolationenabled': 'autoisolation',
+      // Indonesian labels (from template)
+      'username *': 'username',
+      'password *': 'password',
+      'nama lengkap *': 'name',
+      'nama lengkap': 'name',
+      'nama': 'name',
+      'no. telepon *': 'phone',
+      'no. telepon': 'phone',
+      'no telepon': 'phone',
+      'no. hp *': 'phone',
+      'no. hp': 'phone',
+      'telepon': 'phone',
+      'alamat': 'address',
+      'tipe langganan (postpaid/prepaid)': 'subscriptiontype',
+      'tipe langganan': 'subscriptiontype',
+      'tipe berlangganan (postpaid/prepaid)': 'subscriptiontype',
+      'tipe berlangganan': 'subscriptiontype',
+      'tanggal expired (yyyy-mm-dd)': 'expiredat',
+      'tanggal expired': 'expiredat',
+      'expired': 'expiredat',
+      'hari tagihan (1-31)': 'billingday',
+      'hari tagihan': 'billingday',
+      'area/wilayah': 'area',
+      'area': 'area',
+      'wilayah': 'area',
+      // Export columns: profile and router used for auto-resolution
+      'no': '_no',
+      'customerid': 'customerid',
+      'id pelanggan': 'customerid',
+      'id pelanggan (kosongkan = auto)': 'customerid',
+      'customer id': 'customerid',
+      'profile': 'profilename',
+      'profile (opsional)': 'profilename',
+      'profile (opsional, assign manual setelah import)': 'profilename',
+      'status': '_status',
+      'router': 'routername',
+      'router (kosong = global)': 'routername',
+      'created': '_created',
+      'createdat': 'createdat',
+      // Tanggal Register / registeredAt (maps to createdAt in DB)
+      'tanggal register (yyyy-mm-dd)': 'createdat',
+      'tanggal register': 'createdat',
+      'tanggal registrasi': 'createdat',
+      'tanggal terdaftar': 'createdat',
+      'registered at': 'createdat',
+      'registeredat': 'createdat',
+      // Tagihan pertama
+      'tagihan pertama (none/prorate/full)': 'firstinvoice',
+      'tagihan pertama': 'firstinvoice',
+      'first invoice': 'firstinvoice',
+      'firstinvoice': 'firstinvoice',
+    };
+
+    // Parse file: support both CSV and XLSX/XLS
+    const fileName = file.name.toLowerCase();
+    const isExcel = fileName.endsWith('.xlsx') || fileName.endsWith('.xls');
+    let rows: Record<string, string>[] = [];
+    let headers: string[] = [];
+
+    if (isExcel) {
+      // Parse XLSX using ExcelJS
+      const arrayBuffer = await file.arrayBuffer();
+      console.error('Bulk import: Excel file:', file.name, 'size:', file.size, 'bytes, arrayBuffer:', arrayBuffer.byteLength);
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(arrayBuffer as any);
+      const worksheet = workbook.worksheets[0];
+
+      if (!worksheet) {
+        return NextResponse.json({ error: 'Excel file has no worksheets' }, { status: 400 });
+      }
+
+      console.error('Bulk import: Excel worksheet:', worksheet.name, 'rowCount:', worksheet.rowCount, 'actualRowCount:', worksheet.actualRowCount);
+
+      // Get headers from row 1 and normalize immediately
+      const headerRow = worksheet.getRow(1);
+      headerRow.eachCell((cell, colNumber) => {
+        headers[colNumber - 1] = String(cell.value ?? '').trim().toLowerCase();
+      });
+      headers = headers.map(h => headerNormalizeMap[h] ?? h);
+
+      // Parse data rows (rowData uses normalized keys)
+      worksheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return; // skip header row
+        const rowData: Record<string, string> = {};
+        let hasData = false;
+        row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+          const key = headers[colNumber - 1];
+          if (key) {
+            // Handle date cells — ExcelJS may parse dates as Date objects
+            let val = '';
+            if (cell.value instanceof Date) {
+              val = cell.value.toISOString().split('T')[0];
+            } else if (cell.value !== null && cell.value !== undefined && typeof cell.value === 'object') {
+              // Handle ExcelJS complex cell types: CellHyperlinkValue ({ text, hyperlink }),
+              // CellRichTextValue ({ richText: [{text}] }), CellFormulaValue ({ formula, result })
+              const cv = cell.value as any;
+              if (Array.isArray(cv.richText)) {
+                val = cv.richText.map((r: any) => String(r.text ?? '')).join('').trim();
+              } else if (typeof cv.text === 'string') {
+                // Hyperlink cell — contains { text: 'user@domain', hyperlink: 'mailto:...' }
+                val = cv.text.trim();
+              } else if ('result' in cv) {
+                val = String(cv.result ?? '').trim();
+              } else {
+                val = cell.text?.trim() || '';
+              }
+            } else {
+              val = String(cell.value ?? '').trim();
+            }
+            rowData[key] = val;
+            if (val) hasData = true;
+          }
+        });
+        if (hasData) rows.push(rowData);
+      });
+
+      console.error('Bulk import: Excel parsed rows:', rows.length, rows.length > 0 ? 'First row:' : '', rows.length > 0 ? JSON.stringify(rows[0]) : '');
+    } else {
+      // Parse CSV
+      const text = await file.text();
+      const lines = text.split('\n').filter(line => line.trim());
+
+      if (lines.length < 2) {
+        console.error('Bulk import: CSV has', lines.length, 'lines. Content preview:', text.substring(0, 200));
+        return NextResponse.json(
+          { error: 'CSV file is empty or invalid' },
+          { status: 400 }
+        );
+      }
+
+      // Get headers from first line and normalize immediately
+      // Use same regex as value parser to handle quoted headers with commas
+      headers = (lines[0].match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g) || []).map(h =>
+        h.replace(/^"|"$/g, '').trim().toLowerCase()
+      );
+      headers = headers.map(h => headerNormalizeMap[h] ?? h);
+
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const values = line.match(/(".*?"|[^",]+)(?=\s*,|\s*$)/g)?.map(v =>
+          v.replace(/^"|"$/g, '').trim()
+        ) || [];
+        const rowData: Record<string, string> = {};
+        headers.forEach((header, index) => {
+          rowData[header] = values[index] || '';
+        });
+        rows.push(rowData);
+      }
+    }
+
+    if (rows.length === 0) {
+      console.error('Bulk import: No data rows found. Headers:', headers);
+      return NextResponse.json({ error: 'No data rows found in file' }, { status: 400 });
+    }
+
+    // Limit max rows to prevent timeout/memory issues
+    const MAX_IMPORT_ROWS = 1000;
+    if (rows.length > MAX_IMPORT_ROWS) {
+      console.error('Bulk import: Too many rows:', rows.length);
+      return NextResponse.json(
+        { error: `Maksimal ${MAX_IMPORT_ROWS} baris per import. File memiliki ${rows.length} baris. Bagi menjadi beberapa file.` },
+        { status: 400 }
+      );
+    }
+
+    // Required columns check — password is optional (auto-generated if missing)
+    const requiredColumns = ['username', 'name', 'phone'];
+    const missingColumns = requiredColumns.filter(col => !headers.includes(col));
+    if (missingColumns.length > 0) {
+      console.error('Bulk import: Missing required columns:', missingColumns, 'Headers found:', headers);
+      return NextResponse.json(
+        { error: `Kolom wajib tidak ditemukan: ${missingColumns.join(', ')}. Kolom di file: ${headers.join(', ')}` },
+        { status: 400 }
+      );
+    }
+
+    // Fetch company prefix once for all rows
+    const co = await prisma.company.findFirst({ select: { customerIdPrefix: true } });
+    const idPrefix = (co as any)?.customerIdPrefix?.trim() || '';
+
+    // Process data rows inside a transaction for atomicity
+    const results = await prisma.$transaction(async (tx) => {
+      const results = {
+        success: 0,
+        updated: 0,
+        failed: 0,
+        errors: [] as any[],
+      };
+
+      for (let i = 0; i < rows.length; i++) {
+        const rowData = rows[i];
+
+        try {
+          // Validate required fields
+          if (!rowData.username || !rowData.name || !rowData.phone) {
+            results.failed++;
+            results.errors.push({
+              line: i + 2,
+              username: rowData.username || 'unknown',
+              error: 'Missing required fields (username, name, phone)',
+            });
+            continue;
+          }
+
+          // Auto-generate password if not in file
+          const password = rowData.password && rowData.password.trim() !== ''
+            ? rowData.password
+            : rowData.username + Math.random().toString(36).substring(2, 6);
+
+          // Resolve subscriptionType (POSTPAID default)
+          const rawSubType = (rowData.subscriptiontype || '').toUpperCase();
+          const subscriptionType = rawSubType === 'PREPAID' ? 'PREPAID' : 'POSTPAID';
+
+          // Resolve profile for this row from 'profilename' column (set by export's "Profile" header)
+          const rowProfileName = rowData.profilename?.trim() || '';
+          const rowProfile = rowProfileName ? (profileByNameMap.get(rowProfileName.toLowerCase()) || null) : null;
+
+          // Resolve router for this row from 'routername' column (set by export's "Router" header)
+          let rowRouterId: string | null = null;
+          const rowRouterName = rowData.routername?.trim() || '';
+          if (rowRouterName && rowRouterName.toLowerCase() !== 'global') {
+            const foundRouter = routerByNameMap.get(rowRouterName.toLowerCase());
+            if (foundRouter) rowRouterId = foundRouter.id;
+          }
+
+          // Check if username already exists → upsert (update existing user for backup/restore workflow)
+          const existingUser = await tx.pppoeUser.findUnique({
+            where: { username: rowData.username },
+            include: { profile: true },
+          });
+
+          if (existingUser) {
+            // Use resolved profile from file, or fall back to existing user's profile
+            // If neither is available, set profileId to null (admin can assign later)
+            const upsertProfile = rowProfile || existingUser.profile;
+            if (!upsertProfile && rowProfileName) {
+              results.errors.push({
+                line: i + 2,
+                username: rowData.username,
+                error: `Profile "${rowProfileName}" tidak ditemukan — profile dihapus, assign manual setelah import`,
+              });
+            }
+
+            const updateData: any = {
+              password: password,
+              name: rowData.name,
+              phone: rowData.phone,
+              email: rowData.email || existingUser.email,
+              address: rowData.address || existingUser.address,
+              profileId: upsertProfile ? upsertProfile.id : null,
+              routerId: rowRouterId !== null ? rowRouterId : existingUser.routerId,
+            };
+
+            if (rawSubType) updateData.subscriptionType = subscriptionType;
+            if (rowData.ipaddress && rowData.ipaddress.trim()) updateData.ipAddress = rowData.ipaddress.trim();
+            if (rowData.billingday && rowData.billingday !== '') {
+              const bd = parseInt(rowData.billingday, 10);
+              if (!isNaN(bd) && bd >= 1 && bd <= 31) updateData.billingDay = bd;
+            }
+            if (rowData.expiredat && rowData.expiredat !== '') {
+              const d = new Date(rowData.expiredat);
+              if (!isNaN(d.getTime())) updateData.expiredAt = d;
+            }
+            if (rowData.latitude && rowData.longitude) {
+              const lat = parseFloat(rowData.latitude); const lng = parseFloat(rowData.longitude);
+              if (!isNaN(lat) && !isNaN(lng)) { updateData.latitude = lat; updateData.longitude = lng; }
+            }
+            if (rowData.area && rowData.area.trim()) {
+              const areaRec = await tx.pppoeArea.findFirst({ where: { name: { contains: rowData.area.trim() } } });
+              if (areaRec) updateData.areaId = areaRec.id;
+            }
+            if (rowData.autoisolation !== undefined && rowData.autoisolation !== '') {
+              updateData.autoIsolationEnabled = rowData.autoisolation.toLowerCase() !== 'false' && rowData.autoisolation !== '0';
+            }
+            if (rowData.comment && rowData.comment.trim()) updateData.comment = rowData.comment.trim();
+            if (rowData.macaddress && rowData.macaddress.trim()) updateData.macAddress = rowData.macaddress.trim();
+
+            await tx.pppoeUser.update({ where: { username: rowData.username }, data: updateData });
+
+            // Sync RADIUS: update password and profile — with nas_identifier for multi-tenant isolation
+            const upsertNasId = rowRouterId !== null ? rowRouterId : (existingUser.routerId || null);
+            await tx.$executeRaw`DELETE FROM radcheck WHERE username = ${existingUser.username} AND (nas_identifier = ${upsertNasId} OR (nas_identifier IS NULL AND ${upsertNasId} IS NULL))`;
+            await tx.$executeRaw`
+              INSERT INTO radcheck (username, attribute, op, value, nas_identifier)
+              VALUES (${existingUser.username}, 'Cleartext-Password', ':=', ${password}, ${upsertNasId})
+            `;
+            await tx.$executeRaw`DELETE FROM radusergroup WHERE username = ${existingUser.username} AND (nas_identifier = ${upsertNasId} OR (nas_identifier IS NULL AND ${upsertNasId} IS NULL))`;
+            if (upsertProfile) {
+              await tx.$executeRaw`
+                INSERT INTO radusergroup (username, groupname, priority, nas_identifier)
+                VALUES (${existingUser.username}, ${upsertProfile.groupName}, 1, ${upsertNasId})
+              `;
+            }
+            if (updateData.ipAddress) {
+              await tx.$executeRaw`DELETE FROM radreply WHERE username = ${existingUser.username} AND (nas_identifier = ${upsertNasId} OR (nas_identifier IS NULL AND ${upsertNasId} IS NULL))`;
+              await tx.$executeRaw`
+                INSERT INTO radreply (username, attribute, op, value, nas_identifier)
+                VALUES (${existingUser.username}, 'Framed-IP-Address', ':=', ${updateData.ipAddress}, ${upsertNasId})
+              `;
+            }
+
+            results.updated++;
+            continue;
+          }
+
+          // New user: profile is optional — import without profile if not found
+          if (!rowProfile) {
+            results.errors.push({
+              line: i + 2,
+              username: rowData.username,
+              error: `Profile "${rowProfileName || 'kolom Profile tidak ada dalam file'}" tidak ditemukan — diimpor tanpa paket, assign manual setelah import`,
+            });
+          }
+
+          // Create user
+          const userData: any = {
+            id: randomUUID(),
+            username: rowData.username,
+            password: password,
+            name: rowData.name,
+            phone: rowData.phone,
+            email: rowData.email || null,
+            address: rowData.address || null,
+            ipAddress: rowData.ipaddress || null,
+            profileId: rowProfile ? rowProfile.id : null,
+            routerId: rowRouterId,
+            status: 'active',
+            subscriptionType,
+          };
+
+          // billingDay — only meaningful for POSTPAID
+          if (rowData.billingday && rowData.billingday !== '') {
+            const bd = parseInt(rowData.billingday, 10);
+            if (!isNaN(bd) && bd >= 1 && bd <= 31) {
+              userData.billingDay = bd;
+            }
+          }
+
+          // expiredAt — provided for PREPAID users
+          if (rowData.expiredat && rowData.expiredat !== '') {
+            const d = new Date(rowData.expiredat);
+            if (!isNaN(d.getTime())) {
+              userData.expiredAt = d;
+            }
+          }
+
+          // Coordinates
+          if (rowData.latitude && rowData.longitude && rowData.latitude !== '' && rowData.longitude !== '') {
+            const lat = parseFloat(rowData.latitude);
+            const lng = parseFloat(rowData.longitude);
+            if (!isNaN(lat) && !isNaN(lng)) {
+              userData.latitude = lat;
+              userData.longitude = lng;
+            }
+          }
+
+          // Area lookup by name
+          if (rowData.area && rowData.area.trim() !== '') {
+            const areaRec = await tx.pppoeArea.findFirst({
+              where: { name: { contains: rowData.area.trim() } }
+            });
+            if (areaRec) userData.areaId = areaRec.id;
+          }
+
+          // Optional fields
+          if (rowData.comment && rowData.comment.trim()) {
+            userData.comment = rowData.comment.trim();
+          }
+          if (rowData.macaddress && rowData.macaddress.trim()) {
+            userData.macAddress = rowData.macaddress.trim();
+          }
+          if (rowData.autoisolation !== undefined && rowData.autoisolation !== '') {
+            userData.autoIsolationEnabled = rowData.autoisolation.toLowerCase() !== 'false' && rowData.autoisolation !== '0';
+          }
+
+          // Tanggal Register / registeredAt — maps to createdAt in DB
+          if (rowData.createdat && rowData.createdat !== '') {
+            const d = new Date(rowData.createdat);
+            if (!isNaN(d.getTime())) userData.createdAt = d;
+          }
+
+          // Generate unique referral code for new user
+          userData.referralCode = await generateUniqueReferralCode();
+
+          // Resolve customerId: use from file if provided, otherwise auto-generate unique ID (with prefix)
+          const fileCustomerId = rowData.customerid?.trim() || '';
+          if (fileCustomerId) {
+            // Verify uniqueness of the provided customerId
+            const custIdConflict = await tx.pppoeUser.findUnique({ where: { customerId: fileCustomerId } });
+            userData.customerId = custIdConflict ? generateCustomerId(idPrefix) : fileCustomerId;
+          } else {
+            userData.customerId = generateCustomerId(idPrefix);
+          }
+          // Ensure uniqueness (re-generate on collision)
+          while (await tx.pppoeUser.findUnique({ where: { customerId: userData.customerId } })) {
+            userData.customerId = generateCustomerId(idPrefix);
+          }
+
+          const newUser = await tx.pppoeUser.create({
+            data: userData,
+          });
+
+          // Sync to RADIUS — with nas_identifier for multi-tenant isolation
+          // radcheck (password) always inserted; radusergroup only if profile exists
+          const newNasId = rowRouterId || null;
+          await tx.$executeRaw`DELETE FROM radcheck WHERE username = ${newUser.username} AND (nas_identifier = ${newNasId} OR (nas_identifier IS NULL AND ${newNasId} IS NULL))`;
+          await tx.$executeRaw`
+            INSERT INTO radcheck (username, attribute, op, value, nas_identifier)
+            VALUES (${newUser.username}, 'Cleartext-Password', ':=', ${newUser.password}, ${newNasId})
+          `;
+
+          if (rowProfile) {
+            await tx.$executeRaw`
+              DELETE FROM radusergroup WHERE username = ${newUser.username} AND (nas_identifier = ${newNasId} OR (nas_identifier IS NULL AND ${newNasId} IS NULL))
+            `;
+
+            await tx.$executeRaw`
+              INSERT INTO radusergroup (username, groupname, priority, nas_identifier)
+              VALUES (${newUser.username}, ${rowProfile.groupName}, 1, ${newNasId})
+            `;
+          };
+
+          // Add static IP if provided
+          if (newUser.ipAddress) {
+            await tx.$executeRaw`DELETE FROM radreply WHERE username = ${newUser.username} AND (nas_identifier = ${newNasId} OR (nas_identifier IS NULL AND ${newNasId} IS NULL))`;
+            await tx.$executeRaw`
+              INSERT INTO radreply (username, attribute, op, value, nas_identifier)
+              VALUES (${newUser.username}, 'Framed-IP-Address', ':=', ${newUser.ipAddress}, ${newNasId})
+            `;
+          }
+
+          // Mark as synced
+          await tx.pppoeUser.update({
+            where: { id: newUser.id },
+            data: { syncedToRadius: true },
+          });
+
+          // Create first invoice if requested (none/prorate/full) — only if profile exists
+          const rawFirstInvoice = (rowData.firstinvoice || '').toLowerCase().trim();
+          const doFirstInvoice = rawFirstInvoice === 'prorate' || rawFirstInvoice === 'full';
+          if (doFirstInvoice && newUser.expiredAt && rowProfile) {
+            try {
+              let invoiceAmount = rowProfile.price;
+              if (rawFirstInvoice === 'prorate' && subscriptionType !== 'PREPAID') {
+                const regDate = userData.createdAt ? new Date(userData.createdAt) : new Date();
+                regDate.setHours(0, 0, 0, 0);
+                const year = regDate.getFullYear(); const month = regDate.getMonth(); const currentDay = regDate.getDate();
+                const bd = userData.billingDay ? Math.min(Math.max(Number(userData.billingDay), 1), 28) : 1;
+                let nextBilling: Date;
+                if (currentDay < bd) { nextBilling = new Date(year, month, bd); }
+                else { nextBilling = new Date(year, month + 1, bd); }
+                const msPerDay = 1000 * 60 * 60 * 24;
+                const daysActive = Math.max(1, Math.ceil((nextBilling.getTime() - regDate.getTime()) / msPerDay));
+                const daysInMonth = new Date(year, month + 1, 0).getDate();
+                invoiceAmount = Math.ceil((daysActive / daysInMonth) * rowProfile.price);
+              }
+              const invId = randomUUID();
+              const invNumber = generateInvoiceNumber();
+              await tx.invoice.create({
+                data: {
+                  id: invId,
+                  invoiceNumber: invNumber,
+                  userId: newUser.id,
+                  amount: invoiceAmount,
+                  baseAmount: invoiceAmount,
+                  dueDate: newUser.expiredAt,
+                  status: 'PENDING',
+                  invoiceType: 'MONTHLY',
+                  customerName: newUser.name,
+                  customerPhone: newUser.phone,
+                  customerUsername: newUser.username,
+                  createdAt: new Date(),
+                },
+              });
+            } catch (invoiceErr) {
+              console.error(`Invoice creation failed for row ${i + 2}:`, invoiceErr);
+            }
+          }
+
+          results.success++;
+        } catch (error: any) {
+          console.error(`Error processing row ${i + 2}:`, error);
+          results.failed++;
+          results.errors.push({
+            line: i + 2,
+            username: rowData.username || 'unknown',
+            error: error.message || 'Unknown error',
+          });
+        }
+      }
+
+      return results;
+    }, {
+      timeout: 120000, // 2 minutes for large imports
+    });
+
+    return NextResponse.json({
+      success: true,
+      results,
+    });
+  } catch (error) {
+    console.error('Import error:', error);
+    return NextResponse.json(
+      { error: 'Failed to import users' },
+      { status: 500 }
+    );
+  }
+}

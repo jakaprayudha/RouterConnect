@@ -1,0 +1,456 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { useToast } from '@/components/cyberpunk/CyberToast';
+import { useTranslation } from '@/hooks/useTranslation';
+import { apiAdmin } from '@/lib/api';
+import { Toggle } from '@/components/ui/toggle';
+import { useApiQuery, useQueryClient, buildQueryKey } from '@/lib/api/hooks';
+import {
+  Shield,
+  Server,
+  Wifi,
+  Link as LinkIcon,
+  MessageSquare,
+  Globe,
+  CreditCard,
+  Bell,
+  Mail,
+  Clock,
+  Save,
+  RefreshCw,
+  AlertCircle,
+  CheckCircle,
+  Loader2,
+} from 'lucide-react';
+
+interface IsolationSettings {
+  isolationEnabled: boolean;
+  isolationIpPool: string;
+  isolationServerIp: string;
+  isolationRateLimit: string;
+  isolationRedirectUrl: string;
+  isolationMessage: string;
+  isolationAllowDns: boolean;
+  isolationAllowPayment: boolean;
+  isolationNotifyWhatsapp: boolean;
+  isolationNotifyEmail: boolean;
+  gracePeriodDays: number;
+  baseUrl: string;
+}
+
+export default function IsolationSettingsPage() {
+  const _router = useRouter();
+  const { t } = useTranslation();
+  const { addToast, confirm } = useToast();
+  const queryClient = useQueryClient();
+  const { data: queryData, isLoading: loading } = useApiQuery<{ success: boolean; data: Partial<IsolationSettings> }>('/api/settings/isolation', { staleTime: 300000 });
+  const [saving, setSaving] = useState(false);
+  const [settings, setSettings] = useState<IsolationSettings>({
+    isolationEnabled: true,
+    isolationIpPool: '192.168.200.0/24',
+    isolationServerIp: '',
+    isolationRateLimit: '64k/64k',
+    isolationRedirectUrl: '',
+    isolationMessage: 'Akun Anda telah diisolir karena masa berlangganan habis. Silakan lakukan pembayaran untuk mengaktifkan kembali layanan.',
+    isolationAllowDns: true,
+    isolationAllowPayment: true,
+    isolationNotifyWhatsapp: true,
+    isolationNotifyEmail: false,
+    gracePeriodDays: 0,
+    baseUrl: '',
+  });
+
+  useEffect(() => {
+    if (queryData?.success) {
+      setSettings({
+        isolationEnabled: queryData.data.isolationEnabled ?? true,
+        isolationIpPool: queryData.data.isolationIpPool || '192.168.200.0/24',
+        isolationServerIp: queryData.data.isolationServerIp || '',
+        isolationRateLimit: queryData.data.isolationRateLimit || '64k/64k',
+        isolationRedirectUrl: queryData.data.isolationRedirectUrl || '',
+        isolationMessage: queryData.data.isolationMessage || 'Akun Anda telah diisolir karena masa berlangganan habis. Silakan lakukan pembayaran untuk mengaktifkan kembali layanan.',
+        isolationAllowDns: queryData.data.isolationAllowDns ?? true,
+        isolationAllowPayment: queryData.data.isolationAllowPayment ?? true,
+        isolationNotifyWhatsapp: queryData.data.isolationNotifyWhatsapp ?? true,
+        isolationNotifyEmail: queryData.data.isolationNotifyEmail ?? false,
+        gracePeriodDays: queryData.data.gracePeriodDays || 0,
+        baseUrl: queryData.data.baseUrl || '',
+      });
+    }
+  }, [queryData]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const data = await apiAdmin<{ success: boolean; error?: string }>('/api/settings/isolation', {
+        method: 'PUT',
+        body: JSON.stringify(settings),
+      });
+
+      if (data.success) {
+        addToast({ type: 'success', title: t('common.success'), description: t('isolation.settingsSaved'), duration: 2000 });
+        queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/settings/isolation') });
+      } else {
+        throw new Error(data.error);
+      }
+    } catch (error: unknown) {
+      addToast({ type: 'error', title: t('common.failed'), description: (error instanceof Error ? error.message : String(error)) || t('isolation.failedSave') });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = async () => {
+    if (!await confirm({
+      title: t('isolation.resetToDefault') + '?',
+      message: t('common.confirmReset') || 'Settings will be restored to default values',
+      confirmText: t('common.yes') + ', Reset',
+      cancelText: t('common.cancel'),
+      variant: 'warning',
+    })) return;
+    setSettings({
+      isolationEnabled: true,
+      isolationIpPool: '192.168.200.0/24',
+      isolationServerIp: settings.isolationServerIp,
+      isolationRateLimit: '64k/64k',
+      isolationRedirectUrl: settings.baseUrl ? `${settings.baseUrl}/isolated` : '',
+      isolationMessage: 'Akun Anda telah diisolir karena masa berlangganan habis. Silakan lakukan pembayaran untuk mengaktifkan kembali layanan.',
+      isolationAllowDns: true,
+      isolationAllowPayment: true,
+      isolationNotifyWhatsapp: true,
+      isolationNotifyEmail: false,
+      gracePeriodDays: 0,
+      baseUrl: settings.baseUrl,
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="absolute inset-0 overflow-hidden pointer-events-none"><div className="absolute top-0 left-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-primary/10 rounded-full blur-3xl"></div><div className="absolute top-1/3 right-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-brand-500/20 rounded-full blur-3xl"></div><div className="absolute bottom-0 left-1/2 w-48 h-48 sm:w-96 sm:h-96 bg-pink-500/20 rounded-full blur-3xl"></div><div className="hidden dark:block absolute inset-0 bg-[linear-gradient(rgba(139,92,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(139,92,246,0.03)_1px,transparent_1px)] bg-[size:50px_50px]"></div></div>
+        <Loader2 className="w-12 h-12 animate-spin text-brand-500 dark:text-brand-500 dark:drop- relative z-10" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-background relative">
+      <div className="absolute inset-0 overflow-hidden pointer-events-none"><div className="absolute top-0 left-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-primary/10 rounded-full blur-3xl"></div><div className="absolute top-1/3 right-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-brand-500/20 rounded-full blur-3xl"></div><div className="absolute bottom-0 left-1/2 w-48 h-48 sm:w-96 sm:h-96 bg-pink-500/20 rounded-full blur-3xl"></div><div className="hidden dark:block absolute inset-0 bg-[linear-gradient(rgba(139,92,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(139,92,246,0.03)_1px,transparent_1px)] bg-[size:50px_50px]"></div></div>
+      <div className="relative z-10 space-y-4">
+        {/* Header */}
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold text-foreground dark:text-transparent dark:bg-clip-text dark:bg-gradient-to-r dark:from-brand-500 dark:via-white dark:to-pink-500 dark:drop- mb-1">
+            <Shield className="w-6 h-6 text-brand-500 dark:text-brand-500 dark:drop- inline mr-2" />
+            {t('isolation.title')}
+          </h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-1">
+            {t('isolation.subtitle')}
+          </p>
+        </div>
+
+      {/* Info Banner */}
+      <div className="bg-primary/10 dark:bg-primary/20 border border-primary/30 dark:border-primary/40 rounded-lg p-3">
+        <div className="flex items-start gap-2">
+          <AlertCircle className="w-4 h-4 text-primary dark:text-violet-200 flex-shrink-0 mt-0.5" />
+          <div className="text-xs text-foreground dark:text-violet-100">
+            <p className="font-semibold mb-0.5">{t('isolation.aboutSystem')}</p>
+            <p>
+              {t('isolation.aboutSystemDesc')}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {/* General Settings */}
+        <div className="bg-card rounded-lg border border-border p-4">
+          <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-1.5">
+            <Server className="w-4 h-4" />
+            {t('isolation.generalSettings')}
+          </h2>
+          
+          <div className="space-y-3">
+            {/* Enable Isolation */}
+            <div className="flex items-center justify-between p-3 bg-muted rounded-lg">
+              <div>
+                <label className="text-sm font-medium text-foreground flex items-center gap-1.5">
+                  <Shield className="w-3.5 h-3.5" />
+                  {t('isolation.enableAutoIsolation')}
+                </label>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {t('isolation.autoIsolateDesc')}
+                </p>
+              </div>
+              <Toggle checked={settings.isolationEnabled} onChange={(v) => setSettings({ ...settings, isolationEnabled: v })} />
+            </div>
+
+            {/* Grace Period */}
+            <div>
+              <label className="block text-xs font-medium text-foreground mb-1.5 flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5" />
+                {t('isolation.gracePeriod')}
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  max="30"
+                  value={settings.gracePeriodDays}
+                  onChange={(e) => setSettings({ ...settings, gracePeriodDays: Math.min(30, Math.max(0, parseInt(e.target.value) || 0)) })}
+                  className="w-20 px-2.5 py-1.5 text-sm border border-border rounded-lg focus:ring-2 focus:ring-primary dark:bg-input dark:text-foreground"
+                />
+                <span className="text-xs text-muted-foreground dark:text-muted-foreground">{t('isolation.days')}</span>
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-0.5">
+                {t('isolation.gracePeriodHint')}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Network Settings */}
+        <div className="bg-card rounded-lg border border-border p-4">
+          <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-1.5">
+            <Wifi className="w-4 h-4" />
+            {t('isolation.networkSettings')}
+          </h2>
+          
+          <div className="space-y-3">
+            {/* IP Pool */}
+            <div>
+              <label className="block text-xs font-medium text-foreground mb-1.5 flex items-center gap-1.5">
+                <Server className="w-3.5 h-3.5" />
+                {t('isolation.ipPoolLabel')}
+              </label>
+              <input
+                type="text"
+                value={settings.isolationIpPool}
+                onChange={(e) => setSettings({ ...settings, isolationIpPool: e.target.value })}
+                placeholder="192.168.200.0/24"
+                className="w-full px-3 py-1.5 text-sm border border-border rounded-lg focus:ring-2 focus:ring-primary dark:bg-input dark:text-foreground"
+              />
+              <p className="text-[10px] text-muted-foreground mt-0.5">
+                {t('isolation.ipPoolHint')}
+              </p>
+            </div>
+
+            {/* Server IP for MikroTik NAT */}
+            <div>
+              <label className="block text-xs font-medium text-foreground mb-1.5 flex items-center gap-1.5">
+                <Globe className="w-3.5 h-3.5" />
+                {t('isolation.serverIpLabel')}
+              </label>
+              <input
+                type="text"
+                value={settings.isolationServerIp}
+                onChange={(e) => setSettings({ ...settings, isolationServerIp: e.target.value })}
+                placeholder="103.151.140.110"
+                className="w-full px-3 py-1.5 text-sm border border-border rounded-lg focus:ring-2 focus:ring-primary dark:bg-input dark:text-foreground font-mono"
+              />
+              <p className="text-[10px] text-muted-foreground mt-0.5">
+                {t('isolation.serverIpHint')}
+              </p>
+            </div>
+
+            {/* Rate Limit */}
+            <div>
+              <label className="block text-xs font-medium text-foreground mb-1.5 flex items-center gap-1.5">
+                <Wifi className="w-3.5 h-3.5" />
+                {t('isolation.rateLimit')}
+              </label>
+              <input
+                type="text"
+                value={settings.isolationRateLimit}
+                onChange={(e) => setSettings({ ...settings, isolationRateLimit: e.target.value })}
+                placeholder="64k/64k"
+                className="w-full px-3 py-1.5 text-sm border border-border rounded-lg focus:ring-2 focus:ring-primary dark:bg-input dark:text-foreground"
+              />
+              <p className="text-[10px] text-muted-foreground mt-0.5">
+                {t('isolation.rateLimitHint')}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Access Control */}
+        <div className="bg-card rounded-lg border border-border p-4">
+          <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-1.5">
+            <Globe className="w-4 h-4" />
+            {t('isolation.accessControl')}
+          </h2>
+          
+          <div className="space-y-2">
+            {/* Allow DNS */}
+            <div className="flex items-center justify-between p-2.5 bg-muted rounded-lg">
+              <div>
+                <label className="text-xs font-medium text-foreground">
+                  {t('isolation.allowDns')}
+                </label>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  {t('isolation.allowDnsDesc')}
+                </p>
+              </div>
+              <Toggle checked={settings.isolationAllowDns} onChange={(v) => setSettings({ ...settings, isolationAllowDns: v })} />
+            </div>
+
+            {/* Allow Payment Page */}
+            <div className="flex items-center justify-between p-2.5 bg-muted rounded-lg">
+              <div>
+                <label className="text-xs font-medium text-foreground flex items-center gap-1.5">
+                  <CreditCard className="w-3.5 h-3.5" />
+                  {t('isolation.allowPayment')}
+                </label>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  {t('isolation.allowPaymentDesc')}
+                </p>
+              </div>
+              <Toggle checked={settings.isolationAllowPayment} onChange={(v) => setSettings({ ...settings, isolationAllowPayment: v })} />
+            </div>
+          </div>
+        </div>
+
+        {/* Landing Page Settings */}
+        <div className="bg-card rounded-lg border border-border p-4">
+          <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-1.5">
+            <LinkIcon className="w-4 h-4" />
+            {t('isolation.landingPage')}
+          </h2>
+          
+          <div className="space-y-3">
+            {/* Redirect URL */}
+            <div>
+              <label className="block text-xs font-medium text-foreground mb-1.5">
+                {t('isolation.redirectUrl')}
+              </label>
+              <input
+                type="url"
+                value={settings.isolationRedirectUrl}
+                onChange={(e) => setSettings({ ...settings, isolationRedirectUrl: e.target.value })}
+                placeholder={settings.baseUrl ? `${settings.baseUrl.replace(/\/+$/, '')}/isolated` : 'https://radius.salfa.my.id/isolated'}
+                className="w-full px-3 py-1.5 text-sm border border-border rounded-lg focus:ring-2 focus:ring-primary dark:bg-input dark:text-foreground"
+              />
+              <p className="text-[10px] text-muted-foreground mt-0.5">
+                {t('isolation.redirectUrlHint')}
+              </p>
+            </div>
+
+            {/* Custom Message */}
+            <div>
+              <label className="block text-xs font-medium text-foreground mb-1.5 flex items-center gap-1.5">
+                <MessageSquare className="w-3.5 h-3.5" />
+                {t('isolation.customMessage')}
+              </label>
+              <textarea
+                value={settings.isolationMessage}
+                onChange={(e) => setSettings({ ...settings, isolationMessage: e.target.value })}
+                rows={3}
+                className="w-full px-3 py-1.5 text-sm border border-border rounded-lg focus:ring-2 focus:ring-primary dark:bg-input dark:text-foreground"
+                placeholder={t('isolation.customMessagePlaceholder')}
+              />
+              <p className="text-[10px] text-muted-foreground mt-0.5">
+                {t('isolation.customMessageHint')}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Notification Settings */}
+        <div className="bg-card rounded-lg border border-border p-4">
+          <h2 className="text-sm font-semibold text-foreground mb-3 flex items-center gap-1.5">
+            <Bell className="w-4 h-4" />
+            {t('isolation.notifications')}
+          </h2>
+          
+          <div className="space-y-2">
+            {/* WhatsApp Notification */}
+            <div className="flex items-center justify-between p-3 bg-muted rounded-lg">
+              <div>
+                <label className="font-medium text-foreground text-xs flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4" />
+                  {t('isolation.whatsappNotification')}
+                </label>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  {t('isolation.whatsappNotificationDesc')}
+                </p>
+              </div>
+              <Toggle checked={settings.isolationNotifyWhatsapp} onChange={(v) => setSettings({ ...settings, isolationNotifyWhatsapp: v })} />
+            </div>
+
+            {/* Email Notification */}
+            <div className="flex items-center justify-between p-3 bg-muted rounded-lg">
+              <div>
+                <label className="font-medium text-foreground text-xs flex items-center gap-2">
+                  <Mail className="w-4 h-4" />
+                  {t('isolation.emailNotification')}
+                </label>
+                <p className="text-[10px] text-muted-foreground mt-0.5">
+                  {t('isolation.emailNotificationDesc')}
+                </p>
+              </div>
+              <Toggle checked={settings.isolationNotifyEmail} onChange={(v) => setSettings({ ...settings, isolationNotifyEmail: v })} />
+            </div>
+          </div>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex flex-col sm:flex-row gap-3">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex-1 flex items-center justify-center gap-2 bg-primary hover:bg-primary/90 text-primary-foreground text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:opacity-50"
+          >
+            {saving ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin" />
+                {t('isolation.saving')}
+              </>
+            ) : (
+              <>
+                <Save className="w-4 h-4" />
+                {t('isolation.saveSettings')}
+              </>
+            )}
+          </button>
+          
+          <button
+            onClick={handleReset}
+            disabled={saving}
+            className="flex-1 sm:flex-initial flex items-center justify-center gap-2 bg-muted hover:bg-muted/80 text-foreground font-medium py-2 px-4 rounded-lg transition-colors"
+          >
+            <RefreshCw className="w-4 h-4" />
+            {t('isolation.resetToDefault')}
+          </button>
+        </div>
+
+        {/* Configuration Guide */}
+        <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg p-4">
+          <h3 className="font-semibold text-amber-800 dark:text-amber-300 mb-2 flex items-center gap-2">
+            <CheckCircle className="w-5 h-5" />
+            {t('isolation.mikrotikConfigRequired')}
+          </h3>
+          <div className="text-sm text-amber-700 dark:text-amber-400 space-y-2">
+            <p>{t('isolation.mikrotikConfigDesc')}</p>
+            <ol className="list-decimal list-inside space-y-1 ml-2">
+              <li>{t('isolation.mikrotikStep1')} <code className="bg-amber-100 dark:bg-amber-900 px-1 rounded">isolir</code></li>
+              <li>{t('isolation.mikrotikStep2')} <code className="bg-amber-100 dark:bg-amber-900 px-1 rounded">{settings.isolationIpPool}</code></li>
+              <li>{t('isolation.mikrotikStep3')} <code className="bg-amber-100 dark:bg-amber-900 px-1 rounded">{settings.isolationRateLimit}</code></li>
+              <li>{t('isolation.mikrotikStep4')}</li>
+            </ol>
+            <p className="mt-2">
+              <a 
+                href="/docs/isolation" 
+                target="_blank"
+                className="text-amber-800 dark:text-amber-300 underline hover:text-amber-900"
+              >
+                {t('isolation.viewFullDocs')}
+              </a>
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+    </div>
+  );
+}

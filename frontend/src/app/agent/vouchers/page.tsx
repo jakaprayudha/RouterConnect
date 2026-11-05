@@ -1,0 +1,498 @@
+'use client';
+import { showSuccess, showError } from '@/lib/sweetalert';
+import { useTranslation } from '@/hooks/useTranslation';
+import { isExpiredWIB, formatWIB } from '@/lib/timezone';
+import { apiAgent } from '@/lib/api';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { Search, Filter, MessageCircle } from 'lucide-react';
+import { Pagination } from '@/components/Pagination';
+
+interface AgentData {
+  id: string;
+  name: string;
+  phone: string;
+}
+
+interface Profile {
+  id: string;
+  name: string;
+}
+
+interface Voucher {
+  id: string;
+  code: string;
+  batchCode: string;
+  status: string;
+  profileName: string;
+  sellingPrice: number;
+  resellerFee: number;
+  routerName: string | null;
+  firstLoginAt: string | null;
+  expiresAt: string | null;
+  createdAt: string;
+}
+
+export default function AgentVouchersPage() {
+  const router = useRouter();
+  const { t } = useTranslation();
+  const [loading, setLoading] = useState(true);
+  const [_agent, setAgent] = useState<AgentData | null>(null);
+  const [vouchers, setVouchers] = useState<Voucher[]>([]);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [selectedVouchers, setSelectedVouchers] = useState<string[]>([]);
+  
+  // Filter & Pagination
+  const [filterStatus, setFilterStatus] = useState('');
+  const [filterProfile, setFilterProfile] = useState('');
+  const [searchCode, setSearchCode] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [perPage, setPerPage] = useState(20);
+  const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0, totalPages: 0 });
+
+  // WhatsApp functionality
+  const [showWhatsAppDialog, setShowWhatsAppDialog] = useState(false);
+  const [whatsappPhone, setWhatsappPhone] = useState('');
+  const [sendingWhatsApp, setSendingWhatsApp] = useState(false);
+
+  useEffect(() => {
+    const agentDataStr = localStorage.getItem('agentData');
+    if (!agentDataStr) {
+      router.push('/agent');
+      return;
+    }
+
+    const agentData = JSON.parse(agentDataStr);
+    setAgent(agentData);
+    loadVouchers();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router]);
+
+  // API returns TRUE UTC ISO strings (with Z suffix). formatWIB converts
+  // TRUE UTC to company timezone for display.
+  const formatLocal = (date: Date | string | null, formatStr: string) => {
+    if (!date) return '-';
+    try {
+      return formatWIB(date, formatStr);
+    } catch {
+      return '-';
+    }
+  };
+
+  const loadVouchers = async (page = 1, status = '', profileId = '', search = '', limit = 20) => {
+    try {
+      const token = localStorage.getItem('agentToken');
+      if (!token) { router.push('/agent'); return; }
+      const params = new URLSearchParams({
+        page: page.toString(),
+        limit: limit.toString(),
+      });
+      if (status) params.append('status', status);
+      if (profileId) params.append('profileId', profileId);
+      if (search) params.append('search', search);
+
+      const data = await apiAgent<{
+        vouchers: Voucher[];
+        profiles: Profile[];
+        pagination: typeof pagination;
+      }>(`/api/agent/dashboard?${params.toString()}`);
+
+      setVouchers(data.vouchers || []);
+      setProfiles(data.profiles || []);
+      setPagination(data.pagination || { page: 1, limit: 20, total: 0, totalPages: 0 });
+    } catch (error) {
+      console.error('Load vouchers error:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFilter = () => {
+    setCurrentPage(1);
+    loadVouchers(1, filterStatus, filterProfile, searchCode, perPage);
+  };
+
+  const handlePageChange = (newPage: number) => {
+    setCurrentPage(newPage);
+    loadVouchers(newPage, filterStatus, filterProfile, searchCode, perPage);
+  };
+
+  const handlePerPageChange = (newPerPage: number) => {
+    setPerPage(newPerPage);
+    setCurrentPage(1);
+    loadVouchers(1, filterStatus, filterProfile, searchCode, newPerPage);
+  };
+
+  const handleClearFilter = () => {
+    setFilterStatus('');
+    setFilterProfile('');
+    setSearchCode('');
+    setCurrentPage(1);
+    loadVouchers(1, '', '', '', perPage);
+  };
+
+  const handleSelectVoucher = (voucherId: string) => {
+    setSelectedVouchers(prev =>
+      prev.includes(voucherId)
+        ? prev.filter(id => id !== voucherId)
+        : [...prev, voucherId]
+    );
+  };
+
+  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      const waitingVouchers = vouchers.filter(v => v.status === 'WAITING').map(v => v.id);
+      setSelectedVouchers(waitingVouchers);
+    } else {
+      setSelectedVouchers([]);
+    }
+  };
+
+  const handleSendWhatsApp = () => {
+    if (selectedVouchers.length === 0) {
+      showError('Pilih voucher terlebih dahulu');
+      return;
+    }
+    setShowWhatsAppDialog(true);
+  };
+
+  const handleWhatsAppSubmit = async () => {
+    if (!whatsappPhone) {
+      await showError('Masukkan nomor WhatsApp');
+      return;
+    }
+
+    setSendingWhatsApp(true);
+    try {
+      const selectedVoucherData = vouchers.filter(v => selectedVouchers.includes(v.id));
+      let message = `*Voucher Internet Anda*\n\n`;
+      
+      selectedVoucherData.forEach((v, idx) => {
+        message += `${idx + 1}. Kode: *${v.code}*\n`;
+        message += `   Paket: ${v.profileName}\n`;
+        message += `   Status: ${v.status}\n\n`;
+      });
+
+      message += `Total: ${selectedVoucherData.length} voucher\n\n`;
+      message += `Terima kasih!`;
+
+      const encodedMessage = encodeURIComponent(message);
+      const waUrl = `https://wa.me/${whatsappPhone}?text=${encodedMessage}`;
+      
+      window.open(waUrl, '_blank');
+      
+      setShowWhatsAppDialog(false);
+      setWhatsappPhone('');
+      setSelectedVouchers([]);
+      await showSuccess(t('agent.portal.whatsappOpened'));
+    } catch (_error) {
+      await showError(t('agent.portal.whatsappSentError'));
+    } finally {
+      setSendingWhatsApp(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="p-4 lg:p-6">
+        <div className="min-h-[50vh] flex items-center justify-center">
+          <div className="text-center">
+            <div className="w-10 h-10 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+            <p className="text-muted-foreground">Loading...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 lg:p-6">
+      {/* Vouchers List */}
+      <div className="bg-card rounded-2xl border border-border overflow-hidden shadow-sm">
+        <div className="px-5 py-4 border-b border-border">
+          <div className="flex items-center justify-between mb-3 min-w-0">
+            <div>
+              <h2 className="text-base font-bold text-foreground">{t('agent.portal.voucherList')}</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">{t('agent.portal.total')}: {pagination.total} {t('agent.portal.voucher').toLowerCase()}</p>
+            </div>
+            {selectedVouchers.length > 0 && (
+              <button
+                onClick={handleSendWhatsApp}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-xs transition font-bold shadow-sm"
+              >
+                <MessageCircle className="h-3.5 w-3.5" />
+                {t('agent.portal.sendWhatsApp')} ({selectedVouchers.length})
+              </button>
+            )}
+          </div>
+
+          {/* Filter Controls */}
+          <div className="flex flex-wrap gap-2 items-center">
+            <div className="relative flex-1 min-w-[150px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/70" />
+              <input
+                type="text"
+                placeholder={t('agent.portal.searchVoucher') + '...'}
+                value={searchCode}
+                onChange={(e) => setSearchCode(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleFilter()}
+                className="w-full pl-9 pr-3 py-2 text-xs bg-input border border-border rounded-lg text-foreground focus:border-cyan-500 dark:focus:border-cyan-400 outline-none"
+              />
+            </div>
+            <select
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value)}
+              className="px-3 py-2 text-xs bg-input border border-border rounded-lg text-foreground min-w-[100px] outline-none"
+            >
+              <option value="">{t('agent.portal.allStatus')}</option>
+              <option value="WAITING">{t('agent.portal.waiting')}</option>
+              <option value="ACTIVE">{t('agent.portal.active')}</option>
+              <option value="EXPIRED">{t('agent.portal.expired')}</option>
+            </select>
+            <select
+              value={filterProfile}
+              onChange={(e) => setFilterProfile(e.target.value)}
+              className="px-3 py-2 text-xs bg-input border border-border rounded-lg text-foreground min-w-[120px] outline-none"
+            >
+              <option value="">{t('agent.portal.allPackages')}</option>
+              {profiles.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            <button
+              onClick={handleFilter}
+              className="flex items-center gap-1 px-3 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-lg text-xs transition font-bold"
+            >
+              <Filter className="h-3 w-3" />
+              {t('agent.portal.filter')}
+            </button>
+            {(filterStatus || filterProfile || searchCode) && (
+              <button
+                onClick={handleClearFilter}
+                className="px-3 py-2 text-xs text-muted-foreground hover:bg-accent rounded-lg transition"
+              >
+                {t('agent.portal.reset')}
+              </button>
+            )}
+            <div className="flex items-center gap-1 ml-auto">
+              <span className="text-xs text-muted-foreground">Per halaman:</span>
+              <select
+                value={perPage}
+                onChange={(e) => handlePerPageChange(parseInt(e.target.value))}
+                className="px-2 py-2 text-xs bg-input border border-border rounded-lg text-foreground outline-none"
+              >
+                <option value={20}>20</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+                <option value={250}>250</option>
+                <option value={500}>500</option>
+                <option value={1000}>1000</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile Card View */}
+        <div className="block md:hidden divide-y divide-slate-100 dark:divide-slate-700">
+          {vouchers.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+              {t('agent.portal.noVouchers')}
+            </div>
+          ) : (
+            vouchers.map((voucher) => (
+              <div key={voucher.id} className="p-3 space-y-2 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
+                <div className="flex items-start justify-between gap-2 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {voucher.status === 'WAITING' && (
+                      <input
+                        type="checkbox"
+                        checked={selectedVouchers.includes(voucher.id)}
+                        onChange={() => handleSelectVoucher(voucher.id)}
+                        className="rounded border-border flex-shrink-0 mt-0.5"
+                      />
+                    )}
+                    <div className="min-w-0">
+                      <p className="font-mono font-bold text-sm text-foreground">{voucher.code}</p>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-500">Batch: {voucher.batchCode || '-'}</p>
+                    </div>
+                  </div>
+                  <span className={`inline-flex items-center px-2 py-0.5 rounded-lg text-[10px] font-bold flex-shrink-0 ${
+                    voucher.status === 'ACTIVE'
+                      ? 'bg-emerald-100 text-emerald-700 border border-emerald-300 dark:bg-emerald-500/20 dark:text-emerald-400 dark:border-emerald-500/40'
+                      : voucher.status === 'EXPIRED'
+                        ? 'bg-red-100 text-red-600 border border-red-300 dark:bg-red-500/20 dark:text-red-400 dark:border-red-500/40'
+                        : voucher.status === 'SOLD'
+                          ? 'bg-cyan-100 text-cyan-700 border border-cyan-300 dark:bg-cyan-500/20 dark:text-cyan-400 dark:border-cyan-500/40'
+                          : 'bg-pink-100 text-pink-700 border border-pink-300 dark:bg-pink-500/20 dark:text-pink-400 dark:border-pink-500/40'
+                  }`}>
+                    {voucher.status}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground/70">Paket:</span>
+                    <span className="text-slate-700 dark:text-white font-medium truncate ml-1">{voucher.profileName}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground/70">Router:</span>
+                    <span className="text-muted-foreground truncate ml-1">{voucher.routerName || '-'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground/70">First Used:</span>
+                    <span className="text-muted-foreground">{voucher.firstLoginAt ? formatLocal(voucher.firstLoginAt, 'dd MMM HH:mm') : '-'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground/70">Expired:</span>
+                    <span className={voucher.expiresAt && isExpiredWIB(voucher.expiresAt) ? 'text-red-500 dark:text-red-400' : 'text-muted-foreground'}>
+                      {voucher.expiresAt ? formatLocal(voucher.expiresAt, 'dd MMM HH:mm') : '-'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Desktop Table */}
+        <div className="overflow-x-auto hidden md:block">
+          <table className="w-full">
+            <thead className="bg-input/50">
+              <tr>
+                <th className="px-4 py-3 w-10">
+                  <input
+                    type="checkbox"
+                    checked={selectedVouchers.length > 0 && selectedVouchers.length === vouchers.filter(v => v.status === 'WAITING').length}
+                    onChange={handleSelectAll}
+                    className="rounded border-border"
+                  />
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.voucherCode')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.batch')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.package')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.router')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.status')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.firstUsed')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.expired')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.created')}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {vouchers.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                    {t('agent.portal.noVouchers')}
+                  </td>
+                </tr>
+              ) : (
+                vouchers.map((voucher) => (
+                  <tr key={voucher.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
+                    <td className="px-4 py-3">
+                      {voucher.status === 'WAITING' && (
+                        <input
+                          type="checkbox"
+                          checked={selectedVouchers.includes(voucher.id)}
+                          onChange={() => handleSelectVoucher(voucher.id)}
+                          className="rounded border-border"
+                        />
+                      )}
+                    </td>
+                    <td className="px-4 py-3 font-mono font-bold text-sm text-foreground">{voucher.code}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{voucher.batchCode || '-'}</td>
+                    <td className="px-4 py-3 text-xs text-slate-700 dark:text-white">{voucher.profileName}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{voucher.routerName || '-'}</td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold ${
+                        voucher.status === 'ACTIVE'
+                          ? 'bg-emerald-100 text-emerald-700 border border-emerald-300 dark:bg-emerald-500/20 dark:text-emerald-400 dark:border-emerald-500/40'
+                          : voucher.status === 'EXPIRED'
+                            ? 'bg-red-100 text-red-600 border border-red-300 dark:bg-red-500/20 dark:text-red-400 dark:border-red-500/40'
+                            : voucher.status === 'SOLD'
+                              ? 'bg-cyan-100 text-cyan-700 border border-cyan-300 dark:bg-cyan-500/20 dark:text-cyan-400 dark:border-cyan-500/40'
+                              : 'bg-pink-100 text-pink-700 border border-pink-300 dark:bg-pink-500/20 dark:text-pink-400 dark:border-pink-500/40'
+                      }`}>
+                        {voucher.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">
+                      {voucher.firstLoginAt ? formatLocal(voucher.firstLoginAt, 'dd MMM yyyy HH:mm') : '-'}
+                    </td>
+                    <td className="px-4 py-3 text-xs">
+                      {voucher.expiresAt ? (
+                        <span className={isExpiredWIB(voucher.expiresAt) ? 'text-red-500 dark:text-red-400' : 'text-muted-foreground'}>
+                          {formatLocal(voucher.expiresAt, 'dd MMM yyyy HH:mm')}
+                        </span>
+                      ) : '-'}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">
+                      {voucher.createdAt ? formatLocal(voucher.createdAt, 'dd MMM yyyy HH:mm') : '-'}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pagination - always visible */}
+        <div className="px-5 py-3 border-t border-border">
+          <Pagination
+            page={currentPage}
+            totalPages={pagination.totalPages}
+            total={pagination.total}
+            limit={pagination.limit}
+            onPageChange={handlePageChange}
+            alwaysVisible
+          />
+        </div>
+      </div>
+
+      {/* WhatsApp Dialog */}
+      {showWhatsAppDialog && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-card border border-border rounded-2xl shadow-xl max-w-sm w-full">
+            <div className="px-5 py-4 border-b border-border">
+              <h2 className="text-base font-bold text-foreground flex items-center gap-2">
+                <MessageCircle className="h-5 w-5 text-emerald-500" />
+                Kirim Voucher via WhatsApp
+              </h2>
+              <p className="text-xs text-muted-foreground mt-0.5">Kirim {selectedVouchers.length} voucher ke customer</p>
+            </div>
+
+            <div className="p-5">
+              <label className="block text-xs font-medium text-muted-foreground mb-1.5">Nomor WhatsApp</label>
+              <input
+                type="tel"
+                placeholder="628123456789"
+                value={whatsappPhone}
+                onChange={(e) => setWhatsappPhone(e.target.value)}
+                className="w-full px-3 py-2.5 text-sm bg-input border border-border rounded-xl text-foreground focus:border-cyan-500 dark:focus:border-cyan-400 outline-none"
+              />
+              <p className="text-xs text-muted-foreground/70 mt-1">Masukkan nomor dengan kode negara</p>
+            </div>
+
+            <div className="px-5 py-4 border-t border-border flex gap-2 justify-end">
+              <button
+                onClick={() => { setShowWhatsAppDialog(false); setWhatsappPhone(''); }}
+                className="px-4 py-2 text-sm text-muted-foreground hover:bg-accent rounded-xl transition border border-border"
+              >
+                Batal
+              </button>
+              <button
+                onClick={handleWhatsAppSubmit}
+                disabled={sendingWhatsApp || !whatsappPhone}
+                className="px-4 py-2 text-sm bg-emerald-500 hover:bg-emerald-600 text-white rounded-xl transition disabled:opacity-50 flex items-center gap-1.5 font-bold"
+              >
+                {sendingWhatsApp ? (
+                  <><div className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>Mengirim...</>
+                ) : (
+                  <><MessageCircle className="h-3.5 w-3.5" />Kirim WhatsApp</>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+

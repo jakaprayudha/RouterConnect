@@ -1,0 +1,371 @@
+'use client';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { nowWIB, formatWIB } from '@/lib/timezone';
+import { useTranslation } from '@/hooks/useTranslation';
+import { apiAgent } from '@/lib/api';
+import {
+  Wifi,
+  WifiOff,
+  Users,
+  Activity,
+  RefreshCcw,
+  Search,
+} from 'lucide-react';
+
+interface AgentData {
+  id: string;
+  name: string;
+}
+
+interface Session {
+  id: string;
+  username: string;
+  nasIpAddress: string;
+  nasPortId: string;
+  framedIpAddress: string;
+  callingStationId: string;
+  calledStationId: string;
+  acctSessionId: string;
+  acctStartTime: string;
+  acctInputOctets: number;
+  acctOutputOctets: number;
+  acctSessionTime: number;
+  expiresAt?: string | null;
+  profileName?: string;
+  routerName?: string;
+}
+
+export default function AgentSessionsPage() {
+  const router = useRouter();
+  const { t } = useTranslation();
+  const [loading, setLoading] = useState(true);
+  const [_agent, setAgent] = useState<AgentData | null>(null);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filteredSessions, setFilteredSessions] = useState<Session[]>([]);
+  const [now, setNow] = useState(() => nowWIB().getTime());
+  const [stats, setStats] = useState({
+    total: 0,
+    totalUpload: 0,
+    totalDownload: 0,
+  });
+
+  // 1-second ticker for live duration counter
+  useEffect(() => {
+    const ticker = setInterval(() => setNow(nowWIB().getTime()), 1000);
+    return () => clearInterval(ticker);
+  }, []);
+
+  useEffect(() => {
+    const agentDataStr = localStorage.getItem('agentData');
+    if (!agentDataStr) {
+      router.push('/agent');
+      return;
+    }
+
+    const agentData = JSON.parse(agentDataStr);
+    setAgent(agentData);
+    loadSessions();
+
+    // Auto-refresh setiap 30 detik agar trafik upload/download hotspot ter-update
+    // (MikroTik mengirim Interim-Update setiap 60 detik)
+    const interval = setInterval(() => {
+      loadSessions(true);
+    }, 30000);
+
+    // Refresh immediately when tab becomes visible (browser throttles background timers)
+    const onVisible = () => {
+      if (!document.hidden) loadSessions(true);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [router]);
+
+  useEffect(() => {
+    if (searchQuery) {
+      const filtered = sessions.filter(s => 
+        s.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        s.framedIpAddress?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        s.callingStationId?.toLowerCase().includes(searchQuery.toLowerCase())
+      );
+      setFilteredSessions(filtered);
+    } else {
+      setFilteredSessions(sessions);
+    }
+  }, [searchQuery, sessions]);
+
+  const loadSessions = async (silent = false) => {
+    if (!silent) setLoading(true);
+    try {
+      const token = localStorage.getItem('agentToken');
+      if (!token) { router.push('/agent'); return; }
+      const data = await apiAgent<{ sessions: Session[] }>('/api/agent/sessions', {
+        signal: AbortSignal.timeout(15000),
+      });
+
+      setSessions(data.sessions || []);
+      setStats({
+        total: data.sessions?.length || 0,
+        totalUpload: data.sessions?.reduce((sum: number, s: Session) => sum + (s.acctInputOctets || 0), 0) || 0,
+        totalDownload: data.sessions?.reduce((sum: number, s: Session) => sum + (s.acctOutputOctets || 0), 0) || 0,
+      });
+    } catch (error) {
+      console.error('Load sessions error:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const formatBytes = (bytes: number) => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  };
+
+  const formatDuration = (seconds: number) => {
+    if (!seconds || seconds < 0) return '0s';
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+    if (hours > 0) return `${hours}h ${minutes}m ${secs}s`;
+    if (minutes > 0) return `${minutes}m ${secs}s`;
+    return `${secs}s`;
+  };
+
+  const formatLocal = (date: Date | string | null, formatStr: string) => {
+    if (!date) return '-';
+    try {
+      return formatWIB(date, formatStr);
+    } catch {
+      return '-';
+    }
+  };
+
+  const liveDuration = (startTimeStr: string | null) => {
+    if (!startTimeStr) return 0;
+    const startMs = new Date(startTimeStr).getTime();
+    return Math.max(0, Math.floor((now - startMs) / 1000));
+  };
+
+  // Countdown from expiresAt (remaining time)
+  const liveCountdown = (expiresAtStr: string | null | undefined) => {
+    if (!expiresAtStr) return 0;
+    return Math.max(0, Math.floor((new Date(expiresAtStr).getTime() - now) / 1000));
+  };
+
+  if (loading) {
+    return (
+      <div className="p-4 lg:p-6">
+        <div className="min-h-[50vh] flex items-center justify-center">
+          <div className="text-center">
+            <div className="w-10 h-10 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto mb-3"></div>
+            <p className="text-muted-foreground">{t('agent.portal.loadingSessions')}...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-4 lg:p-6 space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl lg:text-2xl font-bold text-foreground">{t('agent.portal.onlineSessions')}</h1>
+          <p className="text-xs lg:text-sm text-muted-foreground mt-1">{t('agent.portal.activeVouchers')}</p>
+        </div>
+        <button
+          onClick={() => loadSessions(false)}
+          className="flex items-center gap-2 px-4 py-2 bg-muted/50 hover:bg-slate-200 dark:hover:bg-slate-700 border border-border rounded-xl text-muted-foreground transition"
+        >
+          <RefreshCcw className="h-4 w-4" />
+          <span className="hidden lg:inline">{t('agent.portal.refresh')}</span>
+        </button>
+      </div>
+
+      {/* Statistics */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-card rounded-xl border border-cyan-200 dark:border-cyan-500/20 p-4 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-cyan-50 dark:bg-cyan-500/20 rounded-lg flex items-center justify-center">
+              <Users className="h-6 w-6 text-cyan-600 dark:text-cyan-400" />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">{t('agent.portal.totalSessions')}</p>
+              <p className="text-2xl font-bold text-foreground">{stats.total}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-card rounded-xl border border-emerald-200 dark:border-emerald-500/20 p-4 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-500/20 rounded-lg flex items-center justify-center">
+              <Activity className="h-6 w-6 text-emerald-600 dark:text-emerald-400" />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">{t('agent.portal.totalUpload')}</p>
+              <p className="text-2xl font-bold text-foreground">{formatBytes(stats.totalUpload)}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-card rounded-xl border border-pink-200 dark:border-pink-500/20 p-4 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-pink-50 dark:bg-pink-500/20 rounded-lg flex items-center justify-center">
+              <Activity className="h-6 w-6 text-pink-600 dark:text-pink-400" />
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">{t('agent.portal.totalDownload')}</p>
+              <p className="text-2xl font-bold text-foreground">{formatBytes(stats.totalDownload)}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Search */}
+      <div className="bg-card rounded-xl border border-border p-4">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/70" />
+          <input
+            type="text"
+            placeholder={t('agent.portal.searchSession') + '...'}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-10 pr-4 py-2.5 text-sm bg-input border border-border rounded-lg text-foreground focus:border-cyan-500 dark:focus:border-cyan-400 outline-none"
+          />
+        </div>
+      </div>
+
+      {/* Sessions List */}
+      <div className="bg-card rounded-2xl border border-border overflow-hidden shadow-sm">
+        <div className="px-5 py-4 border-b border-border">
+          <h2 className="text-base font-bold text-foreground flex items-center gap-2">
+            <Wifi className="h-5 w-5 text-emerald-500 dark:text-emerald-400" />
+            {t('agent.portal.activeSessions')} ({filteredSessions.length})
+          </h2>
+        </div>
+
+        {/* Mobile Card View */}
+        <div className="block md:hidden divide-y divide-slate-100 dark:divide-slate-700">
+          {filteredSessions.length === 0 ? (
+            <div className="px-4 py-10 text-center">
+              <WifiOff className="h-10 w-10 text-slate-300 dark:text-slate-600 mx-auto mb-2" />
+              <p className="text-sm text-muted-foreground">
+                {searchQuery ? t('agent.portal.noSearchResults') : t('agent.portal.noActiveSessions')}
+              </p>
+            </div>
+          ) : (
+            filteredSessions.map((session) => (
+              <div key={session.id} className="p-3 space-y-2 hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
+                <div className="flex items-start justify-between gap-2 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="w-2 h-2 bg-green-400 rounded-full animate-pulse flex-shrink-0 mt-1" />
+                    <div className="min-w-0">
+                      <p className="font-mono font-bold text-sm text-foreground truncate">{session.username}</p>
+                      <p className="text-[10px] text-muted-foreground">{session.profileName || '-'} · {session.routerName || '-'}</p>
+                    </div>
+                  </div>
+                  <span className="text-xs font-semibold text-slate-600 dark:text-white whitespace-nowrap">
+                    {session.expiresAt
+                      ? formatDuration(liveCountdown(session.expiresAt)) + ' left'
+                      : formatDuration(liveDuration(session.acctStartTime))}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground/70">IP:</span>
+                    <span className="font-mono text-slate-700 dark:text-white">{session.framedIpAddress || '-'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground/70">MAC:</span>
+                    <span className="font-mono text-muted-foreground truncate ml-1">{session.callingStationId || '-'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground/70">↑ UL:</span>
+                    <span className="text-emerald-600 dark:text-emerald-400 font-medium">{formatBytes(session.acctInputOctets || 0)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground/70">↓ DL:</span>
+                    <span className="text-pink-600 dark:text-pink-400 font-medium">{formatBytes(session.acctOutputOctets || 0)}</span>
+                  </div>
+                  <div className="col-span-2 flex justify-between">
+                    <span className="text-muted-foreground/70">Start:</span>
+                    <span className="text-muted-foreground">{session.acctStartTime ? formatLocal(session.acctStartTime, 'dd MMM HH:mm') : '-'}</span>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Desktop Table */}
+        <div className="overflow-x-auto hidden md:block">
+          <table className="w-full">
+            <thead className="bg-input/50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.username')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.profile')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.router')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.ipAddress')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.macAddress')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.upload')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.download')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.duration')}</th>
+                <th className="px-4 py-3 text-left text-xs font-bold text-muted-foreground uppercase tracking-wider">{t('agent.portal.startTime')}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {filteredSessions.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="px-4 py-10 text-center">
+                    <div className="flex flex-col items-center justify-center">
+                      <WifiOff className="h-12 w-12 text-slate-300 dark:text-slate-600 mb-3" />
+                      <p className="text-sm text-muted-foreground">
+                        {searchQuery ? t('agent.portal.noSearchResults') : t('agent.portal.noActiveSessions')}
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                filteredSessions.map((session) => (
+                  <tr key={session.id} className="hover:bg-slate-50 dark:hover:bg-slate-700/30 transition">
+                    <td className="px-4 py-3">
+                      <p className="font-mono font-bold text-sm text-foreground">{session.username}</p>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">
+                      {session.profileName || '-'}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">
+                      {session.routerName || '-'}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-foreground font-mono">{session.framedIpAddress || '-'}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground font-mono">{session.callingStationId || '-'}</td>
+                    <td className="px-4 py-3 text-xs text-emerald-600 dark:text-emerald-400">{formatBytes(session.acctInputOctets || 0)}</td>
+                    <td className="px-4 py-3 text-xs text-pink-600 dark:text-pink-400">{formatBytes(session.acctOutputOctets || 0)}</td>
+                    <td className="px-4 py-3 text-xs text-foreground">
+                      {session.expiresAt
+                        ? formatDuration(liveCountdown(session.expiresAt)) + ' left'
+                        : formatDuration(liveDuration(session.acctStartTime))}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">
+                      {session.acctStartTime ? formatLocal(session.acctStartTime, 'dd MMM HH:mm') : '-'}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+

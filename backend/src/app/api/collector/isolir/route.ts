@@ -1,0 +1,114 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/server/db/client';
+import { verifyCollector } from '@/server/auth/collector-auth';
+
+export async function GET(req: NextRequest) {
+  const collector = await verifyCollector(req);
+  if (!collector) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  try {
+    const adminUser = await prisma.adminUser.findUnique({
+      where: { id: collector.id },
+      select: { areaId: true },
+    });
+
+    if (!adminUser?.areaId) {
+      return NextResponse.json({ users: [] });
+    }
+
+    const users = await prisma.pppoeUser.findMany({
+      where: {
+        areaId: adminUser.areaId,
+        status: { in: ['suspended', 'isolated'] },
+      },
+      select: {
+        id: true,
+        username: true,
+        name: true,
+        customerId: true,
+        phone: true,
+        address: true,
+        areaId: true,
+        expiredAt: true,
+        subscriptionType: true,
+        connectionType: true,
+        profile: { select: { id: true, name: true, price: true } },
+        area: { select: { id: true, name: true } },
+        router: { select: { id: true, name: true } },
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    // Fetch ALL invoices for these users (not just unpaid) so is_paid is accurate
+    const userIds = users.map(u => u.id);
+    const allInvoices = await prisma.invoice.findMany({
+      where: {
+        userId: { in: userIds },
+        status: { not: 'CANCELLED' },
+      },
+      select: {
+        id: true,
+        invoiceNumber: true,
+        amount: true,
+        dueDate: true,
+        status: true,
+        userId: true,
+      },
+      orderBy: { dueDate: 'asc' },
+    });
+
+    // Group all invoices by userId
+    // (userId is non-null here — every row came from `where: { userId: { in: userIds } }`
+    // above; the `if (!inv.userId) continue` is just to satisfy the nullable column type)
+    const allInvoicesByUser = new Map<string, typeof allInvoices>();
+    for (const inv of allInvoices) {
+      if (!inv.userId) continue;
+      const arr = allInvoicesByUser.get(inv.userId) || [];
+      arr.push(inv);
+      allInvoicesByUser.set(inv.userId, arr);
+    }
+
+    // Unpaid only (for display)
+    const unpaidInvoices = allInvoices.filter(inv => inv.status === 'PENDING' || inv.status === 'OVERDUE');
+
+    // Group unpaid invoices by userId
+    const invoicesByUser = new Map<string, typeof unpaidInvoices>();
+    for (const inv of unpaidInvoices) {
+      if (!inv.userId) continue;
+      const arr = invoicesByUser.get(inv.userId) || [];
+      arr.push(inv);
+      invoicesByUser.set(inv.userId, arr);
+    }
+
+    const unpaidMap = new Map<string, number>();
+    for (const inv of unpaidInvoices) {
+      if (!inv.userId) continue;
+      unpaidMap.set(inv.userId, (unpaidMap.get(inv.userId) || 0) + inv.amount);
+    }
+
+    const enriched = users.map(u => {
+      const userAllInvoices = allInvoicesByUser.get(u.id) || [];
+      const userUnpaidInvoices = invoicesByUser.get(u.id) || [];
+      return {
+        ...u,
+        is_paid: userAllInvoices.length > 0 && userUnpaidInvoices.length === 0,
+        unpaid_amount: unpaidMap.get(u.id) || 0,
+        unpaid_count: userUnpaidInvoices.length,
+        invoices: userUnpaidInvoices.map(inv => ({
+          id: inv.id,
+          invoiceNumber: inv.invoiceNumber,
+          amount: inv.amount,
+          dueDate: inv.dueDate?.toISOString() || null,
+          status: inv.status,
+        })),
+      };
+    });
+
+    return NextResponse.json({ users: enriched });
+  } catch (error) {
+    console.error('Collector isolir error:', error);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}

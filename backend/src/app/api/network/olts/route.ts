@@ -1,0 +1,276 @@
+﻿import { NextRequest, NextResponse } from 'next/server';
+import { prisma } from '@/server/db/client';
+import { requirePermission } from '@/server/middleware/api-auth';
+
+export async function GET() {
+  const authCheck = await requirePermission('network.view');
+  if (!authCheck.authorized) return authCheck.response;
+  try {
+
+    const olts = await prisma.networkOLT.findMany({
+      include: {
+        routers: {
+          include: {
+            router: {
+              select: {
+                id: true,
+                name: true,
+                nasname: true,
+                ipAddress: true,
+              },
+            },
+          },
+          orderBy: {
+            priority: 'asc',
+          },
+        },
+        _count: {
+          select: {
+            odps: true,
+            onuStatuses: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    });
+
+    return NextResponse.json({
+      success: true,
+      olts: olts.map(olt => ({
+        ...olt,
+        uptime: Number(olt.uptime),
+        _count: {
+          ...olt._count,
+          olt_onu_status: olt._count.onuStatuses,
+        },
+        onu_stats: {
+          online: olt.onlineOnu,
+          offline: olt.offlineOnu,
+          los: 0,
+          dying_gasp: 0,
+          unconfig: 0,
+        },
+      })),
+    });
+  } catch (error: any) {
+    console.error('Get OLTs error:', error);
+    return NextResponse.json(
+      { success: false, error: error.message, code: error.code },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: NextRequest) {
+  const authCheck = await requirePermission('network.edit');
+  if (!authCheck.authorized) return authCheck.response;
+  try {
+    const body = await request.json();
+    const {
+      name, ipAddress, latitude, longitude, status, routerIds, followRoad,
+      vendor, model, firmwareVersion, username, password, snmpCommunity,
+      sshEnabled, telnetEnabled,
+      sshPort, telnetPort, snmpPort,
+    } = body;
+
+    if (!name || !ipAddress || latitude === undefined || longitude === undefined) {
+      return NextResponse.json(
+        { success: false, error: 'Name, IP address, latitude, and longitude are required' },
+        { status: 400 }
+      );
+    }
+
+    const oltId = crypto.randomUUID();
+
+    // Create OLT with all fields
+    const olt = await prisma.networkOLT.create({
+      data: {
+        id: oltId,
+        name,
+        ipAddress,
+        latitude: parseFloat(latitude),
+        longitude: parseFloat(longitude),
+        status: status || 'active',
+        followRoad: followRoad || false,
+        ...(vendor && { vendor }),
+        ...(model && { model }),
+        ...(firmwareVersion !== undefined && firmwareVersion !== '' && { firmwareVersion }),
+        ...(username && { username }),
+        ...(password && { password }),
+        snmpCommunity: snmpCommunity || 'public',
+        ...(sshEnabled !== undefined && { sshEnabled }),
+        ...(telnetEnabled !== undefined && { telnetEnabled }),
+        ...(sshPort !== undefined && sshPort !== '' && { sshPort: parseInt(String(sshPort)) || 22 }),
+        ...(telnetPort !== undefined && telnetPort !== '' && { telnetPort: parseInt(String(telnetPort)) || 23 }),
+        ...(snmpPort !== undefined && snmpPort !== '' && { snmpPort: parseInt(String(snmpPort)) || 161 }),
+        // Monitoring defaults to on for a newly added OLT — the whole point of
+        // adding one with credentials is to monitor it, and leaving this at
+        // the schema default (off) meant the poller cron silently skipped it
+        // forever, leaving the list stuck on the initial "Offline" value
+        // even after a successful manual connection test.
+        monitoringEnabled: body.monitoringEnabled !== undefined ? body.monitoringEnabled : true,
+      },
+    });
+
+    // Create router assignments if provided
+    if (routerIds && Array.isArray(routerIds) && routerIds.length > 0) {
+      await prisma.networkOLTRouter.createMany({
+        data: routerIds.map((routerId: string, index: number) => ({
+          id: crypto.randomUUID(),
+          oltId,
+          routerId,
+          priority: index,
+          isActive: true,
+        })),
+      });
+    }
+
+    // Poll once in the background so the list reflects real status shortly
+    // after creation instead of waiting for the next cron cycle — fire-and-
+    // forget, NOT awaited. A real device's SNMP/Telnet probes can take tens
+    // of seconds (or the full timeout if unreachable), and awaiting that
+    // here made the create request itself hang for just as long — which
+    // read as "clicking Create does nothing / doesn't save" even though the
+    // row was already inserted above, and could tempt an impatient user
+    // into deleting the OLT while this same poll was still writing to it
+    // (a real incident: caused FK constraint errors in production logs).
+    import('@/lib/olt/poller')
+      .then(({ pollOLT }) => pollOLT(oltId))
+      .catch((pollError) => console.error('[Create OLT] Background initial poll failed (non-fatal):', pollError));
+
+    return NextResponse.json({
+      success: true,
+      olt: { ...olt, uptime: Number(olt.uptime) },
+    });
+  } catch (error: any) {
+    console.error('Create OLT error:', error);
+    return NextResponse.json(
+      { success: false, error: error.message },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PUT(request: NextRequest) {
+  const authCheck = await requirePermission('network.edit');
+  if (!authCheck.authorized) return authCheck.response;
+  try {
+    const body = await request.json();
+    const {
+      id, name, ipAddress, latitude, longitude, status, routerIds, followRoad,
+      vendor, model, firmwareVersion, username, password, snmpCommunity,
+      sshEnabled, telnetEnabled,
+      sshPort, telnetPort, snmpPort,
+    } = body;
+
+    if (!id) {
+      return NextResponse.json(
+        { success: false, error: 'OLT ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Update OLT with all fields
+    const olt = await prisma.networkOLT.update({
+      where: { id },
+      data: {
+        ...(name && { name }),
+        ...(ipAddress && { ipAddress }),
+        ...(latitude !== undefined && { latitude: parseFloat(latitude) }),
+        ...(longitude !== undefined && { longitude: parseFloat(longitude) }),
+        ...(status && { status }),
+        ...(followRoad !== undefined && { followRoad }),
+        ...(vendor !== undefined && { vendor }),
+        ...(model !== undefined && { model }),
+        ...(firmwareVersion !== undefined && { firmwareVersion: firmwareVersion || null }),
+        ...(username !== undefined && { username }),
+        ...(password !== undefined && { password }),
+        ...(snmpCommunity !== undefined && { snmpCommunity }),
+        ...(sshEnabled !== undefined && { sshEnabled }),
+        ...(telnetEnabled !== undefined && { telnetEnabled }),
+        ...(sshPort !== undefined && sshPort !== '' && { sshPort: parseInt(String(sshPort)) || 22 }),
+        ...(telnetPort !== undefined && telnetPort !== '' && { telnetPort: parseInt(String(telnetPort)) || 23 }),
+        ...(snmpPort !== undefined && snmpPort !== '' && { snmpPort: parseInt(String(snmpPort)) || 161 }),
+      },
+    });
+
+    // Update router assignments if provided
+    if (routerIds && Array.isArray(routerIds)) {
+      // Delete existing assignments
+      await prisma.networkOLTRouter.deleteMany({
+        where: { oltId: id },
+      });
+
+      // Create new assignments
+      if (routerIds.length > 0) {
+        await prisma.networkOLTRouter.createMany({
+          data: routerIds.map((routerId: string, index: number) => ({
+            id: crypto.randomUUID(),
+            oltId: id,
+            routerId,
+            priority: index,
+            isActive: true,
+          })),
+        });
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      olt: { ...olt, uptime: Number(olt.uptime) },
+    });
+  } catch (error: any) {
+    console.error('Update OLT error:', error);
+    return NextResponse.json(
+      { success: false, error: error.message },
+      { status: 500 }
+    );
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  const authCheck = await requirePermission('network.edit');
+  if (!authCheck.authorized) return authCheck.response;
+  try {
+    const { searchParams } = new URL(request.url);
+    let id = searchParams.get('id');
+
+    // Also try to get id from body
+    if (!id) {
+      try {
+        const body = await request.json();
+        id = body.id;
+      } catch {
+        // Body might be empty
+      }
+    }
+
+    if (!id) {
+      return NextResponse.json(
+        { success: false, error: 'OLT ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Unlink network_otbs records before delete — this table has no onDelete cascade in schema
+    // so MySQL will throw FK constraint error if we skip this step.
+    await prisma.network_otbs.updateMany({ where: { oltId: id }, data: { oltId: null } });
+
+    await prisma.networkOLT.delete({
+      where: { id },
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'OLT deleted successfully',
+    });
+  } catch (error: any) {
+    console.error('Delete OLT error:', error);
+    return NextResponse.json(
+      { success: false, error: error.message },
+      { status: 500 }
+    );
+  }
+}

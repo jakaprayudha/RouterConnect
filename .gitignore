@@ -1,0 +1,184 @@
+# Mobile app (Flutter) - tidak perlu di-push ke GitHub
+mobile-app/
+
+# Reference repo (FreeRADIUS source — not part of this project)
+home.pmynet.id-main/
+
+# Playwright MCP snapshots
+.playwright-mcp/
+
+# Temporary git commit message files
+.git/COMMIT_MSG_*
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# npm lock files (use pnpm-lock.yaml at root only)
+**/package-lock.json
+
+# Next.js / build outputs
+.next/
+out/
+build/
+dist/
+
+# Testing outputs
+coverage/
+test-results/
+
+# Logs (root-level only — do NOT ignore src/app/admin/logs/)
+/logs/
+*.log
+build-error.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+lerna-debug.log*
+
+# Local env files
+.env
+.env*.local
+
+# Real deploy env files — only *.env.example templates are meant to be tracked.
+# (A filled-in deploy/frontend.env with a live NEXTAUTH_SECRET was committed by
+# mistake before; that secret must be rotated, not just gitignored going forward.)
+deploy/*.env
+!deploy/*.env.example
+
+# Runtime user-uploaded files — jangan di-commit, JANGAN dihapus saat update
+frontend/public/uploads/
+data/uploads/
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Binaries
+frontend/bin/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.fleet/
+.vscode-test/
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# PM2 runtime files
+.pm2
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Backup / temporary files
+/backup/
+/backups/
+tmp/
+temp/
+*.tmp
+*.sql
+!deploy/freeradius/fr_allocate_sp.sql
+!deploy/freeradius/*.sql
+!frontend/prisma/**/*.sql
+*.backup
+*.bak
+*.old
+
+# Prisma local databases
+**/prisma/*.db
+**/prisma/*.db-journal
+
+# Cache
+.cache/
+.parcel-cache/
+.turbo/
+.github-cache/
+
+# Reference folder — not part of production
+billing-radius/
+oltc320_v2.1.1_linux/
+
+# Manual debug artifacts
+capture-result.txt
+chr-nat-result.txt
+fix-chr-result.txt
+fresh-test.txt
+test-result-output.txt
+test3-result.txt
+
+*.zip
+
+# Temp/utility scripts yang tidak perlu di-repo
+audit_routing.sh
+check_admin.py
+check_config.py
+check-encoding.ps1
+fix-encoding.ps1
+deploy-restart.sh
+deploy-*.sh
+restart-*.sh
+fix-fe-env.sh
+test_login.sh
+test_otp.py
+verify_session.py
+vps_audit.py
+AUTOCHANGELOG.md
+
+# Debug/test scripts yang tidak perlu di-repo
+deploy/test-cwd.js
+deploy/test-wrapper.js
+scripts/check-baileys.js
+scripts/sync-readme-changelog.mjs
+backend/scripts/test-login.sh
+globals.css
+
+# Debug/temp files dari investigasi (jangan di-commit)
+.check-*
+.debug-*
+.test-*
+.verify-*
+.trigger-*
+.compare-*
+.commit-msg-*.txt
+.audit-*
+audit-cron*
+
+# Vercel
+.vercel
+
+# Firebase / Google credentials (jangan di-commit)
+*firebase-service-account*.json
+salfanet-radius-firebase-adminsdk*.json
+google-services.json
+google-services-desktop.json
+*-adminsdk-*.json
+GoogleService-Info.plist
+
+# AI agent / IDE config — local only, tidak perlu di-push ke GitHub
+.agent/
+.agents/
+.claude/
+.devin/
+.cursor/
+.codeium/
+.github/
+CLAUDE.md
+AGENTS.md
+GEMINI.md
+antislop.md
+anti-slop/
+# Catatan proyek berisi detail server dan kredensial: simpan lokal saja
+docs/AI_PROJECT_MEMORY.md
+skills/
+skill-lock.json
+skills-lock.json

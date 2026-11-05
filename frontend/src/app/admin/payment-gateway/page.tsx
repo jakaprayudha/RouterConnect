@@ -1,0 +1,911 @@
+'use client';
+import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
+import { useTranslation } from '@/hooks/useTranslation';
+import { showSuccess, showError, showToast } from '@/lib/sweetalert';
+import { formatWIB } from '@/lib/timezone';
+import { 
+  Loader2, CreditCard, Wallet, Save, Eye, EyeOff, CheckCircle2, AlertCircle, 
+  Copy, Check, List, RefreshCw, Search, X, QrCode
+} from 'lucide-react';
+import { Pagination } from '@/components/Pagination';
+import { Toggle } from '@/components/ui/toggle';
+import { apiAdmin } from '@/lib/api';
+import { useApiQuery, useQueryClient, buildQueryKey } from '@/lib/api/hooks';
+
+interface PaymentGateway {
+  id: string;
+  provider: string;
+  name: string;
+  isActive: boolean;
+  midtransClientKey?: string | null;
+  midtransServerKey?: string | null;
+  midtransEnvironment: string;
+  xenditApiKey?: string | null;
+  xenditWebhookToken?: string | null;
+  xenditEnvironment: string;
+  duitkuMerchantCode?: string | null;
+  duitkuApiKey?: string | null;
+  duitkuEnvironment: string;
+  tripayMerchantCode?: string | null;
+  tripayApiKey?: string | null;
+  tripayPrivateKey?: string | null;
+  tripayEnvironment: string;
+}
+
+interface WebhookLog {
+  id: string;
+  gateway: string;
+  orderId: string;
+  status: string;
+  transactionId: string | null;
+  amount: number | null;
+  success: boolean;
+  errorMessage: string | null;
+  createdAt: string;
+  payload: string | null;
+  response: string | null;
+}
+
+/** Copies a credential so it can be pasted into the QRIS Listener app. */
+function CopyField({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      disabled={!value}
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(value);
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        } catch {
+          /* clipboard blocked: the value is visible in the field */
+        }
+      }}
+      aria-label={`Salin ${label}`}
+      title={copied ? 'Disalin' : `Salin ${label}`}
+      className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted-foreground/20 hover:bg-muted-foreground/30 disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+    >
+      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+    </button>
+  );
+}
+
+export default function PaymentGatewayPage() {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
+  const [copied, setCopied] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState('logs');
+  
+  // Webhook logs state
+  const [logsPage, setLogsPage] = useState(1);
+  const [logsFilter, setLogsFilter] = useState({ gateway: '', orderId: '', success: '' });
+  const [selectedLog, setSelectedLog] = useState<WebhookLog | null>(null);
+
+  const [midtransForm, setMidtransForm] = useState({ clientKey: '', serverKey: '', environment: 'sandbox', isActive: false });
+  const [xenditForm, setXenditForm] = useState({ apiKey: '', webhookToken: '', environment: 'sandbox', isActive: false });
+  const [duitkuForm, setDuitkuForm] = useState({ merchantCode: '', apiKey: '', environment: 'sandbox', isActive: false });
+  const [tripayForm, setTripayForm] = useState({ merchantCode: '', apiKey: '', privateKey: '', environment: 'sandbox', isActive: false });
+  const [qrisForm, setQrisForm] = useState({ staticCode: '', merchantName: '', enabled: false, deviceKey: '', deviceSecret: '', uniqueMin: 1, uniqueMax: 999 });
+  const [qrisTest, setQrisTest] = useState({ orderId: '', loading: false, result: null as null | { success: boolean; message: string; invoiceId?: string; baseAmount?: number; uniqueAmount?: number } });
+
+  // ─── React Query: Payment gateway configs ────────────────────────────────────
+  const { data: configsData, isLoading: loading } = useApiQuery<PaymentGateway[]>('/api/payment-gateway/config', { staleTime: 30000 });
+  const configs = configsData ?? [];
+
+  // Sync form state from query data
+  useEffect(() => {
+    if (!configsData) return;
+    const midtrans = configsData.find((c) => c.provider === 'midtrans');
+    if (midtrans) {
+      setMidtransForm({
+        clientKey: midtrans.midtransClientKey || '',
+        serverKey: midtrans.midtransServerKey || '',
+        environment: midtrans.midtransEnvironment || 'sandbox',
+        isActive: midtrans.isActive
+      });
+    }
+
+    const xendit = configsData.find((c) => c.provider === 'xendit');
+    if (xendit) {
+      setXenditForm({
+        apiKey: xendit.xenditApiKey || '',
+        webhookToken: xendit.xenditWebhookToken || '',
+        environment: xendit.xenditEnvironment || 'sandbox',
+        isActive: xendit.isActive
+      });
+    }
+
+    const duitku = configsData.find((c) => c.provider === 'duitku');
+    if (duitku) {
+      setDuitkuForm({
+        merchantCode: duitku.duitkuMerchantCode || '',
+        apiKey: duitku.duitkuApiKey || '',
+        environment: duitku.duitkuEnvironment || 'sandbox',
+        isActive: duitku.isActive
+      });
+    }
+
+    const tripay = configsData.find((c) => c.provider === 'tripay');
+    if (tripay) {
+      setTripayForm({
+        merchantCode: tripay.tripayMerchantCode || '',
+        apiKey: tripay.tripayApiKey || '',
+        privateKey: tripay.tripayPrivateKey || '',
+        environment: tripay.tripayEnvironment || 'sandbox',
+        isActive: tripay.isActive
+      });
+    }
+  }, [configsData]);
+
+  // QRIS settings, including the listener credentials, come only from the
+  // settings.payment endpoint; /api/company no longer exposes them.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiAdmin<{ qrisStaticCode?: string; qrisMerchantName?: string; qrisEnabled?: boolean; qrisDeviceKey?: string; qrisDeviceSecret?: string; qrisUniqueMin?: number; qrisUniqueMax?: number }>('/api/payment-gateway/qris-mandiri');
+        if (!cancelled && res) {
+          setQrisForm({
+            staticCode: res.qrisStaticCode || '',
+            merchantName: res.qrisMerchantName || '',
+            enabled: res.qrisEnabled || false,
+            deviceKey: res.qrisDeviceKey || '',
+            deviceSecret: res.qrisDeviceSecret || '',
+            uniqueMin: res.qrisUniqueMin ?? 1,
+            uniqueMax: res.qrisUniqueMax ?? 999,
+          });
+        }
+      } catch (e) {
+        console.error('Failed to fetch QRIS settings:', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // ─── React Query: Webhook logs (page + filter) ───────────────────────────────
+  const logsParams: Record<string, unknown> = {
+    page: logsPage,
+    limit: 20,
+    gateway: logsFilter.gateway || undefined,
+    orderId: logsFilter.orderId || undefined,
+    success: logsFilter.success || undefined,
+  };
+  const { data: logsData, isLoading: logsLoading, refetch: refetchLogs } = useApiQuery<{ logs: WebhookLog[]; pagination: { totalPages: number } }>(
+    '/api/payment-gateway/webhook-logs',
+    { params: logsParams, staleTime: 30000 }
+  );
+  const webhookLogs = logsData?.logs ?? [];
+  const logsTotalPages = logsData?.pagination.totalPages ?? 1;
+
+  const saveGateway = async (provider: string, data: Record<string, unknown>) => {
+    setSaving(true);
+    try {
+      await apiAdmin('/api/payment-gateway/config', {
+        method: 'POST',
+        body: JSON.stringify({ provider, ...data })
+      });
+
+      await showSuccess(`${provider.charAt(0).toUpperCase() + provider.slice(1)} ${t('paymentGateway.configSaved')}`);
+      queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/payment-gateway/config') });
+    } catch (error: unknown) {
+      await showError((error instanceof Error ? error.message : String(error)) || t('paymentGateway.failedToSave'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleSecret = (key: string) => setShowSecrets(prev => ({ ...prev, [key]: !prev[key] }));
+
+  const saveQris = async () => {
+    setSaving(true);
+    try {
+      const saved = await apiAdmin<{ qrisDeviceKey?: string; qrisDeviceSecret?: string }>('/api/payment-gateway/qris-mandiri', {
+        method: 'POST',
+        body: JSON.stringify({
+          qrisStaticCode: qrisForm.staticCode,
+          qrisMerchantName: qrisForm.merchantName,
+          qrisEnabled: qrisForm.enabled,
+          qrisDeviceKey: qrisForm.deviceKey,
+          qrisDeviceSecret: qrisForm.deviceSecret,
+          qrisUniqueMin: qrisForm.uniqueMin,
+          qrisUniqueMax: qrisForm.uniqueMax,
+        }),
+      });
+      setQrisForm((f) => ({
+        ...f,
+        deviceKey: saved?.qrisDeviceKey || f.deviceKey,
+        deviceSecret: saved?.qrisDeviceSecret || f.deviceSecret,
+      }));
+      await showSuccess('Pengaturan QRIS Mandiri disimpan');
+    } catch (error: unknown) {
+      await showError((error instanceof Error ? error.message : String(error)) || 'Failed to save QRIS settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runQrisTest = async () => {
+    setQrisTest(prev => ({ ...prev, loading: true, result: null }));
+    try {
+      const res = await apiAdmin<{ success: boolean; message: string; invoiceId?: string; baseAmount?: number; uniqueAmount?: number; error?: string }>('/api/payment/qris-test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: qrisTest.orderId }),
+      });
+      setQrisTest(prev => ({ ...prev, result: res, loading: false }));
+      if (res.success) {
+        await showSuccess(res.message);
+      } else {
+        await showError(res.error || res.message);
+      }
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setQrisTest(prev => ({ ...prev, result: { success: false, message: msg }, loading: false }));
+      await showError(msg);
+    }
+  };
+
+  const copyWebhookUrl = async () => {
+    const webhookUrl = `${window.location.origin}/api/payment/webhook`;
+    try {
+      await navigator.clipboard.writeText(webhookUrl);
+      setCopied('webhook');
+      await showToast(t('paymentGateway.webhookCopied'), 'success');
+      setTimeout(() => setCopied(null), 2000);
+    } catch (_err) {
+      await showError(t('paymentGateway.failedCopyWebhook'));
+    }
+  };
+  
+  const formatAmount = (amount: number | null) => {
+    if (!amount) return '-';
+    return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(amount);
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-5 h-5 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  const midtransActive = configs.find(c => c.provider === 'midtrans')?.isActive;
+  const xenditActive = configs.find(c => c.provider === 'xendit')?.isActive;
+  const duitkuActive = configs.find(c => c.provider === 'duitku')?.isActive;
+  const tripayActive = configs.find(c => c.provider === 'tripay')?.isActive;
+
+  return (
+    <div className="bg-background relative">
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-0 left-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-primary/10 rounded-full blur-3xl"></div>
+        <div className="absolute top-1/3 right-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-brand-500/20 rounded-full blur-3xl"></div>
+        <div className="absolute bottom-0 left-1/2 w-48 h-48 sm:w-96 sm:h-96 bg-pink-500/20 rounded-full blur-3xl"></div>
+        <div className="hidden dark:block absolute inset-0 bg-[linear-gradient(rgba(139,92,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(139,92,246,0.03)_1px,transparent_1px)] bg-[size:50px_50px]"></div>
+      </div>
+      <div className="relative z-10 space-y-6">
+      {/* Header */}
+      <div className="bg-gradient-to-r from-primary to-pink-500 rounded-xl p-4 text-white ">
+        <div className="flex items-center gap-2">
+          <CreditCard className="w-5 h-5" />
+          <div>
+            <h1 className="text-xl sm:text-2xl font-bold">{t('paymentGateway.title')}</h1>
+            <p className="text-sm text-white/80 mt-1">{t('paymentGateway.subtitle')}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Webhook URL */}
+      <div className="bg-info/10 border border-info/20 rounded-lg p-2.5">
+        <div className="flex items-center gap-2 mb-1.5">
+          <AlertCircle className="w-3.5 h-3.5 text-info" />
+          <span className="text-xs font-medium text-info">{t('paymentGateway.webhookUrl')}</span>
+        </div>
+        <div className="flex gap-1.5">
+          <input
+            value={`${typeof window !== 'undefined' ? window.location.origin : ''}/api/payment/webhook`}
+            readOnly
+            className="flex-1 px-2 py-1 text-[10px] font-mono bg-card border border-border rounded"
+          />
+          <button
+            onClick={copyWebhookUrl}
+            className="px-2 py-1 text-xs bg-card border border-border rounded hover:bg-muted"
+          >
+            {copied === 'webhook' ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
+          </button>
+        </div>
+        <p className="text-[10px] text-info mt-1">ℹ️ {t('paymentGateway.webhookNote')}</p>
+      </div>
+
+      {/* Tabs */}
+      <div className="bg-card rounded-lg border border-border overflow-hidden">
+        <div className="flex border-b border-border overflow-x-auto">
+          {[
+            { id: 'logs', label: t('paymentGateway.webhookLogs'), icon: List },
+            { id: 'midtrans', label: 'Midtrans', icon: CreditCard, active: midtransActive },
+            { id: 'xendit', label: 'Xendit', icon: Wallet, active: xenditActive },
+            { id: 'duitku', label: 'Duitku', icon: Wallet, active: duitkuActive },
+            { id: 'tripay', label: 'Tripay', icon: Wallet, active: tripayActive },
+            { id: 'qris', label: 'QRIS Mandiri', icon: QrCode, active: qrisForm.enabled }
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`shrink-0 flex items-center gap-1.5 px-3 py-2 text-xs font-medium whitespace-nowrap transition-colors ${
+                activeTab === tab.id
+                  ? 'text-primary border-b-2 border-primary bg-primary/10'
+                  : 'text-muted-foreground hover:bg-muted'
+              }`}
+            >
+              <tab.icon className="w-3 h-3" />
+              {tab.label}
+              {tab.active && <CheckCircle2 className="w-2.5 h-2.5 text-success" />}
+            </button>
+          ))}
+        </div>
+
+        <div className="p-3">
+          {/* Webhook Logs Tab */}
+          {activeTab === 'logs' && (
+            <div className="space-y-2">
+              {/* Filters */}
+              <div className="flex flex-wrap gap-2">
+                <select
+                  value={logsFilter.gateway}
+                  onChange={(e) => { setLogsFilter({ ...logsFilter, gateway: e.target.value }); setLogsPage(1); }}
+                  className="px-2 py-1 text-xs border border-border rounded bg-card"
+                >
+                  <option value="">{t('paymentGateway.allGateways')}</option>
+                  <option value="midtrans">Midtrans</option>
+                  <option value="xendit">Xendit</option>
+                  <option value="duitku">Duitku</option>
+                </select>
+                <div className="relative flex-1 min-w-[120px]">
+                  <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-muted-foreground" />
+                  <input
+                    value={logsFilter.orderId}
+                    onChange={(e) => { setLogsFilter({ ...logsFilter, orderId: e.target.value }); setLogsPage(1); }}
+                    placeholder="Order ID..."
+                    className="w-full pl-6 pr-2 py-1 text-xs border border-border rounded bg-card"
+                  />
+                </div>
+                <select
+                  value={logsFilter.success}
+                  onChange={(e) => { setLogsFilter({ ...logsFilter, success: e.target.value }); setLogsPage(1); }}
+                  className="px-2 py-1 text-xs border border-border rounded bg-card"
+                >
+                  <option value="">{t('paymentGateway.allStatus')}</option>
+                  <option value="true">{t('common.success')}</option>
+                  <option value="false">{t('common.failed')}</option>
+                </select>
+                <button
+                  onClick={() => refetchLogs()}
+                  disabled={logsLoading}
+                  className="flex items-center gap-1 px-2 py-1 text-xs text-primary border border-primary rounded hover:bg-primary/10"
+                >
+                  <RefreshCw className={`w-3 h-3 ${logsLoading ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
+
+              {/* Mobile Card View */}
+              <div className="block md:hidden space-y-3">
+                {logsLoading ? (
+                  <div className="text-center py-6"><Loader2 className="w-4 h-4 animate-spin mx-auto text-primary" /></div>
+                ) : webhookLogs.length === 0 ? (
+                  <div className="text-center py-6 text-muted-foreground text-xs">{t('paymentGateway.noLogs')}</div>
+                ) : (
+                  webhookLogs.map((log) => (
+                    <div key={log.id} className="bg-card rounded-xl border border-border p-3">
+                      <div className="flex items-start justify-between mb-2 min-w-0">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-xs font-mono text-foreground truncate">{log.orderId}</p>
+                          <p className="text-[10px] text-muted-foreground">{formatWIB(new Date(log.createdAt), 'dd/MM HH:mm')}</p>
+                        </div>
+                        <div className="flex items-center gap-1.5 ml-2 shrink-0">
+                          {log.success ? <CheckCircle2 className="w-3.5 h-3.5 text-success" /> : <AlertCircle className="w-3.5 h-3.5 text-destructive" />}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs mb-2">
+                        <div><span className="text-muted-foreground">{t('paymentGateway.gatewayLabel')}:</span> <span className="px-1.5 py-0.5 text-[10px] font-medium bg-muted rounded">{log.gateway}</span></div>
+                        <div><span className="text-muted-foreground">{t('common.amount')}:</span> <span className="text-foreground">{formatAmount(log.amount)}</span></div>
+                        <div className="col-span-2">
+                          <span className="text-muted-foreground">{t('common.status')}:</span>{' '}
+                          <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${
+                            log.status === 'settlement' ? 'bg-success/10 text-success' :
+                            log.status === 'pending' ? 'bg-warning/10 text-warning' : 'bg-destructive/10 text-destructive'
+                          }`}>{log.status}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center pt-2 border-t border-border">
+                        <button onClick={() => setSelectedLog(log)} className="p-2 text-xs text-primary hover:underline">{t('paymentGateway.detailLabel')}</button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Logs Table */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="text-left py-1.5 px-2 text-[10px] font-semibold text-muted-foreground uppercase">{t('common.time')}</th>
+                      <th className="text-left py-1.5 px-2 text-[10px] font-semibold text-muted-foreground uppercase">{t('paymentGateway.gatewayLabel')}</th>
+                      <th className="text-left py-1.5 px-2 text-[10px] font-semibold text-muted-foreground uppercase">{t('paymentGateway.orderIdLabel')}</th>
+                      <th className="text-left py-1.5 px-2 text-[10px] font-semibold text-muted-foreground uppercase">{t('common.status')}</th>
+                      <th className="text-left py-1.5 px-2 text-[10px] font-semibold text-muted-foreground uppercase hidden md:table-cell">{t('common.amount')}</th>
+                      <th className="text-center py-1.5 px-2 text-[10px] font-semibold text-muted-foreground uppercase">{t('paymentGateway.result')}</th>
+                      <th className="text-right py-1.5 px-2 text-[10px] font-semibold text-muted-foreground uppercase">{t('common.action')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {logsLoading ? (
+                      <tr><td colSpan={7} className="text-center py-6"><Loader2 className="w-4 h-4 animate-spin mx-auto text-primary" /></td></tr>
+                    ) : webhookLogs.length === 0 ? (
+                      <tr><td colSpan={7} className="text-center py-6 text-muted-foreground text-xs">{t('paymentGateway.noLogs')}</td></tr>
+                    ) : (
+                      webhookLogs.map((log) => (
+                        <tr key={log.id} className="border-b border-border hover:bg-muted/50">
+                          <td className="py-1.5 px-2 text-[10px] text-muted-foreground">{formatWIB(new Date(log.createdAt), 'dd/MM HH:mm')}</td>
+                          <td className="py-1.5 px-2">
+                            <span className="px-1.5 py-0.5 text-[10px] font-medium bg-muted rounded">{log.gateway}</span>
+                          </td>
+                          <td className="py-1.5 px-2 font-mono text-[10px]">{log.orderId}</td>
+                          <td className="py-1.5 px-2">
+                            <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded ${
+                              log.status === 'settlement' ? 'bg-success/10 text-success' :
+                              log.status === 'pending' ? 'bg-warning/10 text-warning' : 'bg-destructive/10 text-destructive'
+                            }`}>{log.status}</span>
+                          </td>
+                          <td className="py-1.5 px-2 hidden md:table-cell">{formatAmount(log.amount)}</td>
+                          <td className="py-1.5 px-2 text-center">
+                            {log.success ? <CheckCircle2 className="w-3 h-3 text-success mx-auto" /> : <AlertCircle className="w-3 h-3 text-destructive mx-auto" />}
+                          </td>
+                          <td className="py-1.5 px-2 text-right">
+                            <button onClick={() => setSelectedLog(log)} className="text-[10px] text-primary hover:underline">{t('paymentGateway.detailLabel')}</button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              <Pagination
+                page={logsPage}
+                totalPages={logsTotalPages}
+                total={logsTotalPages * 10}
+                limit={10}
+                onPageChange={setLogsPage}
+              />
+            </div>
+          )}
+
+          {/* Midtrans Tab */}
+          {activeTab === 'midtrans' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-2 bg-muted rounded-lg">
+                <div>
+                  <p className="text-xs font-medium">{t('paymentGateway.enableMidtrans')}</p>
+                  <p className="text-[10px] text-muted-foreground">{t('paymentGateway.snapDesc')}</p>
+                </div>
+                <Toggle checked={midtransForm.isActive} onChange={(v) => setMidtransForm({ ...midtransForm, isActive: v })} />
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-foreground">{t('paymentGateway.environmentLabel')}</label>
+                <select value={midtransForm.environment} onChange={(e) => setMidtransForm({ ...midtransForm, environment: e.target.value })} className="w-full mt-1 px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card">
+                  <option value="sandbox">Sandbox</option>
+                  <option value="production">Production</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-foreground">{t('paymentGateway.clientKeyLabel')}</label>
+                <div className="relative mt-1">
+                  <input type={showSecrets['mt-client'] ? 'text' : 'password'} value={midtransForm.clientKey} onChange={(e) => setMidtransForm({ ...midtransForm, clientKey: e.target.value })} className="w-full px-2.5 py-1.5 text-sm font-mono border border-border rounded-lg bg-card pr-8" placeholder="SB-Mid-client-xxxxx" />
+                  <button type="button" onClick={() => toggleSecret('mt-client')} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground">
+                    {showSecrets['mt-client'] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-foreground">{t('paymentGateway.serverKeyLabel')}</label>
+                <div className="relative mt-1">
+                  <input type={showSecrets['mt-server'] ? 'text' : 'password'} value={midtransForm.serverKey} onChange={(e) => setMidtransForm({ ...midtransForm, serverKey: e.target.value })} className="w-full px-2.5 py-1.5 text-sm font-mono border border-border rounded-lg bg-card pr-8" placeholder="SB-Mid-server-xxxxx" />
+                  <button type="button" onClick={() => toggleSecret('mt-server')} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground">
+                    {showSecrets['mt-server'] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+              <button onClick={() => saveGateway('midtrans', { midtransClientKey: midtransForm.clientKey, midtransServerKey: midtransForm.serverKey, midtransEnvironment: midtransForm.environment, isActive: midtransForm.isActive })} disabled={saving || !midtransForm.clientKey || !midtransForm.serverKey} className="flex items-center gap-1.5 px-3 py-1.5 bg-primary hover:bg-primary/90 text-primary-foreground text-white text-xs font-medium rounded-lg disabled:opacity-50">
+                {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                {t('paymentGateway.saveMidtrans')}
+              </button>
+            </div>
+          )}
+
+          {/* Xendit Tab */}
+          {activeTab === 'xendit' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-2 bg-muted rounded-lg">
+                <div>
+                  <p className="text-xs font-medium">{t('paymentGateway.enableXendit')}</p>
+                  <p className="text-[10px] text-muted-foreground">{t('paymentGateway.paymentGatewayId')}</p>
+                </div>
+                <Toggle checked={xenditForm.isActive} onChange={(v) => setXenditForm({ ...xenditForm, isActive: v })} />
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-foreground">{t('paymentGateway.environmentLabel')}</label>
+                <select value={xenditForm.environment} onChange={(e) => setXenditForm({ ...xenditForm, environment: e.target.value })} className="w-full mt-1 px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card">
+                  <option value="sandbox">Sandbox</option>
+                  <option value="production">Production</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-foreground">{t('paymentGateway.apiKeyLabel')}</label>
+                <div className="relative mt-1">
+                  <input type={showSecrets['xn-api'] ? 'text' : 'password'} value={xenditForm.apiKey} onChange={(e) => setXenditForm({ ...xenditForm, apiKey: e.target.value })} className="w-full px-2.5 py-1.5 text-sm font-mono border border-border rounded-lg bg-card pr-8" placeholder="xnd_development_xxxxx" />
+                  <button type="button" onClick={() => toggleSecret('xn-api')} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground">
+                    {showSecrets['xn-api'] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-foreground">{t('paymentGateway.webhookTokenLabel')}</label>
+                <div className="relative mt-1">
+                  <input type={showSecrets['xn-webhook'] ? 'text' : 'password'} value={xenditForm.webhookToken} onChange={(e) => setXenditForm({ ...xenditForm, webhookToken: e.target.value })} className="w-full px-2.5 py-1.5 text-sm font-mono border border-border rounded-lg bg-card pr-8" placeholder="Optional verification token" />
+                  <button type="button" onClick={() => toggleSecret('xn-webhook')} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground">
+                    {showSecrets['xn-webhook'] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+              <button onClick={() => saveGateway('xendit', { xenditApiKey: xenditForm.apiKey, xenditWebhookToken: xenditForm.webhookToken, xenditEnvironment: xenditForm.environment, isActive: xenditForm.isActive })} disabled={saving || !xenditForm.apiKey} className="flex items-center gap-1.5 px-3 py-1.5 bg-primary hover:bg-primary/90 text-primary-foreground text-white text-xs font-medium rounded-lg disabled:opacity-50">
+                {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                {t('paymentGateway.saveXendit')}
+              </button>
+            </div>
+          )}
+
+          {/* Duitku Tab */}
+          {activeTab === 'duitku' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-2 bg-muted rounded-lg">
+                <div>
+                  <p className="text-xs font-medium">{t('paymentGateway.enableDuitku')}</p>
+                  <p className="text-[10px] text-muted-foreground">{t('paymentGateway.paymentGatewayId')}</p>
+                </div>
+                <Toggle checked={duitkuForm.isActive} onChange={(v) => setDuitkuForm({ ...duitkuForm, isActive: v })} />
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-foreground">{t('paymentGateway.environmentLabel')}</label>
+                <select value={duitkuForm.environment} onChange={(e) => setDuitkuForm({ ...duitkuForm, environment: e.target.value })} className="w-full mt-1 px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card">
+                  <option value="sandbox">Sandbox</option>
+                  <option value="production">Production</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-foreground">{t('paymentGateway.merchantCodeLabel')}</label>
+                <input type="text" value={duitkuForm.merchantCode} onChange={(e) => setDuitkuForm({ ...duitkuForm, merchantCode: e.target.value })} className="w-full mt-1 px-2.5 py-1.5 text-sm font-mono border border-border rounded-lg bg-card" placeholder="D1234" />
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-foreground">{t('paymentGateway.apiKeySimple')}</label>
+                <div className="relative mt-1">
+                  <input type={showSecrets['dk-api'] ? 'text' : 'password'} value={duitkuForm.apiKey} onChange={(e) => setDuitkuForm({ ...duitkuForm, apiKey: e.target.value })} className="w-full px-2.5 py-1.5 text-sm font-mono border border-border rounded-lg bg-card pr-8" placeholder="Your Duitku API Key" />
+                  <button type="button" onClick={() => toggleSecret('dk-api')} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground">
+                    {showSecrets['dk-api'] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+              <button onClick={() => saveGateway('duitku', { duitkuMerchantCode: duitkuForm.merchantCode, duitkuApiKey: duitkuForm.apiKey, duitkuEnvironment: duitkuForm.environment, isActive: duitkuForm.isActive })} disabled={saving || !duitkuForm.merchantCode || !duitkuForm.apiKey} className="flex items-center gap-1.5 px-3 py-1.5 bg-primary hover:bg-primary/90 text-primary-foreground text-white text-xs font-medium rounded-lg disabled:opacity-50">
+                {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                {t('paymentGateway.saveDuitku')}
+              </button>
+            </div>
+          )}
+
+          {/* Tripay Tab */}
+          {activeTab === 'tripay' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-2 bg-muted rounded-lg">
+                <div>
+                  <p className="text-xs font-medium">{t('paymentGateway.enableTripay')}</p>
+                  <p className="text-[10px] text-muted-foreground">{t('paymentGateway.paymentGatewayId')}</p>
+                </div>
+                <Toggle checked={tripayForm.isActive} onChange={(v) => setTripayForm({ ...tripayForm, isActive: v })} />
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-foreground">{t('paymentGateway.environmentLabel')}</label>
+                <select value={tripayForm.environment} onChange={(e) => setTripayForm({ ...tripayForm, environment: e.target.value })} className="w-full mt-1 px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card">
+                  <option value="sandbox">Sandbox</option>
+                  <option value="production">Production</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-foreground">{t('paymentGateway.merchantCodeLabel')}</label>
+                <input type="text" value={tripayForm.merchantCode} onChange={(e) => setTripayForm({ ...tripayForm, merchantCode: e.target.value })} className="w-full mt-1 px-2.5 py-1.5 text-sm font-mono border border-border rounded-lg bg-card" placeholder="T1234" />
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-foreground">{t('paymentGateway.apiKeySimple')}</label>
+                <div className="relative mt-1">
+                  <input type={showSecrets['tp-api'] ? 'text' : 'password'} value={tripayForm.apiKey} onChange={(e) => setTripayForm({ ...tripayForm, apiKey: e.target.value })} className="w-full px-2.5 py-1.5 text-sm font-mono border border-border rounded-lg bg-card pr-8" placeholder="Your Tripay API Key" />
+                  <button type="button" onClick={() => toggleSecret('tp-api')} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground">
+                    {showSecrets['tp-api'] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <label className="text-[11px] font-medium text-foreground">{t('paymentGateway.privateKeyLabel')}</label>
+                <div className="relative mt-1">
+                  <input type={showSecrets['tp-private'] ? 'text' : 'password'} value={tripayForm.privateKey} onChange={(e) => setTripayForm({ ...tripayForm, privateKey: e.target.value })} className="w-full px-2.5 py-1.5 text-sm font-mono border border-border rounded-lg bg-card pr-8" placeholder="Your Tripay Private Key" />
+                  <button type="button" onClick={() => toggleSecret('tp-private')} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground">
+                    {showSecrets['tp-private'] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  </button>
+                </div>
+              </div>
+              <button onClick={() => saveGateway('tripay', { tripayMerchantCode: tripayForm.merchantCode, tripayApiKey: tripayForm.apiKey, tripayPrivateKey: tripayForm.privateKey, tripayEnvironment: tripayForm.environment, isActive: tripayForm.isActive })} disabled={saving || !tripayForm.merchantCode || !tripayForm.apiKey || !tripayForm.privateKey} className="flex items-center gap-1.5 px-3 py-1.5 bg-primary hover:bg-primary/90 text-primary-foreground text-white text-xs font-medium rounded-lg disabled:opacity-50">
+                {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                Save Tripay Configuration
+              </button>
+            </div>
+          )}
+
+          {/* QRIS Mandiri Tab */}
+          {activeTab === 'qris' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-2 bg-muted rounded-lg">
+                <div>
+                  <p className="text-xs font-medium">QRIS Mandiri (Tanpa Pihak Ke-3)</p>
+                  <p className="text-[10px] text-muted-foreground">Gunakan QRIS dari rekening bank Anda sendiri - tanpa biaya admin</p>
+                </div>
+                <Toggle checked={qrisForm.enabled} onChange={(v) => setQrisForm({ ...qrisForm, enabled: v })} />
+              </div>
+
+              <div className="p-2.5 bg-info/10 border border-info/20 rounded-lg">
+                <p className="text-[10px] text-info">ℹ️ Sistem akan otomatis mengkonversi QRIS statis dari bank Anda menjadi QRIS dinamis dengan nominal tagihan pelanggan. Uang masuk langsung ke rekening bank Anda tanpa perantara.</p>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-medium text-foreground">Kode QRIS Statis</label>
+                <textarea
+                  value={qrisForm.staticCode}
+                  onChange={(e) => setQrisForm({ ...qrisForm, staticCode: e.target.value.trim() })}
+                  className="w-full mt-1 px-2.5 py-1.5 text-xs font-mono border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring"
+                  rows={3}
+                  placeholder="Paste kode QRIS statis dari aplikasi bank Anda (dimulai dengan 00020101...)"
+                />
+                <p className="mt-1 text-[9px] text-muted-foreground">
+                  Cara mendapatkan: Mobile Banking → Menu QRIS Merchant → Tampilkan QR → Salin teks QR / Screenshot lalu decode dengan QR scanner.
+                </p>
+              </div>
+
+              <div>
+                <label className="text-[11px] font-medium text-foreground">Nama Merchant</label>
+                <input
+                  type="text"
+                  value={qrisForm.merchantName}
+                  onChange={(e) => setQrisForm({ ...qrisForm, merchantName: e.target.value })}
+                  className="w-full mt-1 px-2.5 py-1.5 text-sm border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring"
+                  placeholder="Contoh: CV Rizanet Indonesia"
+                  maxLength={100}
+                />
+                <p className="mt-1 text-[9px] text-muted-foreground">Nama yang tampil di halaman pembayaran pelanggan.</p>
+              </div>
+
+              {/* Setting Angka Unik */}
+              <div className="p-2.5 bg-muted rounded-lg space-y-2">
+                <div>
+                  <p className="text-[11px] font-semibold">Angka Unik (Suffix Nominal)</p>
+                  <p className="text-[10px] text-muted-foreground">Sistem menambahkan angka unik ke nominal tagihan agar setiap invoice punya nominal berbeda untuk matching otomatis. Contoh: Rp150.000 + suffix 017 = Rp150.017.</p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-medium text-muted-foreground">Minimum (1-999)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={999}
+                      value={qrisForm.uniqueMin}
+                      onChange={(e) => setQrisForm({ ...qrisForm, uniqueMin: Math.max(1, Math.min(999, parseInt(e.target.value) || 1)) })}
+                      className="w-full mt-0.5 px-2.5 py-1.5 text-xs border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-medium text-muted-foreground">Maksimum (1-999)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={999}
+                      value={qrisForm.uniqueMax}
+                      onChange={(e) => setQrisForm({ ...qrisForm, uniqueMax: Math.max(1, Math.min(999, parseInt(e.target.value) || 999)) })}
+                      className="w-full mt-0.5 px-2.5 py-1.5 text-xs border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring"
+                    />
+                  </div>
+                </div>
+                <p className="text-[9px] text-muted-foreground">Rentang default 1-999. Persempit rentang jika ingin selisih lebih kecil (mis. 1-100). Suffix ditambahkan ke nominal tagihan persis, tanpa pembulatan.</p>
+              </div>
+
+              {/* Device Key untuk Android QrisListener */}
+              <div className="p-2.5 bg-muted rounded-lg space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-[11px] font-semibold">Device Key - Android Listener</p>
+                    <p className="text-[10px] text-muted-foreground">Isi di aplikasi QRIS Listener. Dibuat otomatis saat QRIS diaktifkan dan disimpan.</p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={qrisForm.deviceKey}
+                    onChange={(e) => setQrisForm({ ...qrisForm, deviceKey: e.target.value })}
+                    className="flex-1 px-2.5 py-1.5 text-xs font-mono border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring"
+                    placeholder="Dibuat otomatis saat disimpan"
+                    maxLength={100}
+                  />
+                  <CopyField value={qrisForm.deviceKey} label="Device Key" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const key = crypto.randomUUID().replace(/-/g, '').substring(0, 32);
+                      setQrisForm({ ...qrisForm, deviceKey: key });
+                    }}
+                    className="px-2.5 py-1.5 text-xs bg-muted-foreground/20 hover:bg-muted-foreground/30 rounded-lg whitespace-nowrap"
+                  >
+                    Generate
+                  </button>
+                </div>
+              </div>
+
+              {/* Device Secret untuk V2 HMAC Signing */}
+              <div className="p-2.5 bg-muted rounded-lg space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-[11px] font-semibold">Device Secret - V2 Signature (wajib)</p>
+                    <p className="text-[10px] text-muted-foreground">Kunci HMAC-SHA256 yang dipakai aplikasi QRIS Listener untuk menandatangani setiap notifikasi. Server menolak notifikasi tanpa tanda tangan. Rahasiakan, jangan dibagikan selain ke HP listener.</p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type={showSecrets.qrisDeviceSecret ? 'text' : 'password'}
+                    value={qrisForm.deviceSecret}
+                    onChange={(e) => setQrisForm({ ...qrisForm, deviceSecret: e.target.value })}
+                    className="flex-1 px-2.5 py-1.5 text-xs font-mono border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring"
+                    placeholder="Dibuat otomatis saat disimpan"
+                    maxLength={100}
+                    aria-label="Device Secret"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => toggleSecret('qrisDeviceSecret')}
+                    aria-label={showSecrets.qrisDeviceSecret ? 'Sembunyikan Device Secret' : 'Tampilkan Device Secret'}
+                    className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-muted-foreground/20 hover:bg-muted-foreground/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                  >
+                    {showSecrets.qrisDeviceSecret ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  </button>
+                  <CopyField value={qrisForm.deviceSecret} label="Device Secret" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const secret = crypto.randomUUID().replace(/-/g, '').substring(0, 32);
+                      setQrisForm({ ...qrisForm, deviceSecret: secret });
+                    }}
+                    className="px-2.5 py-1.5 text-xs bg-muted-foreground/20 hover:bg-muted-foreground/30 rounded-lg whitespace-nowrap"
+                  >
+                    Generate
+                  </button>
+                </div>
+                {qrisForm.deviceSecret ? (
+                  <p className="text-[10px] text-success">Tersimpan. Salin ke aplikasi QRIS Listener (kolom Device Secret). Mengganti secret berarti semua HP listener harus diisi ulang.</p>
+                ) : (
+                  <p className="text-[10px] text-warning">Belum ada Device Secret. Klik Generate lalu Simpan; tanpa ini pembayaran QRIS tidak terkonfirmasi otomatis.</p>
+                )}
+              </div>
+
+              {qrisForm.deviceKey ? (
+                <div className="p-2.5 bg-success/10 border border-success/20 rounded-lg">
+                  <p className="text-[10px] text-success">Android Listener aktif. Pembayaran QRIS akan terdeteksi otomatis saat notifikasi e-wallet (DANA, GoPay, BRImo, dll) masuk ke HP listener.</p>
+                  <p className="text-[9px] text-muted-foreground mt-1">Webhook URL Android: <code className="bg-muted px-1 rounded">{typeof window !== 'undefined' ? window.location.origin : ''}/api/payment/qris-notify</code></p>
+                </div>
+              ) : (
+                <div className="p-2 bg-warning/10 border border-warning/20 rounded-lg">
+                  <p className="text-[10px] text-warning">Tanpa Device Key, konfirmasi pembayaran QRIS dilakukan manual oleh admin. Isi Device Key di atas lalu install app Android QrisListener untuk deteksi otomatis.</p>
+                </div>
+              )}
+
+              {/* Simulasi / Testing QRIS Mandiri */}
+              <div className="p-2.5 bg-orange-500/10 border border-orange-500/20 rounded-lg space-y-2">
+                <p className="text-[11px] font-semibold text-orange-600 dark:text-orange-400">Simulasi Pembayaran QRIS (Testing)</p>
+                <p className="text-[10px] text-muted-foreground">Masukkan Order ID dari invoice QRIS Mandiri yang masih pending untuk mensimulasikan pembayaran masuk tanpa menggunakan HP Android.</p>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={qrisTest.orderId}
+                    onChange={(e) => setQrisTest(prev => ({ ...prev, orderId: e.target.value, result: null }))}
+                    className="flex-1 px-2.5 py-1.5 text-xs font-mono border border-border rounded-lg bg-card focus:ring-1 focus:ring-ring"
+                    placeholder="Order ID (contoh: QRIS-abc123...)"
+                  />
+                  <button
+                    type="button"
+                    onClick={runQrisTest}
+                    disabled={qrisTest.loading || !qrisTest.orderId.trim()}
+                    className="px-3 py-1.5 text-xs font-medium bg-orange-500 hover:bg-orange-600 text-white rounded-lg disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {qrisTest.loading ? ' Testing...' : ' Jalankan'}
+                  </button>
+                </div>
+                {qrisTest.result && (
+                  <div className={`p-2 rounded-lg text-[10px] ${qrisTest.result.success ? 'bg-success/10 border border-success/20 text-success' : 'bg-destructive/10 border border-destructive/20 text-destructive'}`}>
+                    <p className="font-semibold">{qrisTest.result.message}</p>
+                    {qrisTest.result.success && qrisTest.result.invoiceId && (
+                      <p className="text-muted-foreground mt-0.5">Invoice: {qrisTest.result.invoiceId} • Base: Rp {qrisTest.result.baseAmount?.toLocaleString('id-ID')} • Unique: Rp {qrisTest.result.uniqueAmount?.toLocaleString('id-ID')}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <button
+                onClick={saveQris}
+                disabled={saving || (qrisForm.enabled && !qrisForm.staticCode)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white text-xs font-medium rounded-lg disabled:opacity-50"
+              >
+                {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                Save QRIS Mandiri Configuration
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Log Detail Modal */}
+      {selectedLog && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4" onClick={() => setSelectedLog(null)}>
+          <div className="bg-card rounded-lg border border-border max-w-[calc(100%-2rem)] sm:max-w-2xl w-full max-h-[85vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between p-3 border-b border-border">
+              <h3 className="text-sm font-semibold">{t('paymentGateway.logDetail')}</h3>
+              <button onClick={() => setSelectedLog(null)} className="p-1 hover:bg-muted rounded">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-3 space-y-3 overflow-y-auto max-h-[70vh]">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div><span className="text-[10px] text-muted-foreground block">{t('paymentGateway.timestampLabel')}</span><span className="font-medium">{formatWIB(new Date(selectedLog.createdAt), 'dd MMM yyyy HH:mm:ss')}</span></div>
+                <div><span className="text-[10px] text-muted-foreground block">{t('paymentGateway.gatewayLabel')}</span><span className="font-medium capitalize">{selectedLog.gateway}</span></div>
+                <div><span className="text-[10px] text-muted-foreground block">{t('paymentGateway.orderIdLabel')}</span><span className="font-mono text-[10px]">{selectedLog.orderId}</span></div>
+                <div><span className="text-[10px] text-muted-foreground block">{t('paymentGateway.transactionIdLabel')}</span><span className="font-mono text-[10px]">{selectedLog.transactionId || '-'}</span></div>
+                <div><span className="text-[10px] text-muted-foreground block">Status</span><span className="font-medium">{selectedLog.status}</span></div>
+                <div><span className="text-[10px] text-muted-foreground block">{t('paymentGateway.amountLabel')}</span><span className="font-medium">{formatAmount(selectedLog.amount)}</span></div>
+                <div><span className="text-[10px] text-muted-foreground block">{t('paymentGateway.successLabel')}</span><span className="font-medium">{selectedLog.success ? 'Yes' : 'No'}</span></div>
+                {selectedLog.errorMessage && <div className="col-span-2"><span className="text-[10px] text-destructive block">{t('paymentGateway.errorLabel')}</span><span className="text-destructive text-[10px]">{selectedLog.errorMessage}</span></div>}
+              </div>
+              {selectedLog.payload && (
+                <div>
+                  <span className="text-[10px] text-muted-foreground block mb-1">{t('paymentGateway.payloadLabel')}</span>
+                  <pre className="bg-zinc-900 text-zinc-100 p-2 rounded text-[10px] overflow-x-auto">{JSON.stringify(JSON.parse(selectedLog.payload), null, 2)}</pre>
+                </div>
+              )}
+              {selectedLog.response && (
+                <div>
+                  <span className="text-[10px] text-muted-foreground block mb-1">{t('paymentGateway.responseLabel')}</span>
+                  <pre className="bg-zinc-900 text-zinc-100 p-2 rounded text-[10px] overflow-x-auto">{JSON.stringify(JSON.parse(selectedLog.response), null, 2)}</pre>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+      </div>
+    </div>
+  );
+}
+
+
+
+
+
+
+
+

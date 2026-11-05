@@ -1,0 +1,436 @@
+'use client';
+
+import { useState } from 'react';
+import { Power, RefreshCw, Wifi, Trash2, RotateCcw } from 'lucide-react';
+import { useToast } from '@/components/cyberpunk/CyberToast';
+import { useTranslation } from '@/hooks/useTranslation';
+import { formatWIB } from '@/lib/timezone';
+import { apiAdmin, buildUrl } from '@/lib/api';
+import { useApiQuery, useQueryClient, buildQueryKey } from '@/lib/api/hooks';
+import { Pagination } from '@/components/Pagination';
+
+interface Session {
+  id: string;
+  username: string;
+  sessionId: string;
+  type: 'pppoe' | 'hotspot';
+  nasIpAddress: string;
+  framedIpAddress: string;
+  macAddress: string;
+  startTime: string;
+  lastUpdate: string | null;
+  duration: number;
+  durationFormatted: string;
+  uploadFormatted: string;
+  downloadFormatted: string;
+  totalFormatted: string;
+  router: { id: string; name: string } | null;
+  user: { 
+    id: string; 
+    customerId: string;
+    name: string; 
+    phone: string; 
+    profile: string;
+    area?: { id: string; name: string } | null;
+  } | null;
+}
+
+interface Pagination {
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+interface Stats {
+  total: number;
+  pppoe: number;
+  hotspot: number;
+  totalBandwidthFormatted: string;
+  totalUploadFormatted: string;
+  totalDownloadFormatted: string;
+}
+
+interface Router {
+  id: string;
+  name: string;
+}
+
+export default function PPPoESessionsPage() {
+  const { t } = useTranslation();
+  const { addToast, confirm } = useToast();
+  const queryClient = useQueryClient();
+  const [selectedSessions, setSelectedSessions] = useState<Set<string>>(new Set());
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [routerFilter, _setRouterFilter] = useState<string>('');
+  const [searchFilter, setSearchFilter] = useState<string>('');
+  const [pageSize, setPageSize] = useState<number>(10);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [syncing, setSyncing] = useState(false);
+
+  // Uptime updates every 10s via refetchInterval (no client-side ticker needed)
+
+  // ─── React Query: PPPoE sessions (page + filters, 10s auto-refresh) ──────────
+  const sessionParams: Record<string, unknown> = {
+    page: currentPage,
+    limit: pageSize,
+    type: 'pppoe', // Force PPPoE only
+    // live traffic disabled - CPU optimization, only need online/offline status
+    routerId: routerFilter || undefined,
+    search: searchFilter || undefined,
+  };
+  const { data: sessionsData, isLoading: loading, refetch: _refetchSessions } = useApiQuery<{ sessions: Session[]; stats: Stats; pagination: Pagination }>(
+    '/api/sessions',
+    { params: sessionParams, refetchInterval: 10000, staleTime: 30000 }
+  );
+  const sessions = sessionsData?.sessions || [];
+  const stats = sessionsData?.stats || null;
+  const pagination = sessionsData?.pagination || { total: 0, page: 1, limit: pageSize, totalPages: 1 };
+
+  // ─── React Query: Routers (reference data) ───────────────────────────────────
+  const { data: routersData } = useApiQuery<{ routers: Router[] }>('/api/network/routers', { staleTime: 300000 });
+  const routers = routersData?.routers || [];
+
+  // Use server-computed duration directly from MikroTik API.
+  // MikroTik uptime is fetched live at API call time, so it's already accurate.
+  // No need for client-side elapsed time adjustment.
+  const liveDuration = (serverDuration: number) => serverDuration;
+
+  const formatDateTime = (dateStr: string | null) => {
+    if (!dateStr) return '-';
+    return formatWIB(dateStr, 'dd/MM/yyyy HH:mm');
+  };
+
+  // Format uptime with days support (include seconds to match MikroTik display)
+  const formatUptime = (seconds: number) => {
+    const d = Math.floor(seconds / 86400);
+    const h = Math.floor((seconds % 86400) / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (d > 0) return `${d}d ${h}h ${m}m ${s}s`;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  };
+
+  const invalidateSessions = () => {
+    queryClient.invalidateQueries({ queryKey: buildQueryKey('/api/sessions') });
+  };
+
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      setSelectedSessions(new Set(sessions.map(s => s.sessionId)));
+    } else {
+      setSelectedSessions(new Set());
+    }
+  };
+
+  const handleSelectSession = (sessionId: string, checked: boolean) => {
+    const newSelected = new Set(selectedSessions);
+    if (checked) {
+      newSelected.add(sessionId);
+    } else {
+      newSelected.delete(sessionId);
+    }
+    setSelectedSessions(newSelected);
+  };
+
+  const handleDisconnect = async (sessionIds: string[]) => {
+    if (sessionIds.length === 0) return;
+    
+    if (!await confirm({
+      title: t('sessions.kickUser'),
+      message: t('sessions.disconnectPppoeConfirm').replace('{count}', String(sessionIds.length)),
+      confirmText: t('sessions.yesKick'),
+      cancelText: t('common.cancel'),
+      variant: 'danger',
+    })) return;
+
+    setDisconnecting(true);
+    try {
+      const data = await apiAdmin<{ success: boolean; disconnected: number; error?: string }>('/api/sessions/disconnect', {
+        method: 'POST',
+        body: JSON.stringify({ sessionIds })
+      });
+      if (data.success) {
+        addToast({ type: 'success', title: t('common.success'), description: t('sessions.sessionsDisconnected').replace('{count}', String(data.disconnected)) });
+        setSelectedSessions(new Set());
+        invalidateSessions();
+      } else {
+        addToast({ type: 'error', title: t('common.error'), description: data.error || t('sessions.failedDisconnect') });
+      }
+    } catch (error: unknown) {
+      addToast({ type: 'error', title: t('common.error'), description: (error instanceof Error ? error.message : String(error)) || t('sessions.failedDisconnectSession') });
+    } finally {
+      setDisconnecting(false);
+    }
+  };
+
+  const handleSync = async () => {
+    setSyncing(true);
+    try {
+      await apiAdmin('/api/sessions/sync?type=pppoe', { method: 'POST' });
+      setCurrentPage(1);
+      invalidateSessions();
+      addToast({ type: 'success', title: t('common.success'), description: t('sessions.syncComplete') });
+    } catch (error: unknown) {
+      addToast({ type: 'error', title: t('common.error'), description: (error instanceof Error ? error.message : String(error)) || t('sessions.syncFailed') });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const _handleExportExcel = async () => {    try {
+      const params = new URLSearchParams();
+      params.set('format', 'excel');
+      params.set('mode', 'active');
+      params.set('type', 'pppoe');
+      if (routerFilter) params.set('routerId', routerFilter);
+      if (searchFilter) params.set('username', searchFilter);
+      const res = await fetch(buildUrl(`/api/sessions/export?${params}`), { credentials: 'include' });
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Sessions-PPPoE-${new Date().toISOString().split('T')[0]}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch {
+      addToast({ type: 'error', title: 'Error', description: t('sessions.exportFailed') });
+    }
+  };
+
+  return (
+    <div className="bg-background relative">
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-0 left-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-primary/10 rounded-full blur-3xl"></div>
+        <div className="absolute top-1/3 right-1/4 w-48 h-48 sm:w-96 sm:h-96 bg-brand-500/20 rounded-full blur-3xl"></div>
+        <div className="absolute bottom-0 left-1/2 w-48 h-48 sm:w-96 sm:h-96 bg-pink-500/20 rounded-full blur-3xl"></div>
+        <div className="hidden dark:block absolute inset-0 bg-[linear-gradient(rgba(139,92,246,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(139,92,246,0.03)_1px,transparent_1px)] bg-[size:50px_50px]"></div>
+      </div>
+      <div className="relative z-10 space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-xl sm:text-2xl font-bold text-foreground dark:text-transparent dark:bg-clip-text dark:bg-gradient-to-r dark:from-brand-500 dark:via-white dark:to-pink-500 dark:drop- flex items-center gap-2">
+            <Wifi className="w-4 h-4 sm:w-5 sm:h-5 text-brand-500 flex-shrink-0" />
+            {t('sessions.pppoeSessions')}
+          </h1>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-1">{t('sessions.monitorPppoe')}</p>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => handleDisconnect(Array.from(selectedSessions))}
+            disabled={selectedSessions.size === 0 || disconnecting}
+            className="px-3 py-1.5 text-xs font-medium bg-muted hover:bg-muted/80 text-foreground rounded-lg disabled:opacity-50 flex items-center gap-1.5 border border-border"
+          >
+            <Power className="w-3.5 h-3.5" />
+            {t('sessions.kickUserButton')}
+          </button>
+          <button
+            disabled={selectedSessions.size === 0}
+            className="px-3 py-1.5 text-xs font-medium bg-success hover:bg-success/90 text-success-foreground rounded-lg disabled:opacity-50 flex items-center gap-1.5"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            {t('sessions.deleteButton')}
+          </button>
+          <button
+            onClick={handleSync}
+            disabled={syncing}
+            className="px-3 py-1.5 text-xs font-medium bg-warning hover:bg-warning/90 text-warning-foreground rounded-lg flex items-center gap-1.5 disabled:opacity-50"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+            {syncing ? t('common.loading') : t('sessions.resyncButton')}
+          </button>
+        </div>
+      </div>
+
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
+        <div className="bg-card rounded-xl border border-border p-2.5 sm:p-4  hover:border-border transition-all">
+          <p className="text-[10px] sm:text-xs text-brand-500 uppercase tracking-wide">{t('sessions.activeSessions')}</p>
+          <p className="text-lg sm:text-2xl font-bold text-foreground mt-1">{stats?.pppoe || 0}</p>
+        </div>
+        <div className="bg-card rounded-xl border border-border p-2.5 sm:p-4  hover:border-border transition-all">
+          <p className="text-[10px] sm:text-xs text-brand-500 uppercase tracking-wide">{t('sessions.router')}</p>
+          <p className="text-lg sm:text-2xl font-bold text-foreground mt-1">{routers.length || '-'}</p>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="bg-card rounded-lg border border-border overflow-hidden">
+        {/* Filters */}
+        <div className="px-3 py-2 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-muted">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>{t('sessions.show')}</span>
+            <select 
+              value={pageSize} 
+              onChange={(e) => { setPageSize(Number(e.target.value)); setCurrentPage(1); }}
+              className="px-2 py-1 border border-border rounded text-xs bg-card"
+            >
+              <option value={10}>10</option>
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+            <span>{t('sessions.entries')}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">{t('sessions.search')}:</span>
+            <input
+              type="text"
+              placeholder={t('sessions.searchPlaceholder')}
+              value={searchFilter}
+              onChange={(e) => { setSearchFilter(e.target.value); setCurrentPage(1); }}
+              className="px-2 py-1 text-xs border border-border rounded bg-card w-full sm:w-40"
+            />
+          </div>
+        </div>
+
+        {/* Mobile Card View */}
+        <div className="block lg:hidden divide-y divide-border">
+          {sessions.length === 0 ? (
+            <div className="px-3 py-8 text-center text-muted-foreground text-xs">
+              {loading ? <RefreshCw className="w-4 h-4 animate-spin mx-auto" /> : t('sessions.noData')}
+            </div>
+          ) : (
+            sessions.map((session) => (
+              <div key={session.id} className="p-3 hover:bg-muted">
+                <div className="flex items-start justify-between gap-2 min-w-0 mb-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedSessions.has(session.sessionId)}
+                      onChange={(e) => handleSelectSession(session.sessionId, e.target.checked)}
+                      className="rounded border-border w-3.5 h-3.5"
+                    />
+                    <span className="font-mono text-xs font-medium text-foreground">
+                      {session.user?.customerId || '-'}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => handleDisconnect([session.sessionId])}
+                    disabled={disconnecting}
+                    className="p-1.5 text-destructive hover:bg-destructive/10 rounded disabled:opacity-50"
+                  >
+                    <Power className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="space-y-1.5 text-[11px]">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">{t('sessions.customer')}:</span>
+                    <span className="font-medium text-foreground">{session.user?.name || '-'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">{t('sessions.username')}:</span>
+                    <span className="font-mono text-muted-foreground">{session.username}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">{t('sessions.startTime')}:</span>
+                    <span className="text-muted-foreground">{formatDateTime(session.startTime)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">{t('sessions.uptime')}:</span>
+                    <span className="font-medium text-info">{formatUptime(liveDuration(session.duration))}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">{t('sessions.router')}:</span>
+                    <span className="text-muted-foreground">{session.router?.name || '-'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">{t('sessions.server')}:</span>
+                    <span className="text-muted-foreground">{session.user?.profile || '-'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">{t('sessions.ipAddress')}:</span>
+                    <span className="font-mono text-muted-foreground">{session.framedIpAddress || '-'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">{t('sessions.macAddress')}:</span>
+                    <span className="font-mono text-[10px] text-muted-foreground">{session.macAddress || '-'}</span>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Desktop Table View */}
+        <div className="overflow-x-auto hidden lg:block">
+          <table className="w-full text-xs">
+            <thead className="bg-muted border-b border-border">
+              <tr>
+                <th className="px-2 py-2 text-left w-8">
+                  <input
+                    type="checkbox"
+                    checked={selectedSessions.size === sessions.length && sessions.length > 0}
+                    onChange={(e) => handleSelectAll(e.target.checked)}
+                    className="rounded border-border w-3.5 h-3.5"
+                  />
+                </th>
+                <th className="px-2 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase">{t('sessions.serviceNumber')}</th>
+                <th className="px-2 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase">{t('sessions.customer')}</th>
+                <th className="px-2 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase">{t('sessions.username')}</th>
+                <th className="px-2 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase">{t('sessions.startTime')}</th>
+                <th className="px-2 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase">{t('sessions.lastUpdate')}</th>
+                <th className="px-2 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase">{t('sessions.uptime')}</th>
+                <th className="px-2 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase">{t('sessions.router')}</th>
+                <th className="px-2 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase">{t('sessions.ipAddress')}</th>
+                <th className="px-2 py-2 text-left text-[10px] font-medium text-muted-foreground uppercase">{t('sessions.macAddress')}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {loading && sessions.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="px-3 py-8 text-center text-muted-foreground">
+                    <RefreshCw className="w-4 h-4 animate-spin mx-auto" />
+                  </td>
+                </tr>
+              ) : sessions.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="px-3 py-8 text-center text-muted-foreground">
+                    {t('sessions.noPppoeSessions')}
+                  </td>
+                </tr>
+              ) : (
+                sessions.map((session) => (
+                  <tr key={session.id} className="hover:bg-muted">
+                    <td className="px-2 py-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedSessions.has(session.sessionId)}
+                        onChange={(e) => handleSelectSession(session.sessionId, e.target.checked)}
+                        className="rounded border-border w-3.5 h-3.5"
+                      />
+                    </td>
+                    <td className="px-2 py-2 font-mono text-[10px] text-foreground">{session.user?.customerId || '-'}</td>
+                    <td className="px-2 py-2 text-[10px] text-foreground">{session.user?.name || '-'}</td>
+                    <td className="px-2 py-2 font-mono text-[10px] text-muted-foreground">{session.username}</td>
+                    <td className="px-2 py-2 text-[10px] text-muted-foreground whitespace-nowrap truncate overflow-hidden">{formatDateTime(session.startTime)}</td>
+                    <td className="px-2 py-2 text-[10px] text-muted-foreground whitespace-nowrap truncate overflow-hidden">{formatDateTime(session.lastUpdate)}</td>
+                    <td className="px-2 py-2 text-[10px] font-medium text-info">{formatUptime(liveDuration(session.duration))}</td>
+                    <td className="px-2 py-2 text-[10px] text-muted-foreground">{session.router?.name || '-'}</td>
+                    <td className="px-2 py-2 font-mono text-[10px] text-muted-foreground">{session.framedIpAddress || '-'}</td>
+                    <td className="px-2 py-2 font-mono text-[10px] text-muted-foreground">{session.macAddress || '-'}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pagination Footer */}
+        <Pagination
+          page={pagination.page}
+          totalPages={pagination.totalPages}
+          total={pagination.total}
+          limit={pageSize}
+          onPageChange={(p) => setCurrentPage(p)}
+        />
+      </div>
+      </div>
+    </div>
+  );
+}
