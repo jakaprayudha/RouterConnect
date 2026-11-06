@@ -1,4 +1,4 @@
-# SALFANET RADIUS - Billing System for ISP/RTRW.NET
+# RouterConnect - Billing System for ISP/RTRW.NET
 
 Modern, full-stack billing & RADIUS management system for ISP/RTRW.NET with FreeRADIUS integration supporting PPPoE and Hotspot authentication.
 
@@ -16,7 +16,7 @@ Modern, full-stack billing & RADIUS management system for ISP/RTRW.NET with Free
 | **PPPoE Management** | Customer accounts, profile-based bandwidth, isolation, IP assignment, MikroTik auto-sync, foto KTP+instalasi via kamera HP, GPS otomatis, **realtime online/offline status (polling 10s)**, **realtime status isolir/aktif (polling 10s)**, **PSB wizard 3-step (adopt dari home.pmynet.id)**, **true optimistic update (reactivate/delete instant)**, **placeholder MAC rejection** |
 | **IP Pool** | RADIUS ippool module — dynamic IP allocation per speed tier, pool create/expand/delete, Pool-Name → group mapping, utilization stats |
 | **Data Usage Reporting** | Per-user bandwidth tracking (daily aggregation via cron), monthly summary, top consumers, GB upload/download per period |
-| **Hotspot Voucher** | 8 code types, batch up to 25,000, agent distribution, auto-sync with RADIUS, print templates, **MikroTik local-only mode** (voucher sync via RouterOS API, `salfanet:` comment marker, batch cleanup, cron status sync), **Rekap Voucher** (laporan penjualan per hari/minggu/bulan, filter by agent & profile, export Excel, rincian per hari, pendapatan per agent — support both RADIUS & local NAS via `firstLoginAt`) |
+| **Hotspot Voucher** | 8 code types, batch up to 25,000, agent distribution, auto-sync with RADIUS, print templates, **MikroTik local-only mode** (voucher sync via RouterOS API, `routerconnect:` comment marker, batch cleanup, cron status sync), **Rekap Voucher** (laporan penjualan per hari/minggu/bulan, filter by agent & profile, export Excel, rincian per hari, pendapatan per agent — support both RADIUS & local NAS via `firstLoginAt`) |
 | **Billing** | Postpaid/prepaid invoices, auto-generation, payment reminders, balance/deposit, auto-renewal |
 | **Payment** | Manual upload (bukti transfer), Midtrans/Xendit/Duitku gateway, approval workflow, 0–5 bank accounts |
 | **Notifications** | WhatsApp (Fonnte/WAHA/GOWA/MPWA/Wablas/WABlast/**Kirimi.id**/**Baileys native**), Email SMTP, broadcast (outage/invoice/payment), webhook pesan masuk |
@@ -58,7 +58,7 @@ own Firebase project for push notifications.
 
 ## 📱 WhatsApp Baileys (Native Gateway)
 
-Provider WhatsApp bawaan tanpa layanan pihak ketiga. Berjalan sebagai proses PM2 terpisah (`salfanet-wa`) di VPS.
+Provider WhatsApp bawaan tanpa layanan pihak ketiga. Berjalan sebagai proses PM2 terpisah (`routerconnect-wa`) di VPS.
 
 ### Setup
 
@@ -67,7 +67,7 @@ Provider Baileys otomatis di-setup saat menjalankan `updater.sh`. Tidak ada konf
 ```bash
 # Cek status wa-service
 pm2 status
-pm2 logs salfanet-wa --lines 20
+pm2 logs routerconnect-wa --lines 20
 ```
 
 ### Cara Pakai
@@ -82,14 +82,14 @@ pm2 logs salfanet-wa --lines 20
 
 | Process | Mode | Port | Purpose |
 |---------|------|------|---------|
-| `salfanet-frontend` | cluster | 3000 | Next.js standalone (UI + NextAuth routes) |
-| `salfanet-backend` | fork | 3001 | Next.js standalone (API routes + Prisma + services) |
-| `salfanet-cron` | fork | — | Cron runner (calls backend APIs on schedule) |
-| `salfanet-wa` | fork | 4000 (internal) | Baileys WA service |
+| `routerconnect-frontend` | cluster | 3000 | Next.js standalone (UI + NextAuth routes) |
+| `routerconnect-backend` | fork | 3001 | Next.js standalone (API routes + Prisma + services) |
+| `routerconnect-cron` | fork | — | Cron runner (calls backend APIs on schedule) |
+| `routerconnect-wa` | fork | 4000 (internal) | Baileys WA service |
 
 ### Auth Session
 
-Session WhatsApp tersimpan di `/var/data/salfanet/baileys_auth/` dan persist meski PM2 restart. Untuk logout/scan ulang, klik **Restart Session** di admin panel.
+Session WhatsApp tersimpan di `/var/data/routerconnect/baileys_auth/` dan persist meski PM2 restart. Untuk logout/scan ulang, klik **Restart Session** di admin panel.
 
 ---
 
@@ -271,7 +271,7 @@ try {
 
 Setiap batch diverifikasi dengan:
 1. ✅ Local build (`npm run build`) — exit code 0
-2. ✅ Deploy via `pscp` + remote build + `pm2 restart salfanet-frontend`
+2. ✅ Deploy via `pscp` + remote build + `pm2 restart routerconnect-frontend`
 3. ✅ Production page test via Playwright
 4. ✅ Browser console errors check (0 errors expected)
 5. ✅ Update `FRONTEND_AUDIT.md`
@@ -615,7 +615,7 @@ Portal khusus untuk kolektor (petugas tagihan) dengan akses berbasis area (PPPoE
 | Frontend | Next.js 16 (App Router, standalone output) — UI + NextAuth |
 | Backend | Next.js 16 (App Router, standalone output) — API routes + Prisma + services |
 | Cron | Separate tsx runner (PM2 fork, calls backend APIs) |
-| Language | TypeScript (shared types via @salfanet/shared-types) |
+| Language | TypeScript (shared types via @routerconnect/shared-types) |
 | Styling | Tailwind CSS |
 | Database | MySQL 8.0 + Prisma ORM |
 | RADIUS | FreeRADIUS 3.0.26 |
@@ -630,7 +630,7 @@ Portal khusus untuk kolektor (petugas tagihan) dengan akses berbasis area (PPPoE
 ## 📁 Project Structure
 
 ```
-salfanet-radius/                  # pnpm monorepo root
+RouterConnect/                  # pnpm monorepo root
 ├── frontend/                     # Next.js — UI + NextAuth (port 3000)
 │   ├── src/
 │   │   ├── app/                  # Admin, agent, customer, technician, collector portals
@@ -659,7 +659,7 @@ salfanet-radius/                  # pnpm monorepo root
 │   └── shared-types/
 ├── deploy/                       # Deployment configuration
 │   ├── ecosystem.config.js       # PM2 config (4 processes: frontend, backend, cron, wa)
-│   ├── nginx-salfanet.conf       # Nginx reverse proxy (2-app routing)
+│   ├── nginx-routerconnect.conf       # Nginx reverse proxy (2-app routing)
 │   └── README.md
 ├── docs/                         # Documentation
 ├── frontend/vps-install/         # VPS installer scripts (installer, updater, uninstaller)
@@ -676,8 +676,8 @@ salfanet-radius/                  # pnpm monorepo root
 ```bash
 ssh root@YOUR_VPS_IP
 
-git clone https://github.com/s4lfanet/salfanet-radius.git /root/salfanet-radius
-cd /root/salfanet-radius
+git clone https://github.com/jakaprayudha/RouterConnect.git /root/RouterConnect
+cd /root/RouterConnect
 bash frontend/vps-install/vps-installer.sh
 ```
 
@@ -689,11 +689,11 @@ Installer akan berjalan **interaktif** — mendeteksi environment otomatis, mema
 
 ```bash
 # Jalankan di terminal LOKAL (bukan di server)
-scp -r ./salfanet-radius root@YOUR_VPS_IP:/root/salfanet-radius
+scp -r ./RouterConnect root@YOUR_VPS_IP:/root/RouterConnect
 
 # SSH ke server, lalu jalankan installer
 ssh root@YOUR_VPS_IP
-cd /root/salfanet-radius
+cd /root/RouterConnect
 bash frontend/vps-install/vps-installer.sh
 ```
 
@@ -720,13 +720,13 @@ bash frontend/vps-install/vps-installer.sh --env lxc --ip 192.168.1.50
 Cara paling aman. **Semua data upload (logo, foto KTP pelanggan, bukti bayar) otomatis dipreservasi.**
 
 ```bash
-bash /var/www/salfanet-radius/frontend/vps-install/updater.sh
+bash /var/www/RouterConnect/frontend/vps-install/updater.sh
 ```
 
 Atau update dari branch terbaru secara manual:
 
 ```bash
-cd /var/www/salfanet-radius
+cd /var/www/RouterConnect
 git pull origin master
 pnpm install
 cd backend && npx prisma generate && npx prisma db push && cd ..
@@ -735,7 +735,7 @@ cd frontend && npx prisma generate && cd ..
 cd backend && NODE_OPTIONS='--max-old-space-size=1536' npx next build && node scripts/postbuild.js && cd ..
 cd frontend && NODE_OPTIONS='--max-old-space-size=1536' npx next build && node scripts/postbuild.js && cd ..
 # Restart PM2
-pm2 restart salfanet-frontend salfanet-backend salfanet-cron --update-env
+pm2 restart routerconnect-frontend routerconnect-backend routerconnect-cron --update-env
 ```
 
 Lihat detail lengkap di [vps-install/README.md](vps-install/README.md).
@@ -874,19 +874,19 @@ curl -OJ http://YOUR_VPS/api/admin/apk/file?role=customer \
 
 | Path | Keterangan |
 |------|------------|
-| `/var/data/salfanet/apk/{role}/app.apk` | File APK hasil build |
-| `/var/data/salfanet/apk/{role}/status.json` | Status & metadata build |
-| `/var/data/salfanet/apk/{role}/build.log` | Log Gradle |
-| `/var/data/salfanet/gradle-cache` | Cache Gradle (mempercepat build berikutnya) |
+| `/var/data/routerconnect/apk/{role}/app.apk` | File APK hasil build |
+| `/var/data/routerconnect/apk/{role}/status.json` | Status & metadata build |
+| `/var/data/routerconnect/apk/{role}/build.log` | Log Gradle |
+| `/var/data/routerconnect/gradle-cache` | Cache Gradle (mempercepat build berikutnya) |
 
 ### Paket Aplikasi
 
 | Role | Package ID | Warna |
 |------|-----------|-------|
-| Admin | `net.salfanet.admin` | Biru |
-| Customer | `net.salfanet.customer` | Cyan |
-| Technician | `net.salfanet.technician` | Hijau |
-| Agent | `net.salfanet.agent` | Ungu |
+| Admin | `net.routerconnect.admin` | Biru |
+| Customer | `net.routerconnect.customer` | Cyan |
+| Technician | `net.routerconnect.technician` | Hijau |
+| Agent | `net.routerconnect.agent` | Ungu |
 
 ---
 
@@ -895,10 +895,10 @@ curl -OJ http://YOUR_VPS/api/admin/apk/file?role=customer \
 ```bash
 # PM2
 pm2 status
-pm2 logs salfanet-frontend --lines 50
-pm2 logs salfanet-backend --lines 50
-pm2 logs salfanet-cron --lines 50
-pm2 restart salfanet-frontend salfanet-backend salfanet-cron --update-env
+pm2 logs routerconnect-frontend --lines 50
+pm2 logs routerconnect-backend --lines 50
+pm2 logs routerconnect-cron --lines 50
+pm2 restart routerconnect-frontend routerconnect-backend routerconnect-cron --update-env
 
 # FreeRADIUS
 systemctl restart freeradius
@@ -906,14 +906,14 @@ freeradius -XC    # Test config
 radtest 'user@realm' password 127.0.0.1 0 testing123
 
 # Database
-mysql -u salfanet_user -psalfanetradius123 salfanet_radius
-mysqldump -u salfanet_user -psalfanetradius123 salfanet_radius > backup.sql
+mysql -u routerconnect_user -prouterconnect123 routerconnect_radius
+mysqldump -u routerconnect_user -prouterconnect123 routerconnect_radius > backup.sql
 
 # Build (manual)
-cd /var/www/salfanet-radius
+cd /var/www/RouterConnect
 cd backend && npx prisma generate && NODE_OPTIONS='--max-old-space-size=1536' npx next build && node scripts/postbuild.js && cd ..
 cd frontend && NODE_OPTIONS='--max-old-space-size=1536' npx next build && node scripts/postbuild.js && cd ..
-pm2 restart salfanet-frontend salfanet-backend --update-env
+pm2 restart routerconnect-frontend routerconnect-backend --update-env
 ```
 
 ---
@@ -947,13 +947,13 @@ Catatan: `IP:2020` adalah port SSH, bukan URL web aplikasi.
 
 ```bash
 pm2 status
-pm2 logs salfanet-frontend --lines 100
-pm2 logs salfanet-backend --lines 100
-cd /var/www/salfanet-radius
+pm2 logs routerconnect-frontend --lines 100
+pm2 logs routerconnect-backend --lines 100
+cd /var/www/RouterConnect
 # Rebuild both apps
 cd backend && NODE_OPTIONS='--max-old-space-size=1536' npx next build && node scripts/postbuild.js && cd ..
 cd frontend && NODE_OPTIONS='--max-old-space-size=1536' npx next build && node scripts/postbuild.js && cd ..
-pm2 restart salfanet-frontend salfanet-backend --update-env
+pm2 restart routerconnect-frontend routerconnect-backend --update-env
 ```
 
 ### 3) API returns 404 (route not found)
@@ -972,7 +972,7 @@ nginx -T 2>&1 | grep -A2 'location.*api'
 Installer Nginx terbaru menambahkan self-check internal (`127.0.0.1:3000`, `127.0.0.1`) dan best-effort check publik (HTTP/HTTPS).
 
 ```bash
-cd /var/www/salfanet-radius
+cd /var/www/RouterConnect
 bash vps-install/install-nginx.sh
 ```
 
