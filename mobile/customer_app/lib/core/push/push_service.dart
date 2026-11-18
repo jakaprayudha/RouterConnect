@@ -102,7 +102,7 @@ class PushService {
     try {
       const androidChannel = AndroidNotificationChannel(
         _channelId,
-        'Notifikasi Salfanet',
+        'Notifikasi RouterConnect',
         description: 'Tagihan, tiket, dan info akun Anda',
         importance: Importance.high,
       );
@@ -144,7 +144,7 @@ class PushService {
       notification.title,
       notification.body,
       const NotificationDetails(
-        android: AndroidNotificationDetails(_channelId, 'Notifikasi Salfanet', importance: Importance.high),
+        android: AndroidNotificationDetails(_channelId, 'Notifikasi RouterConnect', importance: Importance.high),
       ),
     );
   }

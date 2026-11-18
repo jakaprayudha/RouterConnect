@@ -35,7 +35,7 @@ Keduanya harus dari **project Firebase yang sama**.
 
    Ini harus sama huruf per huruf. Nilainya ada di
    `android/app/build.gradle.kts` pada baris `applicationId`. Kalau beda, Firebase
-   akan menolak pesan yang dikirim ke aplikasi. *Nama aplikasi* ("Salfanet Customer")
+   akan menolak pesan yang dikirim ke aplikasi. *Nama aplikasi* ("RouterConnect Customer")
    tidak ada hubungannya dengan ini dan boleh berbeda.
 
    Nickname dan SHA-1 boleh dikosongkan (SHA-1 hanya perlu untuk login Google,
@@ -122,7 +122,7 @@ Web Push, karena `sendWebPushToUser` memang sudah bercabang ke FCM.
 
 ## Hal yang perlu diketahui
 
-**Satu project Firebase per pemasangan.** Setiap ISP yang memasang Salfanet
+**Satu project Firebase per pemasangan.** Setiap ISP yang memasang RouterConnect
 Radius perlu project Firebase-nya sendiri, karena kunci server dan
 `google-services.json` harus sepasang. Ini satu-satunya bagian identitas yang
 tidak bisa diambil otomatis dari API seperti logo dan warna.

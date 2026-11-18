@@ -59,7 +59,7 @@ class CustomerApp extends StatelessWidget {
       ],
       child: Consumer<BrandThemeProvider>(
         builder: (context, brand, _) => MaterialApp(
-          title: 'Salfanet Customer',
+          title: 'RouterConnect Customer',
           debugShowCheckedModeBanner: false,
           navigatorKey: PushService.instance.navigatorKey,
           theme: brand.lightTheme,

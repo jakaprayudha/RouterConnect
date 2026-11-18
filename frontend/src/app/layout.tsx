@@ -28,7 +28,7 @@ const outfit = Outfit({
 
 export async function generateMetadata(): Promise<Metadata> {
   const company = await getCompanyInfo();
-  const name = company?.name || 'SALFANET RADIUS';
+  const name = company?.name || 'RouterConnect';
   return {
     title: name,
     description: "Billing & RADIUS management system for ISP/RTRW.NET",

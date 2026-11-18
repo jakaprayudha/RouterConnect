@@ -271,7 +271,7 @@ function exportToPDF(transactions: any[], stats: any) {
     transactions,
     stats,
     pdfData: {
-      title: 'Laporan Keuangan - SALFANET RADIUS',
+      title: 'Laporan Keuangan - RouterConnect',
       headers,
       rows,
       summary,

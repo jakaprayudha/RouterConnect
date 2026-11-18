@@ -230,7 +230,7 @@ export const SidebarPattern: Story = {
               <Shield className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="text-sm font-bold text-sidebar-foreground">Salfanet</h1>
+              <h1 className="text-sm font-bold text-sidebar-foreground">RouterConnect</h1>
               <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Admin Portal</p>
             </div>
           </div>

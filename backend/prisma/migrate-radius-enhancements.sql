@@ -1,5 +1,5 @@
 -- =====================================================
--- Salfanet Radius — RADIUS Schema Enhancements Migration
+-- RouterConnect — RADIUS Schema Enhancements Migration
 -- Diadopsi dari home.pmynet.id-main (FreeRADIUS 3.2.8)
 -- Date: 2026-08-12
 --

@@ -4,10 +4,10 @@ import { prisma } from '@/server/db/client';
 /**
  * RADIUS Reconciliation Service
  *
- * Compares SalfaNet DB (pppoeUser) vs FreeRADIUS DB (radcheck/radusergroup/radreply)
+ * Compares RouterConnect DB (pppoeUser) vs FreeRADIUS DB (radcheck/radusergroup/radreply)
  * and reports drift:
- *   - missing in RADIUS (user exists in SalfaNet but not in RADIUS)
- *   - stale in RADIUS (entry exists in RADIUS but user deleted/inactive in SalfaNet)
+ *   - missing in RADIUS (user exists in RouterConnect but not in RADIUS)
+ *   - stale in RADIUS (entry exists in RADIUS but user deleted/inactive in RouterConnect)
  *   - mismatch password
  *   - mismatch profile/group
  *   - mismatch IP
@@ -57,7 +57,7 @@ export interface ReconciliationReport {
 }
 
 /**
- * Run a full reconciliation between SalfaNet DB and FreeRADIUS DB.
+ * Run a full reconciliation between RouterConnect DB and FreeRADIUS DB.
  * Reads in batches to avoid memory issues with large datasets.
  * Uses cursor pagination to avoid loading entire RADIUS tables into memory.
  */
@@ -96,7 +96,7 @@ export async function runReconciliation(batchSize = 500): Promise<Reconciliation
     userCursor = batch.length > 0 ? batch[batch.length - 1].id : undefined;
   } while (userCursor);
 
-  // Build lookup maps for SalfaNet users
+  // Build lookup maps for RouterConnect users
   const salfaNetUsernames = new Set(salfaNetUsers.map(u => u.username));
   const _salfaNetUserMap = new Map(salfaNetUsers.map(u => [u.username, u]));
 
@@ -168,7 +168,7 @@ export async function runReconciliation(batchSize = 500): Promise<Reconciliation
     radreplyCursor = batch.length > 0 ? batch[batch.length - 1].id : undefined;
   } while (radreplyCursor);
 
-  // Find missing in RADIUS (user exists in SalfaNet but not in RADIUS)
+  // Find missing in RADIUS (user exists in RouterConnect but not in RADIUS)
   const missingInRadius: ReconciliationReport['missingInRadius'] = [];
   const mismatchPassword: ReconciliationReport['mismatchPassword'] = [];
   const mismatchProfile: ReconciliationReport['mismatchProfile'] = [];
@@ -183,7 +183,7 @@ export async function runReconciliation(batchSize = 500): Promise<Reconciliation
       missingInRadius.push({
         pppoeUserId: user.id,
         username: user.username,
-        reason: 'User exists in SalfaNet but has no RADIUS entries',
+        reason: 'User exists in RouterConnect but has no RADIUS entries',
       });
     } else {
       // Check password mismatch
@@ -217,10 +217,10 @@ export async function runReconciliation(batchSize = 500): Promise<Reconciliation
     }
   }
 
-  // Find stale in RADIUS (entry exists in RADIUS but user doesn't exist in SalfaNet)
+  // Find stale in RADIUS (entry exists in RADIUS but user doesn't exist in RouterConnect)
   // Categorize as:
   //   - 'delete_queued': a radius_sync_queue entry with syncType='delete' exists
-  //   - 'known_stale': username matches SalfaNet naming patterns (likely was deleted)
+  //   - 'known_stale': username matches RouterConnect naming patterns (likely was deleted)
   //   - 'unknown': cannot determine origin — manual review needed
   const staleInRadius: ReconciliationReport['staleInRadius'] = [];
 
@@ -249,7 +249,7 @@ export async function runReconciliation(batchSize = 500): Promise<Reconciliation
     if (deleteQueuedUsernames.has(username)) {
       category = 'delete_queued';
     } else {
-      // Heuristic: SalfaNet usernames typically don't start with common RADIUS
+      // Heuristic: RouterConnect usernames typically don't start with common RADIUS
       // service accounts like 'radius', 'admin', 'testing', etc.
       // Voucher codes are 8-char uppercase alphanumeric.
       // PPPoE usernames are customer-defined (various formats).
@@ -292,7 +292,7 @@ export async function runReconciliation(batchSize = 500): Promise<Reconciliation
  *
  * SAFETY: This function does NOT delete unknown stale users.
  * It only queues deletes for users that have a 'delete' entry in the retry queue
- * (meaning they were previously deleted from SalfaNet but RADIUS delete failed).
+ * (meaning they were previously deleted from RouterConnect but RADIUS delete failed).
  *
  * Admin must manually review 'unknown' stale users before queueing deletes.
  */
@@ -302,7 +302,7 @@ export async function queueStaleDeletes(usernames: string[]): Promise<{ queued: 
   let skipped = 0;
 
   for (const username of usernames) {
-    // Verify this username does NOT exist in SalfaNet DB
+    // Verify this username does NOT exist in RouterConnect DB
     const existingUser = await prisma.pppoeUser.findFirst({
       where: { username },
       select: { id: true },
@@ -310,7 +310,7 @@ export async function queueStaleDeletes(usernames: string[]): Promise<{ queued: 
 
     if (existingUser) {
       // User still exists — skip (shouldn't happen, but safety check)
-      console.warn(`[reconciliation] Skipping stale delete for ${username} — user still exists in SalfaNet DB`);
+      console.warn(`[reconciliation] Skipping stale delete for ${username} — user still exists in RouterConnect DB`);
       skipped++;
       continue;
     }

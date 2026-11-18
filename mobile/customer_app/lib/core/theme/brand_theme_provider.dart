@@ -5,7 +5,7 @@ import 'app_theme.dart';
 
 /// Derives the app's color scheme from the operator's own logo.
 ///
-/// Salfanet Radius is installed by different ISPs, each with their own logo,
+/// RouterConnect is installed by different ISPs, each with their own logo,
 /// so a fixed brand color would make every operator's app look like someone
 /// else's. The logo is already fetched for the header; this reads its dominant
 /// color and seeds Material 3's tonal palette from it, which keeps every

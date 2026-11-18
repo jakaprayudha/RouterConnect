@@ -104,7 +104,7 @@ export async function GET(req: NextRequest) {
 
       return NextResponse.json({
         pdfData: {
-          title: 'Daftar Pelanggan PPPoE - SALFANET RADIUS',
+          title: 'Daftar Pelanggan PPPoE - RouterConnect',
           headers,
           rows,
           summary,

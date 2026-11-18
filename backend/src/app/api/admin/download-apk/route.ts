@@ -9,35 +9,35 @@ export const dynamic = 'force-dynamic';
 
 const ROLES = {
   admin: {
-    label: 'Salfanet Admin',
+    label: 'RouterConnect Admin',
     pkg: 'net.salfanet.admin',
     color: '#1e40af',
     pathSuffix: '/admin',
     icon: 'admin',
   },
   customer: {
-    label: 'Salfanet Customer',
+    label: 'RouterConnect Customer',
     pkg: 'net.salfanet.customer',
     color: '#0891b2',
     pathSuffix: '/customer',
     icon: 'customer',
   },
   technician: {
-    label: 'Salfanet Teknisi',
+    label: 'RouterConnect Teknisi',
     pkg: 'net.salfanet.technician',
     color: '#059669',
     pathSuffix: '/technician',
     icon: 'technician',
   },
   agent: {
-    label: 'Salfanet Agent',
+    label: 'RouterConnect Agent',
     pkg: 'net.salfanet.agent',
     color: '#7c3aed',
     pathSuffix: '/agent',
     icon: 'agent',
   },
   collector: {
-    label: 'Salfanet Collector',
+    label: 'RouterConnect Collector',
     pkg: 'net.salfanet.collector',
     color: '#d97706',
     pathSuffix: '/collector',
@@ -542,7 +542,7 @@ function readmeTxt(appName: string, role: string, startUrl: string, pkg: string)
 
 ## Catatan
 - APK ini adalah WebView wrapper yang membuka URL di atas
-- Tidak ada backend yang dibutuhkan — semua data dari server Salfanet
+- Tidak ada backend yang dibutuhkan — semua data dari server RouterConnect
 - Untuk update URL: edit file \`app/src/main/java/${pkg.replace(/\./g, '/')}/MainActivity.kt\`
 `;
 }

@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../../core/api/api_client.dart';
 import '../../core/theme/app_theme.dart';
 
-/// Every Salfanet Radius install runs on its own domain, so the app can't
+/// Every RouterConnect install runs on its own domain, so the app can't
 /// ship with one correct server baked in — this screen lets whoever sets up
 /// the app point it at their operator's actual backend, and remembers it.
 class ServerSettingsScreen extends StatefulWidget {
@@ -73,7 +73,7 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
         await Future.delayed(const Duration(milliseconds: 700));
         if (mounted) Navigator.pop(context, true);
       } else {
-        setState(() => _error = 'Server merespons tapi bukan Salfanet Radius yang valid.');
+        setState(() => _error = 'Server merespons tapi bukan RouterConnect yang valid.');
       }
     } catch (_) {
       setState(() => _error = 'Tidak dapat terhubung ke server tersebut. Periksa alamat dan koneksi internet.');
@@ -92,7 +92,7 @@ class _ServerSettingsScreenState extends State<ServerSettingsScreen> {
           padding: const EdgeInsets.all(20),
           children: [
             Text(
-              'Setiap instalasi Salfanet Radius berjalan di domainnya sendiri. '
+              'Setiap instalasi RouterConnect berjalan di domainnya sendiri. '
               'Masukkan alamat server admin panel milik ISP Anda.',
               style: TextStyle(color: scheme.onSurfaceVariant),
             ),

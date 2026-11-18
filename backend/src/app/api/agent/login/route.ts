@@ -116,7 +116,7 @@ export async function POST(request: NextRequest) {
 
     // Get company name
     const company = await prisma.company.findFirst();
-    const companyName = company?.name || 'SALFANET RADIUS';
+    const companyName = company?.name || 'RouterConnect';
 
     // Send OTP via WhatsApp
     const message = `Kode OTP Login Agent Anda: ${otpCode}\n\nBerlaku ${otpExpiryMin} menit.\nJangan bagikan kode ini kepada siapapun.\n\n- ${companyName}`;

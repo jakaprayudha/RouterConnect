@@ -131,7 +131,7 @@ export async function GET(req: NextRequest) {
 
       return NextResponse.json({
         pdfData: {
-          title: mode === 'active' ? 'Active Sessions - SALFANET RADIUS' : 'Session History - SALFANET RADIUS',
+          title: mode === 'active' ? 'Active Sessions - RouterConnect' : 'Session History - RouterConnect',
           headers,
           rows,
           summary,

@@ -160,7 +160,7 @@ export default function CustomerDashboard() {
   const [editingWifi, setEditingWifi] = useState<number | null>(null); // WLAN index being edited
   const [wifiForm, setWifiForm] = useState({ ssid: '', password: '' });
   const [updatingWifi, setUpdatingWifi] = useState(false);
-  const [_companyName, setCompanyName] = useState('SALFANET RADIUS');
+  const [_companyName, setCompanyName] = useState('RouterConnect');
   const [connectedDevices, setConnectedDevices] = useState<ConnectedDevice[]>([]);
   const [generatingPayment, setGeneratingPayment] = useState<string | null>(null);
   const [paymentGateways, setPaymentGateways] = useState<PaymentGatewayInfo[]>([]);

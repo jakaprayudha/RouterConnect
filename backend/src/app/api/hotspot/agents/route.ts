@@ -155,7 +155,7 @@ export async function POST(request: NextRequest) {
       const company = await prisma.company.findFirst();
       const baseUrl = company?.baseUrl || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
       const agentPortalUrl = `${baseUrl}/agent`;
-      const companyName = company?.name || 'SALFANET';
+      const companyName = company?.name || 'RouterConnect';
       const companyPhone = company?.phone || '';
 
       const message = `🎉 *Selamat Bergabung sebagai Agent!*\n\n` +

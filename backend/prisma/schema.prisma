@@ -94,7 +94,7 @@ model company {
   baseUrl          String?  @default("http://localhost:3000")
   timezone         String?  @default("Asia/Jakarta")
   bankAccounts     Json? // Array of bank account objects: [{bankName, accountNumber, accountName}]
-  poweredBy        String?  @default("SALFANET RADIUS")
+  poweredBy        String?  @default("RouterConnect")
   customerIdPrefix String?  @db.VarChar(10) // Prefix for generated customer IDs e.g. "SF-"
 
   // Footer settings for different portals

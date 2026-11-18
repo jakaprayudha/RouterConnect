@@ -43,7 +43,7 @@ class AdminApp extends StatelessWidget {
       ],
       child: Consumer<ThemeController>(
         builder: (context, theme, _) => MaterialApp(
-          title: 'Salfanet Admin',
+          title: 'RouterConnect Admin',
           navigatorKey: PushService.instance.navigatorKey,
           debugShowCheckedModeBanner: false,
           theme: AppTheme.light,

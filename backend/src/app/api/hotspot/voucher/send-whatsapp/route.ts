@@ -19,7 +19,7 @@ export async function POST(request: Request) {
 
     // Get company info
     const company = await prisma.company.findFirst()
-    const companyName = company?.name || 'SALFANET'
+    const companyName = company?.name || 'RouterConnect'
     const companyPhone = company?.phone || ''
 
     // Build voucher message

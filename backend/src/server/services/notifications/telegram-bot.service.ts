@@ -133,7 +133,7 @@ export async function processTelegramUpdate(update: any, settings: BotSettings):
   if (/^\/(start|help)\b/i.test(text) || /^help$/i.test(text)) {
     if (!settings.enableStart) return false
     const cmds = [
-      '<b>🤖 Bot Salfanet Radius</b>',
+      '<b>🤖 Bot RouterConnect</b>',
       '',
       'Perintah yang tersedia:',
       '',

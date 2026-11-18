@@ -1,4 +1,4 @@
-# DESIGN.md — Aplikasi Admin Salfanet Radius
+# DESIGN.md — Aplikasi Admin RouterConnect
 
 Arah desain untuk `mobile/admin_app`.
 

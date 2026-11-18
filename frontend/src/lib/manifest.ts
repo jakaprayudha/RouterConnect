@@ -1,7 +1,7 @@
 import 'server-only';
 import { getCompanyInfo } from '@/lib/api/server';
 
-const FALLBACK_NAME = 'Salfanet';
+const FALLBACK_NAME = 'RouterConnect';
 
 interface ManifestConfig {
   id: string;
@@ -17,7 +17,7 @@ interface ManifestConfig {
 
 /**
  * Generate a PWA manifest dynamically with company name from DB.
- * Falls back to "Salfanet" if company name is not set.
+ * Falls back to "RouterConnect" if company name is not set.
  */
 export async function generateManifest(config: ManifestConfig) {
   const company = await getCompanyInfo();

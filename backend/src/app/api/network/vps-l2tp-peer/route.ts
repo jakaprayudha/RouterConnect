@@ -371,7 +371,7 @@ function generateL2tpScript({ serverIp, username, password, ipsecPsk, vpnIp, lab
 }): string {
   const ifaceName = toL2tpIfaceName(label)
   return `# ═══════════════════════════════════════════════════════
-# SALFANET — Script L2TP/IPsec ke VPS
+# RouterConnect — Script L2TP/IPsec ke VPS
 # Server VPS : ${serverIp}
 # NAS IP VPN : ${vpnIp}
 # Interface  : ${ifaceName}

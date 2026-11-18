@@ -8,7 +8,7 @@ class AppStorage {
 
   static const _serverUrlKey = 'server_base_url';
 
-  /// Every Salfanet Radius install runs on its own domain — this app isn't
+  /// Every RouterConnect install runs on its own domain — this app isn't
   /// built for one specific ISP, so the server URL is configurable at
   /// runtime rather than baked in at compile time.
   Future<void> saveServerUrl(String url) => _storage.write(key: _serverUrlKey, value: url);

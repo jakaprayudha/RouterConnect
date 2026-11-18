@@ -87,7 +87,7 @@ function Section({ id }: { id: SectionId }) {
         <div className="space-y-3 text-sm text-muted-foreground">
           <p>
             GenieACS adalah server TR-069 (CWMP) untuk manajemen perangkat CPE/ONT secara remote. Integrasi ini
-            memungkinkan monitoring dan konfigurasi perangkat pelanggan langsung dari Salfanet Radius.
+            memungkinkan monitoring dan konfigurasi perangkat pelanggan langsung dari RouterConnect.
           </p>
           <h4 className="font-semibold text-foreground">Menu yang Tersedia</h4>
           <div className="overflow-x-auto">
@@ -150,7 +150,7 @@ sudo systemctl start genieacs-cwmp genieacs-nbi genieacs-fs genieacs-ui
 # Check status
 sudo systemctl status genieacs-*`}</CodeBlock>
 
-          <h4 className="font-semibold text-foreground">4. Konfigurasi di Salfanet Radius</h4>
+          <h4 className="font-semibold text-foreground">4. Konfigurasi di RouterConnect</h4>
           <p>Buka <strong>Admin → Settings → GenieACS</strong> dan isi:</p>
           <ul className="ml-4 list-disc space-y-1">
             <li><strong>GenieACS URL</strong>: <code className="rounded bg-gray-200 px-1 dark:bg-gray-700">http://IP_GENIEACS:7557</code> (port NBI)</li>

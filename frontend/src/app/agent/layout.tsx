@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export async function generateMetadata(): Promise<Metadata> {
   const company = await getCompanyInfo();
   return {
-    title: `Agent Portal - ${company?.name || 'SALFANET RADIUS'}`,
+    title: `Agent Portal - ${company?.name || 'RouterConnect'}`,
     description: 'Portal Agent untuk Generate Voucher',
     manifest: '/manifest-agent.json',
   };

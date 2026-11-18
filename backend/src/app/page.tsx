@@ -5,5 +5,5 @@ export default function Home() {
 }
 
 export function GET() {
-  return NextResponse.json({ message: 'Salfanet API Server' })
+  return NextResponse.json({ message: 'RouterConnect API Server' })
 }

@@ -121,7 +121,7 @@ export async function GET(
     // Prepare invoice data for PDF
     const invoiceData = {
       company: {
-        name: company?.name || 'SALFANET RADIUS',
+        name: company?.name || 'RouterConnect',
         address: company?.address || '',
         phone: company?.phone || '',
         email: company?.email || '',

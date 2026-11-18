@@ -1,6 +1,6 @@
-# Salfanet Customer App
+# RouterConnect Customer App
 
-Native Flutter (Android) app for Salfanet customers — a native counterpart to the
+Native Flutter (Android) app for RouterConnect customers — a native counterpart to the
 `frontend/src/app/customer/*` web portal, using the same `backend/src/app/api/customer/*` API.
 
 ## Scope
@@ -12,7 +12,7 @@ transfer), referral, suspend requests, speed test, and profile.
 
 ## Server URL — this is NOT a single-tenant app
 
-Every Salfanet Radius installation runs on its own operator-chosen domain, so
+Every RouterConnect installation runs on its own operator-chosen domain, so
 the app does **not** hard-code one production host. On first launch it defaults
 to `https://radius.salfa.my.id` (overridable at build time, see below), but the
 Login screen has a "Pengaturan Server" (gear icon / host caption) that opens

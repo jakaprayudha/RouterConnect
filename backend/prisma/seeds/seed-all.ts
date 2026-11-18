@@ -187,13 +187,13 @@ export async function seedAll(forceTemplates = false) {
     await prisma.company.create({
       data: {
         id: crypto.randomUUID(),
-        name: 'SALFANET RADIUS',
+        name: 'RouterConnect',
         address: '',
         phone: '',
         email: '',
         timezone: 'Asia/Jakarta',
         baseUrl: process.env.NEXT_PUBLIC_APP_URL || '',
-        poweredBy: 'SALFANET RADIUS',
+        poweredBy: 'RouterConnect',
         invoiceGenerateDays: 7,
         gracePeriodDays: 0,
         isolationEnabled: true,

@@ -97,7 +97,7 @@ export async function GET(req: NextRequest) {
 
       return NextResponse.json({
         pdfData: {
-          title: 'Daftar Voucher Hotspot - SALFANET RADIUS',
+          title: 'Daftar Voucher Hotspot - RouterConnect',
           headers,
           rows,
           summary,
@@ -126,7 +126,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ error: 'No waiting vouchers to print' }, { status: 400 });
       }
 
-      const pdfBuffer = generateVoucherCardsPDF(vouchersForPrint, company?.name || 'SALFANET RADIUS');
+      const pdfBuffer = generateVoucherCardsPDF(vouchersForPrint, company?.name || 'RouterConnect');
 
       return new NextResponse(Buffer.from(pdfBuffer), {
         headers: {

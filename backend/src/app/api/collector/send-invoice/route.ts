@@ -64,7 +64,7 @@ export async function POST(req: NextRequest) {
     }
 
     const company = await prisma.company.findFirst();
-    const companyName = company?.name || 'SALFANET RADIUS';
+    const companyName = company?.name || 'RouterConnect';
     const companyPhone = company?.phone || '';
 
     const paidDate = invoice.paidAt

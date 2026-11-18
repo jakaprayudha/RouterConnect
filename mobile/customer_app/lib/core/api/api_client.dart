@@ -2,7 +2,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import '../storage/secure_storage.dart';
 
-/// Every Salfanet Radius installation runs on its own operator-chosen domain
+/// Every RouterConnect installation runs on its own operator-chosen domain
 /// — there is no single production host this app can be built for. This is
 /// only the fallback shown before the user configures their own server (see
 /// ServerSettingsScreen / ApiClient.setBaseUrl). Override at build time for

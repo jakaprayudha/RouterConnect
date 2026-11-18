@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export async function generateMetadata(): Promise<Metadata> {
   const company = await getCompanyInfo();
   return {
-    title: `Admin Panel - ${company?.name || 'SALFANET RADIUS'}`,
+    title: `Admin Panel - ${company?.name || 'RouterConnect'}`,
     manifest: '/manifest-admin.json',
   };
 }

@@ -177,7 +177,7 @@ export async function POST(
 
       return `
 # ============================================
-# SALFANET RADIUS Setup Script (RouterOS ${rosVersion}.x)
+# RouterConnect Setup Script (RouterOS ${rosVersion}.x)
 # Router: ${router.name}
 # Router NAS IP: ${nasSrcAddress || router.nasname}
 # RADIUS Server: ${radiusServerIp}
@@ -233,8 +233,8 @@ ${gatewayFirewallRule}
 # ============================================
 /tool netwatch remove [find where comment~"SALFANET"]
 /tool netwatch add host=${radiusServerIp} interval=30s timeout=5s \\
-    down-script="/log warning message=\\"SALFANET: RADIUS server ${radiusServerIp} tidak reachable\\"" \\
-    up-script="/log info message=\\"SALFANET: RADIUS server ${radiusServerIp} kembali online\\"" \\
+    down-script="/log warning message=\\"RouterConnect: RADIUS server ${radiusServerIp} tidak reachable\\"" \\
+    up-script="/log info message=\\"RouterConnect: RADIUS server ${radiusServerIp} kembali online\\"" \\
     comment="SALFANET RADIUS Monitor"` : ''}
 
 # ============================================

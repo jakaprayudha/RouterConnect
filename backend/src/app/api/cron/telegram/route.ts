@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
       try {
         await sendTelegramMessage(
           { botToken: config.botToken, chatId: config.chatId },
-          '🤖 Test message from Salfanet Cron'
+          '🤖 Test message from RouterConnect Cron'
         );
         return NextResponse.json({ success: true, message: 'Test message sent' });
       } catch (e: any) {

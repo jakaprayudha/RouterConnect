@@ -18,7 +18,7 @@ type GuideId = 'firewall' | 'nginx' | null;
 function FirewallGuide() {
   return (
     <div className="space-y-3 text-xs text-muted-foreground">
-      <p className="font-medium text-foreground">Skenario A — GenieACS di server yang sama dengan Salfanet Radius</p>
+      <p className="font-medium text-foreground">Skenario A — GenieACS di server yang sama dengan RouterConnect</p>
       <p>1. Bind NBI ke localhost saja, lalu restart service:</p>
       <CodeBlock>{`NBI_INTERFACE=127.0.0.1
 NBI_PORT=7557
@@ -30,8 +30,8 @@ sudo systemctl restart genieacs-nbi`}</CodeBlock>
       <CodeBlock>{`http://127.0.0.1:7557`}</CodeBlock>
 
       <p className="font-medium text-foreground pt-2">Skenario B — GenieACS di server terpisah (remote)</p>
-      <p>1. Izinkan HANYA IP server Salfanet Radius mengakses port NBI, tolak yang lain:</p>
-      <CodeBlock>{`sudo ufw allow from <IP_SERVER_SALFANET> to any port 7557 proto tcp
+      <p>1. Izinkan HANYA IP server RouterConnect mengakses port NBI, tolak yang lain:</p>
+      <CodeBlock>{`sudo ufw allow from <IP_SERVER_ROUTERCONNECT> to any port 7557 proto tcp
 sudo ufw deny 7557/tcp
 sudo ufw reload`}</CodeBlock>
       <p>2. Verifikasi dari IP lain (harus timeout / connection refused):</p>

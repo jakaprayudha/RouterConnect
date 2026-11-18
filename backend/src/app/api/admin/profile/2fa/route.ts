@@ -20,7 +20,7 @@ export async function GET(request: NextRequest) {
     // Generate a fresh TOTP secret
     const secret = new Secret({ size: 20 });
     const totp = new TOTP({
-      issuer: 'SALFANET RADIUS',
+      issuer: 'RouterConnect',
       label: user.username,
       algorithm: 'SHA1',
       digits: 6,

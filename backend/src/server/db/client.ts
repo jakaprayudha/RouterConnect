@@ -1,5 +1,5 @@
 /**
- * Prisma Client Singleton — Salfanet Radius
+ * Prisma Client Singleton — RouterConnect
  *
  * Single instance of PrismaClient yang digunakan di seluruh server-side code.
  * File ini HANYA boleh diimport di server-side (API routes, services, repositories).

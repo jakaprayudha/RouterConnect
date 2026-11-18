@@ -106,7 +106,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           const SizedBox(height: Gap.lg),
           if (_info != null)
             Center(
-              child: Text('Salfanet Admin ${_info!.version} (${_info!.buildNumber})', style: TextStyle(fontSize: 12, color: context.colors.onSurfaceVariant)),
+              child: Text('RouterConnect Admin ${_info!.version} (${_info!.buildNumber})', style: TextStyle(fontSize: 12, color: context.colors.onSurfaceVariant)),
             ),
         ],
       ),

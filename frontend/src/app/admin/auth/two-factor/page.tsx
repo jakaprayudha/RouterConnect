@@ -14,7 +14,7 @@ function TwoFactorForm() {
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [companyName, setCompanyName] = useState('SALFANET RADIUS');
+  const [companyName, setCompanyName] = useState('RouterConnect');
   const tfaToken = searchParams.get('t') || '';
 
   useEffect(() => {

@@ -53,7 +53,7 @@ export async function POST(
 
     const script = `
 # ============================================
-# SALFANET Isolation Setup Script
+# RouterConnect Isolation Setup Script
 # Router   : ${router.name}
 # NAS IP   : ${nasVpnIp}
 # Isolir IP: ${cidrNetwork}

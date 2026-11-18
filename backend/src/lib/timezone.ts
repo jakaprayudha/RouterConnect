@@ -1,5 +1,5 @@
 /**
- * Timezone Utilities for SALFANET RADIUS
+ * Timezone Utilities for RouterConnect
  * 
  * ============================================
  * TIMEZONE CONSISTENCY ARCHITECTURE

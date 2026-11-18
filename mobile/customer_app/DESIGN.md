@@ -1,4 +1,4 @@
-# DESIGN.md — Aplikasi Pelanggan Salfanet Radius
+# DESIGN.md — Aplikasi Pelanggan RouterConnect
 
 Arah desain untuk `mobile/customer_app`. Aplikasi web punya tema sendiri (cyberpunk);
 dokumen ini hanya mengatur aplikasi Android native.
@@ -14,7 +14,7 @@ Dijawab langsung oleh pemilik, 24 September 2026:
    sebagai jangkar, ikon kategori berwarna per fungsi. Bukan meniru satu produk
    tertentu.
 2. **Warna aksen diambil otomatis dari logo perusahaan.** Setiap ISP yang memasang
-   Salfanet Radius punya logo sendiri, jadi aplikasi mengambil warnanya dari logo itu.
+   RouterConnect punya logo sendiri, jadi aplikasi mengambil warnanya dari logo itu.
    Kalau logo gagal dibaca atau warnanya nyaris abu-abu, jatuh ke biru `#465FFF`.
 3. **Ikon harus lebih berwarna.** Keluhan awal: tampilan lama terlalu datar, semua ikon
    satu warna.

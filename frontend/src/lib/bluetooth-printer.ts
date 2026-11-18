@@ -136,7 +136,7 @@ export class BluetoothPrinter {
     }
 
     if (!BluetoothPrinter.isSupported()) {
-      throw new Error('Browser tidak mendukung Web Bluetooth. Gunakan Chrome/Edge di Android atau APK Salfanet.');
+      throw new Error('Browser tidak mendukung Web Bluetooth. Gunakan Chrome/Edge di Android atau APK RouterConnect.');
     }
 
     try {
@@ -415,7 +415,7 @@ export class BluetoothPrinter {
     commands.push(ESC, 0x61, 0x01); // Center
     commands.push(...encoder.encode('Terima kasih'));
     commands.push(LF);
-    commands.push(...encoder.encode('Powered by Salfanet Radius'));
+    commands.push(...encoder.encode('Powered by RouterConnect'));
     commands.push(LF);
 
     // Feed and cut

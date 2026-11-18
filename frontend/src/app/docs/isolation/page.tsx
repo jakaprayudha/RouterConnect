@@ -4,7 +4,7 @@ import { getCompanyInfo } from '@/lib/api/server';
 
 export async function generateMetadata(): Promise<Metadata> {
   const company = await getCompanyInfo();
-  const name = company?.name || 'SALFANET RADIUS';
+  const name = company?.name || 'RouterConnect';
   return {
     title: `Isolation System - ${name} Documentation`,
     description: 'Dokumentasi lengkap sistem isolasi otomatis untuk PPPoE users yang masa berlangganannya habis.',
@@ -486,7 +486,7 @@ expiredAt < hari ini
 
         {/* Footer */}
         <div className="mt-12 pt-6 border-t border-gray-200 dark:border-gray-700 text-center text-sm text-gray-500 dark:text-gray-400">
-          <p>SALFANET RADIUS - Isolation System Documentation</p>
+          <p>RouterConnect - Isolation System Documentation</p>
           <Link href="/admin/settings/isolation" className="text-blue-600 hover:underline mt-1 inline-block">
             ← Kembali ke Isolation Settings
           </Link>

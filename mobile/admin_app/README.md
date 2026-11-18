@@ -1,6 +1,6 @@
-# Salfanet Admin App
+# RouterConnect Admin App
 
-Native Flutter (Android) app for Salfanet staff: a mobile counterpart to the
+Native Flutter (Android) app for RouterConnect staff: a mobile counterpart to the
 `frontend/src/app/admin/*` web panel, using the same admin API
 (`backend/src/app/api/*`, gated by `requirePermission()`).
 
@@ -34,7 +34,7 @@ existing web permissions apply unchanged; a screen they can't access shows
 
 ## Server URL — not a single-tenant app
 
-Every Salfanet Radius install runs on its own domain. The app defaults to
+Every RouterConnect install runs on its own domain. The app defaults to
 `https://radius.salfa.my.id`; the login screen's server link opens
 `lib/features/auth/server_settings_screen.dart` to point it at any other
 install (checked against `/api/public/company`, persisted in

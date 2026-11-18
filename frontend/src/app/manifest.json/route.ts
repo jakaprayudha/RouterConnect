@@ -6,7 +6,7 @@ export async function GET() {
   const manifest = await generateManifest({
     id: '/',
     name: '',
-    short_name: 'Salfanet',
+    short_name: 'RouterConnect',
     description: 'Billing & RADIUS management system untuk ISP/RTRW.NET',
     start_url: '/customer',
     scope: '/',

@@ -4,7 +4,7 @@ import { getCompanyInfo } from '@/lib/api/server';
 export async function generateMetadata(): Promise<Metadata> {
   const company = await getCompanyInfo();
   return {
-    title: `Portal Teknisi - ${company?.name || 'SALFANET RADIUS'}`,
+    title: `Portal Teknisi - ${company?.name || 'RouterConnect'}`,
     description: 'Portal Teknisi untuk manajemen tiket dan pelanggan',
     manifest: '/manifest-technician.json',
   };

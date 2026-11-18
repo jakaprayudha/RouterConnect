@@ -2,7 +2,7 @@ import 'package:flutter/foundation.dart';
 import '../api/api_client.dart';
 import '../../models/company_info.dart';
 
-/// Every Salfanet Radius install is a different ISP with its own name and
+/// Every RouterConnect install is a different ISP with its own name and
 /// logo — loaded once from the public (no-auth) endpoint so branding (login
 /// screen, dashboard header, invoice PDF) reflects whichever operator this
 /// build is pointed at, never a fixed identity.

@@ -4,7 +4,7 @@ import { getCompanyInfo } from '@/lib/api/server';
 export async function generateMetadata(): Promise<Metadata> {
   const company = await getCompanyInfo();
   return {
-    title: `Portal Kolektor - ${company?.name || 'SALFANET RADIUS'}`,
+    title: `Portal Kolektor - ${company?.name || 'RouterConnect'}`,
     description: 'Portal Kolektor untuk manajemen tagihan dan setoran',
   };
 }

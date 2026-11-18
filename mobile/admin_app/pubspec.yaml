@@ -1,5 +1,5 @@
 name: admin_app
-description: "Salfanet admin app — native Android companion to the web admin panel."
+description: "RouterConnect admin app — native Android companion to the web admin panel."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev

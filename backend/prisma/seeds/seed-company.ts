@@ -38,13 +38,13 @@ async function main() {
     const company = await prisma.company.create({
       data: {
         id: randomUUID(),
-        name: 'SALFANET RADIUS - Local Dev',
+        name: 'RouterConnect - Local Dev',
         address: 'Local Development',
         phone: '+62 82214535152',
         email: 'admin@localhost',
         timezone: 'Asia/Jakarta',
         baseUrl: process.env.NEXT_PUBLIC_APP_URL || '',
-        poweredBy: 'SALFANET RADIUS',
+        poweredBy: 'RouterConnect',
         invoiceGenerateDays: 7,
         gracePeriodDays: 0,
         isolationEnabled: true,

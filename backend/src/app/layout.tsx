@@ -1,5 +1,5 @@
 export const metadata = {
-  title: 'Salfanet API',
+  title: 'RouterConnect API',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

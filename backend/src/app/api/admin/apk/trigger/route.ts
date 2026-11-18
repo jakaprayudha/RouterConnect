@@ -15,12 +15,12 @@ const execAsync = promisify(exec);
 export const dynamic = 'force-dynamic';
 
 const ROLES = {
-  admin:         { label: 'Salfanet Admin',     pkg: 'net.salfanet.admin',         color: '#1e40af', pathSuffix: '/admin' },
-  customer:      { label: 'Salfanet Customer',  pkg: 'net.salfanet.customer',      color: '#0891b2', pathSuffix: '/customer' },
-  technician:    { label: 'Salfanet Teknisi',   pkg: 'net.salfanet.technician',    color: '#059669', pathSuffix: '/technician' },
-  agent:         { label: 'Salfanet Agent',     pkg: 'net.salfanet.agent',         color: '#7c3aed', pathSuffix: '/agent' },
-  collector:     { label: 'Salfanet Collector', pkg: 'net.salfanet.collector',     color: '#d97706', pathSuffix: '/collector' },
-  qris_listener: { label: 'Salfanet QRIS Listener', pkg: 'net.salfanet.qrislistener', color: '#e11d48', pathSuffix: '' },
+  admin:         { label: 'RouterConnect Admin',     pkg: 'net.salfanet.admin',         color: '#1e40af', pathSuffix: '/admin' },
+  customer:      { label: 'RouterConnect Customer',  pkg: 'net.salfanet.customer',      color: '#0891b2', pathSuffix: '/customer' },
+  technician:    { label: 'RouterConnect Teknisi',   pkg: 'net.salfanet.technician',    color: '#059669', pathSuffix: '/technician' },
+  agent:         { label: 'RouterConnect Agent',     pkg: 'net.salfanet.agent',         color: '#7c3aed', pathSuffix: '/agent' },
+  collector:     { label: 'RouterConnect Collector', pkg: 'net.salfanet.collector',     color: '#d97706', pathSuffix: '/collector' },
+  qris_listener: { label: 'RouterConnect QRIS Listener', pkg: 'net.salfanet.qrislistener', color: '#e11d48', pathSuffix: '' },
 } as const;
 type RoleKey = keyof typeof ROLES;
 
@@ -92,7 +92,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val CHANNEL_ID = "salfanet_push_channel"
-        const val CHANNEL_NAME = "Notifikasi Salfanet"
+        const val CHANNEL_NAME = "Notifikasi RouterConnect"
         const val PREFS_NAME = "salfanet_prefs"
         const val PREF_BASE_URL = "base_url"
         const val PREF_LAST_NOTIF_ID = "last_notif_id"
@@ -294,7 +294,7 @@ class MainActivity : AppCompatActivity() {
             val channel = NotificationChannel(
                 CHANNEL_ID, CHANNEL_NAME, NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Notifikasi push dari Salfanet"
+                description = "Notifikasi push dari RouterConnect"
                 enableLights(true)
                 lightColor = Color.CYAN
                 enableVibration(true)
@@ -397,7 +397,7 @@ class MainActivity : AppCompatActivity() {
                     "navigator.serviceWorker.addEventListener('message',function(e){" +
                     "var d=e.data;" +
                     "if(d&&(d.type==='PUSH_RECEIVED'||d.type==='PUSH_NOTIFICATION')&&typeof Android!=='undefined'){" +
-                    "try{Android.showNotificationWithTag(d.title||'Salfanet',d.body||'',d.tag||'');}catch(err){}" +
+                    "try{Android.showNotificationWithTag(d.title||'RouterConnect',d.body||'',d.tag||'');}catch(err){}" +
                     "}});}})();",
                     null
                 )
@@ -1001,7 +1001,7 @@ class MainActivity : AppCompatActivity() {
                     setTypeface(typeface, android.graphics.Typeface.BOLD)
                 })
                 addView(TextView(this@MainActivity).apply {
-                    text = "Salfanet Radius — Konfirmasi pembayaran QRIS otomatis"
+                    text = "RouterConnect — Konfirmasi pembayaran QRIS otomatis"
                     textSize = 11f
                     setTextColor(0xFFBBDEFB.toInt())
                 })
